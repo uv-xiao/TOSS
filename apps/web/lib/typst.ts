@@ -4,34 +4,59 @@ export type CompileOutput = {
   compiledAt: number;
 };
 
-const encoder = new TextEncoder();
-let typstPromise: Promise<typeof import("@myriaddreamin/typst.ts")> | null = null;
+type WorkerCompileResponse = {
+  id: number;
+  ok: boolean;
+  pdfBytes?: Uint8Array;
+  errors?: string[];
+};
 
-function getTypstModule() {
-  if (!typstPromise) {
-    typstPromise = import("@myriaddreamin/typst.ts");
+class TypstWorkerRuntime {
+  private worker: Worker | null = null;
+  private seq = 1;
+  private pending = new Map<number, (response: WorkerCompileResponse) => void>();
+
+  private ensureWorker() {
+    if (typeof window === "undefined") return null;
+    if (this.worker) return this.worker;
+    if (typeof Worker === "undefined") return null;
+    this.worker = new Worker(new URL("./typst.worker.ts", import.meta.url));
+    this.worker.onmessage = (event: MessageEvent<WorkerCompileResponse>) => {
+      const response = event.data;
+      const resolve = this.pending.get(response.id);
+      if (!resolve) return;
+      this.pending.delete(response.id);
+      resolve(response);
+    };
+    this.worker.onerror = () => {
+      for (const resolve of this.pending.values()) {
+        resolve({ id: -1, ok: false, errors: ["Typst worker crashed"] });
+      }
+      this.pending.clear();
+      this.worker?.terminate();
+      this.worker = null;
+    };
+    return this.worker;
   }
-  return typstPromise;
-}
 
-async function compileWithTypstWasm(source: string): Promise<string | null> {
-  try {
-    const { $typst } = await getTypstModule();
-    const result = await $typst.pdf({
-      mainContent: source
+  compile(source: string): Promise<WorkerCompileResponse> {
+    const worker = this.ensureWorker();
+    if (!worker) {
+      return Promise.resolve({
+        id: -1,
+        ok: false,
+        errors: ["This browser does not support Worker-based Typst preview"]
+      });
+    }
+    const id = this.seq++;
+    return new Promise((resolve) => {
+      this.pending.set(id, resolve);
+      worker.postMessage({ id, source });
     });
-    if (!result || result.byteLength === 0) return null;
-    const bytes = new Uint8Array(result);
-    const buffer = bytes.buffer.slice(
-      bytes.byteOffset,
-      bytes.byteOffset + bytes.byteLength
-    ) as ArrayBuffer;
-    const blob = new Blob([buffer], { type: "application/pdf" });
-    return URL.createObjectURL(blob);
-  } catch {
-    return null;
   }
 }
+
+const runtime = new TypstWorkerRuntime();
 
 export async function compileTypstClientSide(source: string): Promise<CompileOutput> {
   if (source.trim().length === 0) {
@@ -42,12 +67,16 @@ export async function compileTypstClientSide(source: string): Promise<CompileOut
     };
   }
 
-  encoder.encode(source);
-
-  const wasmPdf = await compileWithTypstWasm(source);
-  if (wasmPdf) {
+  const result = await runtime.compile(source);
+  if (result.ok && result.pdfBytes && result.pdfBytes.byteLength > 0) {
+    const bytes = result.pdfBytes;
+    const buffer = bytes.buffer.slice(
+      bytes.byteOffset,
+      bytes.byteOffset + bytes.byteLength
+    ) as ArrayBuffer;
+    const blob = new Blob([buffer], { type: "application/pdf" });
     return {
-      pdfDataUrl: wasmPdf,
+      pdfDataUrl: URL.createObjectURL(blob),
       errors: [],
       compiledAt: Date.now()
     };
@@ -55,9 +84,11 @@ export async function compileTypstClientSide(source: string): Promise<CompileOut
 
   return {
     pdfDataUrl: null,
-    errors: [
-      "This browser cannot run Typst WASM preview. You can continue editing source and sync via Git for offline compilation."
-    ],
+    errors: result.errors?.length
+      ? result.errors
+      : [
+          "This browser cannot run Typst WASM preview. You can continue editing source and sync via Git for offline compilation."
+        ],
     compiledAt: Date.now()
   };
 }
