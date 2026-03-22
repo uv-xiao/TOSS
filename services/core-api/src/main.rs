@@ -5,12 +5,6 @@ use axum::response::{IntoResponse, Redirect};
 use axum::routing::{any, delete, get, post, put};
 use axum::{Json, Router};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
-use aws_config::BehaviorVersion;
-use aws_config::Region;
-use aws_credential_types::Credentials;
-use aws_sdk_s3::config::Builder as S3ConfigBuilder;
-use aws_sdk_s3::primitives::ByteStream;
-use aws_sdk_s3::Client as S3Client;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
 use openidconnect::core::{
@@ -31,330 +25,14 @@ use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::{Component, Path as FsPath, PathBuf};
 use std::process::Command;
-use std::str::FromStr;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::{error, info};
 use uuid::Uuid;
-
-#[derive(Clone)]
-struct AppState {
-    db: PgPool,
-    oidc: OidcSettings,
-    storage: Option<ObjectStorage>,
-}
-
-#[derive(Clone)]
-struct OidcSettings {
-    issuer: String,
-    client_id: String,
-    client_secret: String,
-    redirect_uri: String,
-    groups_claim: String,
-}
-
-#[derive(Clone)]
-struct ObjectStorage {
-    client: S3Client,
-    bucket: String,
-    key_prefix: String,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-enum ProjectRole {
-    Owner,
-    Teacher,
-    Student,
-    TA,
-}
-
-impl ProjectRole {
-    fn from_db(v: &str) -> Option<Self> {
-        match v {
-            "Owner" => Some(Self::Owner),
-            "Teacher" => Some(Self::Teacher),
-            "Student" => Some(Self::Student),
-            "TA" => Some(Self::TA),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Serialize)]
-struct HealthResponse {
-    status: &'static str,
-    service: &'static str,
-}
-
-#[derive(Serialize)]
-struct Project {
-    id: Uuid,
-    organization_id: Uuid,
-    name: String,
-    description: Option<String>,
-    created_at: DateTime<Utc>,
-}
-
-#[derive(Serialize)]
-struct ProjectListResponse {
-    projects: Vec<Project>,
-}
-
-#[derive(Deserialize)]
-struct CreateProjectInput {
-    organization_id: Uuid,
-    name: String,
-    description: Option<String>,
-}
-
-#[derive(Serialize)]
-struct ProjectRoleBinding {
-    project_id: Uuid,
-    user_id: Uuid,
-    role: String,
-    granted_at: DateTime<Utc>,
-}
-
-#[derive(Deserialize)]
-struct UpsertRoleInput {
-    user_id: Uuid,
-    role: String,
-}
-
-#[derive(Serialize)]
-struct ProjectGroupRoleBinding {
-    project_id: Uuid,
-    group_name: String,
-    role: String,
-    granted_at: DateTime<Utc>,
-}
-
-#[derive(Deserialize)]
-struct UpsertProjectGroupRoleInput {
-    group_name: String,
-    role: String,
-}
-
-#[derive(Serialize)]
-struct GitSyncState {
-    project_id: Uuid,
-    branch: String,
-    last_pull_at: Option<DateTime<Utc>>,
-    last_push_at: Option<DateTime<Utc>>,
-    has_conflicts: bool,
-    status: String,
-}
-
-#[derive(Deserialize)]
-struct SyncRequest {
-    actor_user_id: Option<Uuid>,
-}
-
-#[derive(Serialize)]
-struct GitRemoteConfig {
-    project_id: Uuid,
-    remote_url: Option<String>,
-    local_path: String,
-    default_branch: String,
-}
-
-#[derive(Serialize)]
-struct GitRepoLink {
-    project_id: Uuid,
-    repo_url: String,
-}
-
-#[derive(Deserialize)]
-struct UpsertGitRemoteConfigInput {
-    remote_url: Option<String>,
-    default_branch: Option<String>,
-}
-
-#[derive(Serialize)]
-struct AuthConfigResponse {
-    issuer: String,
-    client_id: String,
-    redirect_uri: String,
-    groups_claim: String,
-}
-
-#[derive(Deserialize)]
-struct OidcCallbackQuery {
-    code: String,
-    state: Option<String>,
-}
-
-#[derive(Serialize)]
-struct SessionResponse {
-    session_token: String,
-    user_id: Uuid,
-}
-
-#[derive(Serialize)]
-struct AuthMeResponse {
-    user_id: Uuid,
-    email: String,
-    display_name: String,
-    session_expires_at: DateTime<Utc>,
-}
-
-#[derive(Serialize)]
-struct RealtimeAuthResponse {
-    user_id: Uuid,
-}
-
-#[derive(Serialize)]
-struct PersonalAccessTokenInfo {
-    id: Uuid,
-    label: String,
-    token_prefix: String,
-    created_at: DateTime<Utc>,
-    expires_at: Option<DateTime<Utc>>,
-    last_used_at: Option<DateTime<Utc>>,
-    revoked_at: Option<DateTime<Utc>>,
-}
-
-#[derive(Serialize)]
-struct PersonalAccessTokenListResponse {
-    tokens: Vec<PersonalAccessTokenInfo>,
-}
-
-#[derive(Deserialize)]
-struct CreatePatInput {
-    label: String,
-    expires_at: Option<String>,
-}
-
-#[derive(Serialize)]
-struct CreatePatResponse {
-    id: Uuid,
-    label: String,
-    token: String,
-    token_prefix: String,
-    created_at: DateTime<Utc>,
-    expires_at: Option<DateTime<Utc>>,
-}
-
-#[derive(Serialize)]
-struct Comment {
-    id: Uuid,
-    project_id: Uuid,
-    actor_user_id: Option<Uuid>,
-    body: String,
-    anchor: Option<String>,
-    created_at: DateTime<Utc>,
-}
-
-#[derive(Serialize)]
-struct CommentsResponse {
-    comments: Vec<Comment>,
-}
-
-#[derive(Deserialize)]
-struct CreateCommentInput {
-    body: String,
-    anchor: Option<String>,
-}
-
-#[derive(Serialize)]
-struct Revision {
-    id: Uuid,
-    project_id: Uuid,
-    actor_user_id: Option<Uuid>,
-    summary: String,
-    created_at: DateTime<Utc>,
-}
-
-#[derive(Serialize)]
-struct RevisionsResponse {
-    revisions: Vec<Revision>,
-}
-
-#[derive(Deserialize)]
-struct CreateRevisionInput {
-    summary: String,
-}
-
-#[derive(Serialize)]
-struct Document {
-    id: Uuid,
-    project_id: Uuid,
-    path: String,
-    content: String,
-    updated_at: DateTime<Utc>,
-}
-
-#[derive(Serialize)]
-struct DocumentsResponse {
-    documents: Vec<Document>,
-}
-
-#[derive(Deserialize)]
-struct CreateDocumentInput {
-    path: String,
-    content: String,
-}
-
-#[derive(Deserialize)]
-struct UpdateDocumentInput {
-    content: String,
-}
-
-#[derive(Serialize)]
-struct ProjectSnapshot {
-    id: Uuid,
-    project_id: Uuid,
-    object_key: String,
-    created_by: Option<Uuid>,
-    created_at: DateTime<Utc>,
-    document_count: i32,
-    byte_size: i64,
-}
-
-#[derive(Serialize)]
-struct ProjectSnapshotListResponse {
-    snapshots: Vec<ProjectSnapshot>,
-}
-
-#[derive(Serialize)]
-struct ProjectAsset {
-    id: Uuid,
-    project_id: Uuid,
-    path: String,
-    object_key: String,
-    content_type: String,
-    size_bytes: i64,
-    uploaded_by: Option<Uuid>,
-    created_at: DateTime<Utc>,
-}
-
-#[derive(Serialize)]
-struct ProjectAssetListResponse {
-    assets: Vec<ProjectAsset>,
-}
-
-#[derive(Deserialize)]
-struct UploadAssetInput {
-    path: String,
-    content_base64: String,
-    content_type: Option<String>,
-}
-
-#[derive(Serialize)]
-struct ProjectAssetContentResponse {
-    asset: ProjectAsset,
-    content_base64: String,
-}
-
-#[derive(Deserialize)]
-struct UpsertDocumentByPathInput {
-    content: String,
-}
-
-#[derive(Deserialize)]
-struct ListDocumentsQuery {
-    path: Option<String>,
-}
+mod types;
+mod object_storage;
+use object_storage::*;
+use types::*;
 
 #[tokio::main]
 async fn main() {
@@ -2496,20 +2174,19 @@ async fn apply_project_group_roles(
     user_id: Uuid,
     groups: &[String],
 ) -> Result<(), sqlx::Error> {
-    if groups.is_empty() {
-        return Ok(());
-    }
     let rows = sqlx::query("select project_id, group_name, role from project_group_roles")
         .fetch_all(db)
         .await?;
     let group_set: HashSet<String> = groups.iter().cloned().collect();
+    let mut mapped_projects: HashSet<Uuid> = HashSet::new();
     let mut desired: HashMap<Uuid, String> = HashMap::new();
     for row in rows {
         let group_name: String = row.get("group_name");
+        let project_id: Uuid = row.get("project_id");
+        mapped_projects.insert(project_id);
         if !group_set.contains(&group_name) {
             continue;
         }
-        let project_id: Uuid = row.get("project_id");
         let role: String = row.get("role");
         let entry = desired.entry(project_id).or_insert_with(|| role.clone());
         if role_rank(&role) > role_rank(entry) {
@@ -2517,32 +2194,42 @@ async fn apply_project_group_roles(
         }
     }
 
-    for (project_id, mapped_role) in desired {
-        let existing = sqlx::query(
-            "select role from project_roles where project_id = $1 and user_id = $2",
-        )
-        .bind(project_id)
+    let current_rows = sqlx::query("select project_id, role from project_roles where user_id = $1")
         .bind(user_id)
-        .fetch_optional(db)
+        .fetch_all(db)
         .await?;
-        let should_apply = match existing {
-            Some(row) => {
-                let existing_role: String = row.get("role");
-                role_rank(&mapped_role) > role_rank(&existing_role)
+    let mut current_roles: HashMap<Uuid, String> = HashMap::new();
+    for row in current_rows {
+        current_roles.insert(row.get("project_id"), row.get("role"));
+    }
+
+    for project_id in mapped_projects {
+        if let Some(mapped_role) = desired.get(&project_id) {
+            let should_write = match current_roles.get(&project_id) {
+                Some(existing_role) => existing_role != mapped_role,
+                None => true,
+            };
+            if should_write {
+                sqlx::query(
+                    "insert into project_roles (project_id, user_id, role, granted_at)
+                     values ($1, $2, $3, $4)
+                     on conflict (project_id, user_id) do update
+                     set role = excluded.role, granted_at = excluded.granted_at",
+                )
+                .bind(project_id)
+                .bind(user_id)
+                .bind(mapped_role)
+                .bind(Utc::now())
+                .execute(db)
+                .await?;
             }
-            None => true,
-        };
-        if should_apply {
+        } else {
             sqlx::query(
-                "insert into project_roles (project_id, user_id, role, granted_at)
-                 values ($1, $2, $3, $4)
-                 on conflict (project_id, user_id) do update
-                 set role = excluded.role, granted_at = excluded.granted_at",
+                "delete from project_roles
+                 where project_id = $1 and user_id = $2",
             )
             .bind(project_id)
             .bind(user_id)
-            .bind(mapped_role)
-            .bind(Utc::now())
             .execute(db)
             .await?;
         }
@@ -2608,107 +2295,6 @@ async fn update_git_sync_state(
     .bind(last_push_at)
     .execute(db)
     .await?;
-    Ok(())
-}
-
-async fn init_object_storage_from_env() -> Option<ObjectStorage> {
-    let bucket = env::var("S3_BUCKET").ok()?;
-    if bucket.trim().is_empty() {
-        return None;
-    }
-    let endpoint = env::var("S3_ENDPOINT").ok();
-    let region = env::var("S3_REGION").unwrap_or_else(|_| "us-east-1".to_string());
-    let key_prefix = env::var("S3_KEY_PREFIX").unwrap_or_else(|_| "".to_string());
-    let access_key = env::var("S3_ACCESS_KEY_ID")
-        .ok()
-        .or_else(|| env::var("MINIO_ROOT_USER").ok());
-    let secret_key = env::var("S3_SECRET_ACCESS_KEY")
-        .ok()
-        .or_else(|| env::var("MINIO_ROOT_PASSWORD").ok());
-
-    let shared = aws_config::defaults(BehaviorVersion::latest())
-        .region(Region::new(region.clone()))
-        .load()
-        .await;
-    let mut builder = S3ConfigBuilder::from(&shared).region(Region::new(region));
-    if let Some(ep) = endpoint {
-        if let Ok(uri) = http::Uri::from_str(&ep) {
-            builder = builder.endpoint_url(uri.to_string()).force_path_style(true);
-        }
-    }
-    if let (Some(ak), Some(sk)) = (access_key, secret_key) {
-        builder = builder.credentials_provider(Credentials::new(ak, sk, None, None, "env"));
-    }
-    let client = S3Client::from_conf(builder.build());
-    Some(ObjectStorage {
-        client,
-        bucket,
-        key_prefix,
-    })
-}
-
-fn storage_key(storage: &ObjectStorage, raw: &str) -> String {
-    if storage.key_prefix.is_empty() {
-        raw.to_string()
-    } else {
-        format!(
-            "{}/{}",
-            storage.key_prefix.trim_matches('/'),
-            raw.trim_start_matches('/')
-        )
-    }
-}
-
-async fn put_object(
-    storage: &ObjectStorage,
-    key: &str,
-    content_type: &str,
-    data: Vec<u8>,
-) -> Result<(), String> {
-    let final_key = storage_key(storage, key);
-    storage
-        .client
-        .put_object()
-        .bucket(&storage.bucket)
-        .key(final_key)
-        .content_type(content_type)
-        .body(ByteStream::from(data))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-async fn get_object(storage: &ObjectStorage, key: &str) -> Result<Vec<u8>, String> {
-    let final_key = storage_key(storage, key);
-    let output = storage
-        .client
-        .get_object()
-        .bucket(&storage.bucket)
-        .key(final_key)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    let bytes = output
-        .body
-        .collect()
-        .await
-        .map_err(|e| e.to_string())?
-        .into_bytes()
-        .to_vec();
-    Ok(bytes)
-}
-
-async fn delete_object(storage: &ObjectStorage, key: &str) -> Result<(), String> {
-    let final_key = storage_key(storage, key);
-    storage
-        .client
-        .delete_object()
-        .bucket(&storage.bucket)
-        .key(final_key)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
     Ok(())
 }
 

@@ -32,7 +32,7 @@ Realtime WebSocket:
 OIDC group claim mapping:
 - Group claim name comes from `OIDC_GROUPS_CLAIM` (default `groups`).
 - On each successful OIDC login, backend syncs current groups into `user_oidc_groups`.
-- Matching `project_group_roles` mappings are applied to the user as project roles (only upgrades; no automatic downgrades).
+- Strict sync policy: for projects that define `project_group_roles`, the user role is set from current matched groups; if no groups match, the role binding is removed for that project.
 
 ## Documents, comments, revisions
 
