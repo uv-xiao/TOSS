@@ -15,6 +15,7 @@ use uuid::Uuid;
 pub struct WsQuery {
     pub project_id: Option<String>,
     pub user_id: Option<String>,
+    pub user_name: Option<String>,
 }
 
 pub async fn ws_handler(
@@ -27,7 +28,8 @@ pub async fn ws_handler(
     let Ok(user_id) = authorize_ws_user(&state, &headers, &query).await else {
         return (StatusCode::UNAUTHORIZED, "Realtime auth failed").into_response();
     };
-    ws.on_upgrade(move |socket| handle_socket(socket, doc_id, user_id, state))
+    let user_name = query.user_name.clone();
+    ws.on_upgrade(move |socket| handle_socket(socket, doc_id, user_id, user_name, state))
         .into_response()
 }
 
@@ -66,28 +68,26 @@ async fn get_or_create_sender(state: &AppState, doc_id: &str) -> broadcast::Send
     tx
 }
 
-async fn handle_socket(socket: WebSocket, doc_id: String, user_id: String, state: AppState) {
+async fn handle_socket(
+    socket: WebSocket,
+    doc_id: String,
+    user_id: String,
+    user_name: Option<String>,
+    state: AppState,
+) {
     let sender = get_or_create_sender(&state, &doc_id).await;
     let mut rx = sender.subscribe();
     let (mut ws_tx, mut ws_rx) = socket.split();
-    if let Some(checkpoint) = load_checkpoint(&state, &doc_id) {
-        let checkpoint_event = CollabEvent {
-            doc_id: doc_id.clone(),
-            user_id: "system".to_string(),
-            kind: "checkpoint.replay".to_string(),
-            payload: checkpoint,
-            at: Utc::now(),
-        };
-        if let Ok(text) = serde_json::to_string(&checkpoint_event) {
-            let _ = ws_tx.send(Message::Text(text.into())).await;
-        }
-    }
 
     let joined = CollabEvent {
         doc_id: doc_id.clone(),
         user_id: user_id.clone(),
         kind: "presence.join".to_string(),
-        payload: serde_json::json!({"user_id": user_id, "auth_kind": "project-scoped"}),
+        payload: serde_json::json!({
+            "user_id": user_id,
+            "user_name": user_name,
+            "auth_kind": "project-scoped"
+        }),
         at: Utc::now(),
     };
     let _ = sender.send(joined);
@@ -108,14 +108,22 @@ async fn handle_socket(socket: WebSocket, doc_id: String, user_id: String, state
                 let text_string = text.to_string();
                 let incoming: serde_json::Value = serde_json::from_str(&text_string)
                     .unwrap_or_else(|_| serde_json::json!({ "raw": text_string }));
+                let kind = incoming
+                    .get("kind")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("doc.update")
+                    .to_string();
+                let payload = incoming
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or_else(|| incoming.clone());
                 let event = CollabEvent {
                     doc_id: doc_id.clone(),
                     user_id: user_id.clone(),
-                    kind: "doc.update".to_string(),
-                    payload: incoming,
+                    kind,
+                    payload,
                     at: Utc::now(),
                 };
-                store_checkpoint(&state, &doc_id, &event.payload);
                 let _ = sender.send(event);
             }
             Message::Binary(bin) => {
@@ -126,7 +134,6 @@ async fn handle_socket(socket: WebSocket, doc_id: String, user_id: String, state
                     payload: serde_json::json!({ "bytes": bin.len() }),
                     at: Utc::now(),
                 };
-                store_checkpoint(&state, &doc_id, &event.payload);
                 let _ = sender.send(event);
             }
             Message::Close(_) => break,
@@ -143,25 +150,4 @@ async fn handle_socket(socket: WebSocket, doc_id: String, user_id: String, state
     };
     let _ = sender.send(left);
     send_task.abort();
-}
-
-fn checkpoint_path(state: &AppState, doc_id: &str) -> std::path::PathBuf {
-    let sanitized = doc_id.replace('/', "_");
-    state.realtime_checkpoint_dir.join(format!("{sanitized}.json"))
-}
-
-fn store_checkpoint(state: &AppState, doc_id: &str, payload: &serde_json::Value) {
-    let path = checkpoint_path(state, doc_id);
-    let body = serde_json::json!({
-        "doc_id": doc_id,
-        "at": Utc::now(),
-        "payload": payload
-    });
-    let _ = std::fs::write(path, body.to_string());
-}
-
-fn load_checkpoint(state: &AppState, doc_id: &str) -> Option<serde_json::Value> {
-    let path = checkpoint_path(state, doc_id);
-    let content = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str::<serde_json::Value>(&content).ok()
 }

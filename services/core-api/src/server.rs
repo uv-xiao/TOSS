@@ -4,6 +4,8 @@ use crate::object_storage::*;
 use crate::realtime::ws_handler as realtime_ws_handler;
 use crate::types::*;
 use crate::typst_cache::typst_package_proxy;
+use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use argon2::Argon2;
 use axum::body::{Body, Bytes};
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, Method, StatusCode, Uri};
@@ -31,6 +33,7 @@ use std::env;
 use std::net::SocketAddr;
 use std::process::Command;
 use std::sync::Arc;
+use std::time::Duration;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 use tracing::{error, info};
@@ -64,26 +67,23 @@ pub async fn run() {
     };
 
     let storage = init_object_storage_from_env().await;
-    let realtime_checkpoint_dir = env::var("CHECKPOINT_STORAGE_PREFIX")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/typst-checkpoints"));
-    let _ = std::fs::create_dir_all(&realtime_checkpoint_dir);
     let state = AppState {
         db,
         oidc,
         storage,
         realtime_channels: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
-        realtime_checkpoint_dir,
     };
     let static_dir = env::var("WEB_STATIC_DIR").unwrap_or_else(|_| "./web-dist".to_string());
     let static_service = get_service(
         ServeDir::new(&static_dir)
             .append_index_html_on_directories(true)
-            .not_found_service(ServeFile::new(format!("{static_dir}/index.html"))),
+            .fallback(ServeFile::new(format!("{static_dir}/index.html"))),
     );
     let app = Router::new()
         .route("/health", get(health))
         .route("/v1/auth/config", get(auth_config))
+        .route("/v1/auth/local/login", post(local_login))
+        .route("/v1/auth/local/register", post(local_register))
         .route("/v1/auth/oidc/login", get(oidc_login))
         .route("/v1/auth/oidc/callback", get(oidc_callback))
         .route("/v1/auth/me", get(auth_me))
@@ -109,8 +109,11 @@ pub async fn run() {
             "/v1/projects/{project_id}/group-roles/{group_name}",
             delete(delete_group_role),
         )
-        .route("/v1/projects/{project_id}/comments", get(list_comments).post(create_comment))
         .route("/v1/projects/{project_id}/revisions", get(list_revisions).post(create_revision))
+        .route(
+            "/v1/projects/{project_id}/revisions/{revision_id}/documents",
+            get(get_revision_documents),
+        )
         .route("/v1/projects/{project_id}/documents", get(list_documents).post(create_document))
         .route(
             "/v1/projects/{project_id}/documents/by-path/{path}",
@@ -164,6 +167,10 @@ pub async fn run() {
             "/v1/admin/orgs/{org_id}/oidc-group-role-mappings/{group_name}",
             delete(delete_org_group_role_mapping),
         )
+        .route(
+            "/v1/admin/settings/auth",
+            get(get_admin_auth_settings).put(upsert_admin_auth_settings),
+        )
         .fallback_service(static_service)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -189,35 +196,37 @@ async fn run_migrations(pool: &PgPool) {
 async fn seed_default_data(pool: &PgPool) {
     let org_id = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
     let project_id = Uuid::parse_str("00000000-0000-0000-0000-000000000010").unwrap();
-    let teacher_id = Uuid::parse_str("00000000-0000-0000-0000-000000000100").unwrap();
-    let student_id = Uuid::parse_str("00000000-0000-0000-0000-000000000101").unwrap();
+    let admin_id = Uuid::parse_str("00000000-0000-0000-0000-000000000100").unwrap();
+    let member_id = Uuid::parse_str("00000000-0000-0000-0000-000000000101").unwrap();
     let now = Utc::now();
 
     let _ = sqlx::query(
         "insert into organizations (id, name, created_at) values ($1, $2, $3) on conflict (id) do nothing",
     )
     .bind(org_id)
-    .bind("Default School")
+    .bind("Default Organization")
     .bind(now)
     .execute(pool)
     .await;
 
     let _ = sqlx::query(
-        "insert into users (id, email, display_name, created_at) values ($1, $2, $3, $4) on conflict (id) do nothing",
+        "insert into users (id, email, display_name, created_at) values ($1, $2, $3, $4)
+         on conflict (id) do update set email = excluded.email, display_name = excluded.display_name",
     )
-    .bind(teacher_id)
-    .bind("teacher@example.edu")
-    .bind("Teacher")
+    .bind(admin_id)
+    .bind("admin@example.com")
+    .bind("Administrator")
     .bind(now)
     .execute(pool)
     .await;
 
     let _ = sqlx::query(
-        "insert into users (id, email, display_name, created_at) values ($1, $2, $3, $4) on conflict (id) do nothing",
+        "insert into users (id, email, display_name, created_at) values ($1, $2, $3, $4)
+         on conflict (id) do update set email = excluded.email, display_name = excluded.display_name",
     )
-    .bind(student_id)
-    .bind("student@example.edu")
-    .bind("Student A")
+    .bind(member_id)
+    .bind("member@example.com")
+    .bind("Member")
     .bind(now)
     .execute(pool)
     .await;
@@ -225,8 +234,8 @@ async fn seed_default_data(pool: &PgPool) {
     let _ = sqlx::query("insert into projects (id, organization_id, name, description, created_at) values ($1, $2, $3, $4, $5) on conflict (id) do nothing")
         .bind(project_id)
         .bind(org_id)
-        .bind("Demo Project")
-        .bind(Some("Realtime Typst project"))
+        .bind("Sample Project")
+        .bind(Some("Realtime Typst collaboration project"))
         .bind(now)
         .execute(pool)
         .await;
@@ -236,7 +245,7 @@ async fn seed_default_data(pool: &PgPool) {
          on conflict (organization_id, user_id) do nothing",
     )
     .bind(org_id)
-    .bind(teacher_id)
+    .bind(admin_id)
     .bind(now)
     .execute(pool)
     .await;
@@ -253,16 +262,16 @@ async fn seed_default_data(pool: &PgPool) {
 
     let _ = sqlx::query("insert into project_roles (project_id, user_id, role, granted_at) values ($1, $2, $3, $4) on conflict (project_id, user_id) do update set role = excluded.role")
         .bind(project_id)
-        .bind(teacher_id)
-        .bind("Teacher")
+        .bind(admin_id)
+        .bind("Owner")
         .bind(now)
         .execute(pool)
         .await;
 
     let _ = sqlx::query("insert into project_roles (project_id, user_id, role, granted_at) values ($1, $2, $3, $4) on conflict (project_id, user_id) do update set role = excluded.role")
         .bind(project_id)
-        .bind(student_id)
-        .bind("Student")
+        .bind(member_id)
+        .bind("TA")
         .bind(now)
         .execute(pool)
         .await;
@@ -292,10 +301,59 @@ async fn seed_default_data(pool: &PgPool) {
         .bind(Uuid::parse_str("00000000-0000-0000-0000-000000000201").unwrap())
         .bind(project_id)
         .bind("main.typ")
-        .bind("= Demo Document\n\nHello from Typst School.\n")
+        .bind("= Sample Document\n\nHello from Typst collaboration.\n")
         .bind(now)
         .execute(pool)
         .await;
+
+    let admin_exists = sqlx::query("select 1 from local_accounts where user_id = $1")
+        .bind(admin_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+        .is_some();
+    if !admin_exists {
+        let plain = format!("adm_{}", random_token(16));
+        if let Ok(hash) = hash_password(&plain) {
+            let _ = sqlx::query(
+                "insert into local_accounts (user_id, password_hash, created_at, updated_at)
+                 values ($1, $2, $3, $4)",
+            )
+            .bind(admin_id)
+            .bind(hash)
+            .bind(now)
+            .bind(now)
+            .execute(pool)
+            .await;
+            tracing::warn!(
+                "INITIAL ADMIN ACCOUNT: email=admin@example.com password={} (shown once, rotate immediately)",
+                plain
+            );
+        }
+    }
+    let member_exists = sqlx::query("select 1 from local_accounts where user_id = $1")
+        .bind(member_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+        .is_some();
+    if !member_exists {
+        let member_password = "member1234!";
+        if let Ok(hash) = hash_password(member_password) {
+            let _ = sqlx::query(
+                "insert into local_accounts (user_id, password_hash, created_at, updated_at)
+                 values ($1, $2, $3, $4)",
+            )
+            .bind(member_id)
+            .bind(hash)
+            .bind(now)
+            .bind(now)
+            .execute(pool)
+            .await;
+        }
+    }
 }
 
 async fn health() -> Json<HealthResponse> {
@@ -306,19 +364,167 @@ async fn health() -> Json<HealthResponse> {
 }
 
 async fn auth_config(State(state): State<AppState>) -> Json<AuthConfigResponse> {
+    let settings = load_auth_settings(&state.db, &state.oidc)
+        .await
+        .unwrap_or_else(|_| defaults_from_env(&state.oidc));
     Json(AuthConfigResponse {
-        issuer: state.oidc.issuer,
-        client_id: state.oidc.client_id,
-        redirect_uri: state.oidc.redirect_uri,
-        groups_claim: state.oidc.groups_claim,
+        allow_local_login: settings.allow_local_login,
+        allow_local_registration: settings.allow_local_registration,
+        allow_oidc: settings.allow_oidc,
+        issuer: settings.oidc_issuer,
+        client_id: settings.oidc_client_id,
+        redirect_uri: settings.oidc_redirect_uri,
+        groups_claim: settings.oidc_groups_claim,
     })
+}
+
+async fn local_login(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<LocalLoginInput>,
+) -> axum::response::Response {
+    let settings = match load_auth_settings(&state.db, &state.oidc).await {
+        Ok(s) => s,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "auth settings unavailable").into_response(),
+    };
+    if !settings.allow_local_login {
+        return (StatusCode::FORBIDDEN, "local login disabled").into_response();
+    }
+    let email = input.email.trim().to_lowercase();
+    if email.is_empty() || input.password.is_empty() {
+        return (StatusCode::BAD_REQUEST, "email/password required").into_response();
+    }
+    let row = sqlx::query(
+        "select u.id, la.password_hash
+         from users u
+         join local_accounts la on la.user_id = u.id
+         where lower(u.email) = $1",
+    )
+    .bind(&email)
+    .fetch_optional(&state.db)
+    .await;
+    let Ok(Some(row)) = row else {
+        return (StatusCode::UNAUTHORIZED, "invalid credentials").into_response();
+    };
+    let user_id: Uuid = row.get("id");
+    let password_hash: String = row.get("password_hash");
+    let parsed = match PasswordHash::new(&password_hash) {
+        Ok(p) => p,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "password hash corrupted").into_response(),
+    };
+    if Argon2::default()
+        .verify_password(input.password.as_bytes(), &parsed)
+        .is_err()
+    {
+        return (StatusCode::UNAUTHORIZED, "invalid credentials").into_response();
+    }
+    issue_session_response(&state.db, &headers, user_id).await
+}
+
+async fn local_register(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<LocalRegisterInput>,
+) -> axum::response::Response {
+    let settings = match load_auth_settings(&state.db, &state.oidc).await {
+        Ok(s) => s,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "auth settings unavailable").into_response(),
+    };
+    if !settings.allow_local_registration {
+        return (StatusCode::FORBIDDEN, "local registration disabled").into_response();
+    }
+    let email = input.email.trim().to_lowercase();
+    if email.is_empty() || input.password.len() < 8 {
+        return (StatusCode::BAD_REQUEST, "invalid email/password").into_response();
+    }
+    let display_name = input
+        .display_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| email.split('@').next().unwrap_or("user"));
+    let user_id = Uuid::new_v4();
+    let now = Utc::now();
+    let hash = match hash_password(&input.password) {
+        Ok(v) => v,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "hashing failed").into_response(),
+    };
+    let user_insert = sqlx::query(
+        "insert into users (id, email, display_name, created_at)
+         values ($1, $2, $3, $4)",
+    )
+    .bind(user_id)
+    .bind(&email)
+    .bind(display_name)
+    .bind(now)
+    .execute(&state.db)
+    .await;
+    if user_insert.is_err() {
+        return (StatusCode::CONFLICT, "account already exists").into_response();
+    }
+    if sqlx::query(
+        "insert into local_accounts (user_id, password_hash, created_at, updated_at)
+         values ($1, $2, $3, $4)",
+    )
+    .bind(user_id)
+    .bind(hash)
+    .bind(now)
+    .bind(now)
+    .execute(&state.db)
+    .await
+    .is_err()
+    {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "account creation failed").into_response();
+    }
+
+    if let Ok(org_row) = sqlx::query("select id from organizations order by created_at asc limit 1")
+        .fetch_optional(&state.db)
+        .await
+    {
+        if let Some(org) = org_row {
+            let org_id: Uuid = org.get("id");
+            let _ = sqlx::query(
+                "insert into org_admins (organization_id, user_id, granted_at)
+                 select $1, $2, $3
+                 where not exists (select 1 from org_admins where organization_id = $1)",
+            )
+            .bind(org_id)
+            .bind(user_id)
+            .bind(now)
+            .execute(&state.db)
+            .await;
+        }
+    }
+
+    write_audit(
+        &state.db,
+        Some(user_id),
+        "auth.local.register",
+        serde_json::json!({"email": email}),
+    )
+    .await;
+    issue_session_response(&state.db, &headers, user_id).await
 }
 
 async fn oidc_login(State(state): State<AppState>) -> axum::response::Response {
     let cookie_secure = env::var("COOKIE_SECURE")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
-    let issuer = match IssuerUrl::new(state.oidc.issuer.clone()) {
+    let settings = match load_auth_settings(&state.db, &state.oidc).await {
+        Ok(v) => v,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "auth settings unavailable").into_response(),
+    };
+    if !settings.allow_oidc {
+        return (StatusCode::FORBIDDEN, "OIDC disabled").into_response();
+    }
+    let issuer_raw = settings.oidc_issuer.unwrap_or_default();
+    let client_id_raw = settings.oidc_client_id.unwrap_or_default();
+    let client_secret_raw = settings.oidc_client_secret.unwrap_or_default();
+    let redirect_uri_raw = settings.oidc_redirect_uri.unwrap_or_default();
+    if issuer_raw.is_empty() || client_id_raw.is_empty() || redirect_uri_raw.is_empty() {
+        return (StatusCode::BAD_REQUEST, "OIDC not configured").into_response();
+    }
+    let issuer = match discovery_issuer(&issuer_raw) {
         Ok(i) => i,
         Err(_) => return (StatusCode::BAD_REQUEST, "Invalid OIDC issuer").into_response(),
     };
@@ -330,18 +536,18 @@ async fn oidc_login(State(state): State<AppState>) -> axum::response::Response {
         Ok(m) => m,
         Err(_) => return (StatusCode::BAD_GATEWAY, "OIDC discovery failed").into_response(),
     };
-    let redirect_uri = match RedirectUrl::new(state.oidc.redirect_uri.clone()) {
+    let redirect_uri = match RedirectUrl::new(redirect_uri_raw) {
         Ok(r) => r,
         Err(_) => return (StatusCode::BAD_REQUEST, "Invalid redirect URI").into_response(),
     };
     let client = CoreClient::from_provider_metadata(
         provider_metadata,
-        ClientId::new(state.oidc.client_id.clone()),
-        Some(ClientSecret::new(state.oidc.client_secret.clone())),
+        ClientId::new(client_id_raw.clone()),
+        Some(ClientSecret::new(client_secret_raw.clone())),
     )
     .set_redirect_uri(redirect_uri);
 
-    if state.oidc.client_id.is_empty() {
+    if client_id_raw.is_empty() {
         return (StatusCode::BAD_GATEWAY, "OIDC discovery failed").into_response();
     }
     let state_token = random_token(32);
@@ -387,6 +593,20 @@ async fn oidc_callback(
     let cookie_secure = env::var("COOKIE_SECURE")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
+    let settings = match load_auth_settings(&state.db, &state.oidc).await {
+        Ok(v) => v,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "auth settings unavailable").into_response(),
+    };
+    if !settings.allow_oidc {
+        return (StatusCode::FORBIDDEN, "OIDC disabled").into_response();
+    }
+    let issuer_raw = settings.oidc_issuer.unwrap_or_default();
+    let client_id_raw = settings.oidc_client_id.unwrap_or_default();
+    let client_secret_raw = settings.oidc_client_secret.unwrap_or_default();
+    let redirect_uri_raw = settings.oidc_redirect_uri.unwrap_or_default();
+    if issuer_raw.is_empty() || client_id_raw.is_empty() || redirect_uri_raw.is_empty() {
+        return (StatusCode::BAD_REQUEST, "OIDC not configured").into_response();
+    }
     let callback_state = query.state.clone().unwrap_or_default();
     let cookie_state = jar
         .get("typst_oidc_state")
@@ -405,7 +625,7 @@ async fn oidc_callback(
         _ => return (StatusCode::UNAUTHORIZED, "OIDC state not found").into_response(),
     };
 
-    let issuer = match IssuerUrl::new(state.oidc.issuer.clone()) {
+    let issuer = match discovery_issuer(&issuer_raw) {
         Ok(i) => i,
         Err(_) => return (StatusCode::BAD_REQUEST, "Invalid OIDC issuer").into_response(),
     };
@@ -417,17 +637,17 @@ async fn oidc_callback(
         Ok(m) => m,
         Err(_) => return (StatusCode::BAD_GATEWAY, "OIDC provider unavailable").into_response(),
     };
-    let redirect_uri = match RedirectUrl::new(state.oidc.redirect_uri.clone()) {
+    let redirect_uri = match RedirectUrl::new(redirect_uri_raw) {
         Ok(r) => r,
         Err(_) => return (StatusCode::BAD_REQUEST, "Invalid redirect URI").into_response(),
     };
     let client = CoreClient::from_provider_metadata(
         provider_metadata,
-        ClientId::new(state.oidc.client_id.clone()),
-        Some(ClientSecret::new(state.oidc.client_secret.clone())),
+        ClientId::new(client_id_raw.clone()),
+        Some(ClientSecret::new(client_secret_raw)),
     )
     .set_redirect_uri(redirect_uri);
-    if state.oidc.client_id.is_empty() {
+    if client_id_raw.is_empty() {
         return (StatusCode::BAD_GATEWAY, "OIDC provider unavailable").into_response();
     };
     let token_result = match client.exchange_code(AuthorizationCode::new(query.code.clone())) {
@@ -459,7 +679,7 @@ async fn oidc_callback(
     } else {
         "OIDC User".to_string()
     };
-    let oidc_groups = extract_groups_from_id_token(id_token.to_string(), &state.oidc.groups_claim);
+    let oidc_groups = extract_groups_from_id_token(id_token.to_string(), &settings.oidc_groups_claim);
 
     let user_row = sqlx::query(
         "insert into users (id, email, display_name, created_at, oidc_subject, oidc_issuer)
@@ -571,6 +791,131 @@ async fn auth_logout(State(state): State<AppState>, jar: CookieJar) -> impl Into
     }
     let jar = jar.remove(Cookie::from("typst_session"));
     (jar, StatusCode::NO_CONTENT).into_response()
+}
+
+async fn issue_session_response(
+    db: &PgPool,
+    headers: &HeaderMap,
+    user_id: Uuid,
+) -> axum::response::Response {
+    let cookie_secure = env::var("COOKIE_SECURE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let token = random_token(48);
+    let issued_at = Utc::now();
+    let expires_at = issued_at + chrono::Duration::hours(12);
+    let insert = sqlx::query(
+        "insert into auth_sessions (session_token, user_id, issued_at, expires_at, user_agent, ip_address)
+         values ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(&token)
+    .bind(user_id)
+    .bind(issued_at)
+    .bind(expires_at)
+    .bind(
+        headers
+            .get(header::USER_AGENT)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("unknown"),
+    )
+    .bind(
+        headers
+            .get("x-forwarded-for")
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("unknown"),
+    )
+    .execute(db)
+    .await;
+    if insert.is_err() {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "failed to issue session").into_response();
+    }
+    let session_cookie = Cookie::build(("typst_session", token.clone()))
+        .path("/")
+        .http_only(true)
+        .secure(cookie_secure)
+        .same_site(SameSite::Lax)
+        .build();
+    let mut jar = CookieJar::new();
+    jar = jar.add(session_cookie);
+    (jar, Json(SessionResponse { session_token: token, user_id })).into_response()
+}
+
+fn hash_password(raw: &str) -> Result<String, String> {
+    let salt = SaltString::generate(&mut password_hash::rand_core::OsRng);
+    Argon2::default()
+        .hash_password(raw.as_bytes(), &salt)
+        .map(|h| h.to_string())
+        .map_err(|e| e.to_string())
+}
+
+fn defaults_from_env(oidc: &OidcSettings) -> AuthSettings {
+    AuthSettings {
+        allow_local_login: true,
+        allow_local_registration: true,
+        allow_oidc: true,
+        oidc_issuer: if oidc.issuer.trim().is_empty() {
+            None
+        } else {
+            Some(oidc.issuer.clone())
+        },
+        oidc_client_id: if oidc.client_id.trim().is_empty() {
+            None
+        } else {
+            Some(oidc.client_id.clone())
+        },
+        oidc_client_secret: if oidc.client_secret.trim().is_empty() {
+            None
+        } else {
+            Some(oidc.client_secret.clone())
+        },
+        oidc_redirect_uri: if oidc.redirect_uri.trim().is_empty() {
+            None
+        } else {
+            Some(oidc.redirect_uri.clone())
+        },
+        oidc_groups_claim: if oidc.groups_claim.trim().is_empty() {
+            "groups".to_string()
+        } else {
+            oidc.groups_claim.clone()
+        },
+        updated_at: Utc::now(),
+    }
+}
+
+fn discovery_issuer(input: &str) -> Result<IssuerUrl, ()> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(());
+    }
+    if let Some(prefix) = trimmed.strip_suffix("/.well-known/openid-configuration") {
+        return IssuerUrl::new(prefix.to_string()).map_err(|_| ());
+    }
+    IssuerUrl::new(trimmed.to_string()).map_err(|_| ())
+}
+
+async fn load_auth_settings(db: &PgPool, defaults: &OidcSettings) -> Result<AuthSettings, StatusCode> {
+    let row = sqlx::query(
+        "select allow_local_login, allow_local_registration, allow_oidc,
+                oidc_issuer, oidc_client_id, oidc_client_secret, oidc_redirect_uri, oidc_groups_claim, updated_at
+         from auth_settings where id = 1",
+    )
+    .fetch_optional(db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if let Some(r) = row {
+        return Ok(AuthSettings {
+            allow_local_login: r.get("allow_local_login"),
+            allow_local_registration: r.get("allow_local_registration"),
+            allow_oidc: r.get("allow_oidc"),
+            oidc_issuer: r.get("oidc_issuer"),
+            oidc_client_id: r.get("oidc_client_id"),
+            oidc_client_secret: r.get("oidc_client_secret"),
+            oidc_redirect_uri: r.get("oidc_redirect_uri"),
+            oidc_groups_claim: r.get("oidc_groups_claim"),
+            updated_at: r.get("updated_at"),
+        });
+    }
+    Ok(defaults_from_env(defaults))
 }
 
 async fn realtime_auth(
@@ -894,6 +1239,11 @@ async fn get_project_tree(
         .fetch_all(&state.db)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let asset_rows = sqlx::query("select path from project_assets where project_id = $1 order by path asc")
+        .bind(project_id)
+        .fetch_all(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let settings = sqlx::query(
         "select entry_file_path from project_settings where project_id = $1",
     )
@@ -926,6 +1276,25 @@ async fn get_project_tree(
             kind: "file".to_string(),
         });
     }
+    for row in asset_rows {
+        let file_path: String = row.get("path");
+        let clean = sanitize_project_path(&file_path)?;
+        let mut acc = String::new();
+        let parts: Vec<&str> = clean.split('/').collect();
+        for part in parts.iter().take(parts.len().saturating_sub(1)) {
+            if acc.is_empty() {
+                acc.push_str(part);
+            } else {
+                acc.push('/');
+                acc.push_str(part);
+            }
+            dirs.insert(acc.clone());
+        }
+        nodes.push(ProjectFileNode {
+            path: clean,
+            kind: "file".to_string(),
+        });
+    }
     for row in dir_rows {
         let dir_path: String = row.get("path");
         let clean = sanitize_project_path(&dir_path)?;
@@ -938,6 +1307,7 @@ async fn get_project_tree(
         });
     }
     nodes.sort_by(|a, b| a.path.cmp(&b.path));
+    nodes.dedup_by(|a, b| a.path == b.path && a.kind == b.kind);
     Ok(Json(ProjectTreeResponse {
         nodes,
         entry_file_path,
@@ -1030,7 +1400,19 @@ async fn move_project_file(
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    if dir_move.rows_affected() > 0 || doc_move.rows_affected() > 0 {
+    let asset_move = sqlx::query(
+        "update project_assets
+         set path = regexp_replace(path, ('^' || $2), $3)
+         where project_id = $1 and (path = $2 or path like ($2 || '/%'))",
+    )
+    .bind(project_id)
+    .bind(&from_path)
+    .bind(&to_path)
+    .execute(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if dir_move.rows_affected() > 0 || doc_move.rows_affected() > 0 || asset_move.rows_affected() > 0 {
         mark_project_dirty(&state.db, project_id, Some(actor)).await;
     }
 
@@ -1071,7 +1453,21 @@ async fn delete_project_file(
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    if deleted_docs.rows_affected() > 0 {
+    let deleted_assets = sqlx::query(
+        "delete from project_assets
+         where project_id = $1 and (path = $2 or path like ($2 || '/%'))",
+    )
+    .bind(project_id)
+    .bind(&clean_path)
+    .execute(&state.db)
+    .await;
+
+    if deleted_docs.rows_affected() > 0
+        || deleted_assets
+            .ok()
+            .map(|r| r.rows_affected() > 0)
+            .unwrap_or(false)
+    {
         mark_project_dirty(&state.db, project_id, Some(actor)).await;
     }
     write_audit(
@@ -1354,77 +1750,119 @@ async fn delete_org_group_role_mapping(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn list_comments(
+async fn get_admin_auth_settings(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(project_id): Path<Uuid>,
-) -> Result<Json<CommentsResponse>, StatusCode> {
-    ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
-    let rows = sqlx::query(
-        "select id, project_id, actor_user_id, body, anchor, created_at
-         from comments where project_id = $1 order by created_at desc limit 200",
-    )
-    .bind(project_id)
-    .fetch_all(&state.db)
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    let comments = rows
-        .into_iter()
-        .map(|r| Comment {
-            id: r.get("id"),
-            project_id: r.get("project_id"),
-            actor_user_id: r.get("actor_user_id"),
-            body: r.get("body"),
-            anchor: r.get("anchor"),
-            created_at: r.get("created_at"),
-        })
-        .collect();
-
-    Ok(Json(CommentsResponse { comments }))
+) -> Result<Json<AdminAuthSettingsResponse>, StatusCode> {
+    let Some(actor) = request_user_id(&state.db, &headers).await else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+    let has_admin = sqlx::query("select 1 from org_admins where user_id = $1 limit 1")
+        .bind(actor)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if has_admin.is_none() {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let settings = load_auth_settings(&state.db, &state.oidc).await?;
+    Ok(Json(AdminAuthSettingsResponse { settings }))
 }
 
-async fn create_comment(
+async fn upsert_admin_auth_settings(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(project_id): Path<Uuid>,
-    Json(input): Json<CreateCommentInput>,
-) -> Result<Json<Comment>, StatusCode> {
-    let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Write).await?;
-    let now = Utc::now();
-    let id = Uuid::new_v4();
-    let row = sqlx::query(
-        "insert into comments (id, project_id, actor_user_id, body, anchor, created_at)
-         values ($1, $2, $3, $4, $5, $6)
-         returning id, project_id, actor_user_id, body, anchor, created_at",
+    Json(input): Json<UpsertAdminAuthSettingsInput>,
+) -> Result<Json<AdminAuthSettingsResponse>, StatusCode> {
+    let Some(actor) = request_user_id(&state.db, &headers).await else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+    let has_admin = sqlx::query("select 1 from org_admins where user_id = $1 limit 1")
+        .bind(actor)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if has_admin.is_none() {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let discovery_url = input
+        .oidc_discovery_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(ToString::to_string);
+    if input.allow_oidc {
+        let Some(discovery_url) = discovery_url.clone() else {
+            return Err(StatusCode::BAD_REQUEST);
+        };
+        let issuer =
+            discovery_issuer(&discovery_url).map_err(|_| StatusCode::BAD_REQUEST)?;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(8))
+            .redirect(Policy::none())
+            .build()
+            .map_err(|_| StatusCode::BAD_GATEWAY)?;
+        let discovery = CoreProviderMetadata::discover_async(issuer, &client).await;
+        if discovery.is_err() {
+            return Err(StatusCode::BAD_GATEWAY);
+        }
+    }
+
+    let groups_claim = input
+        .oidc_groups_claim
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or("groups")
+        .to_string();
+    sqlx::query(
+        "insert into auth_settings
+         (id, allow_local_login, allow_local_registration, allow_oidc,
+          oidc_issuer, oidc_client_id, oidc_client_secret, oidc_redirect_uri, oidc_groups_claim, updated_at)
+         values (1, $1, $2, $3, $4, $5, $6, $7, $8, $9)
+         on conflict (id) do update
+         set allow_local_login = excluded.allow_local_login,
+             allow_local_registration = excluded.allow_local_registration,
+             allow_oidc = excluded.allow_oidc,
+             oidc_issuer = excluded.oidc_issuer,
+             oidc_client_id = excluded.oidc_client_id,
+             oidc_client_secret = excluded.oidc_client_secret,
+             oidc_redirect_uri = excluded.oidc_redirect_uri,
+             oidc_groups_claim = excluded.oidc_groups_claim,
+             updated_at = excluded.updated_at",
     )
-    .bind(id)
-    .bind(project_id)
-    .bind(actor)
-    .bind(input.body)
-    .bind(input.anchor)
-    .bind(now)
-    .fetch_one(&state.db)
+    .bind(input.allow_local_login)
+    .bind(input.allow_local_registration)
+    .bind(input.allow_oidc)
+    .bind(discovery_url)
+    .bind(input.oidc_client_id.map(|v| v.trim().to_string()).filter(|v| !v.is_empty()))
+    .bind(
+        input
+            .oidc_client_secret
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty()),
+    )
+    .bind(input.oidc_redirect_uri.map(|v| v.trim().to_string()).filter(|v| !v.is_empty()))
+    .bind(groups_claim)
+    .bind(Utc::now())
+    .execute(&state.db)
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     write_audit(
         &state.db,
         Some(actor),
-        "comment.create",
-        serde_json::json!({"project_id": project_id, "comment_id": id}),
+        "admin.auth_settings.upsert",
+        serde_json::json!({
+            "allow_local_login": input.allow_local_login,
+            "allow_local_registration": input.allow_local_registration,
+            "allow_oidc": input.allow_oidc
+        }),
     )
     .await;
-    mark_project_dirty(&state.db, project_id, Some(actor)).await;
-
-    Ok(Json(Comment {
-        id: row.get("id"),
-        project_id: row.get("project_id"),
-        actor_user_id: row.get("actor_user_id"),
-        body: row.get("body"),
-        anchor: row.get("anchor"),
-        created_at: row.get("created_at"),
-    }))
+    let settings = load_auth_settings(&state.db, &state.oidc).await?;
+    Ok(Json(AdminAuthSettingsResponse { settings }))
 }
 
 async fn list_revisions(
@@ -1442,14 +1880,25 @@ async fn list_revisions(
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
+    let revision_ids = rows
+        .iter()
+        .map(|r| r.get::<Uuid, _>("id"))
+        .collect::<Vec<_>>();
+    let author_map = load_revision_authors(&state.db, &revision_ids)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let revisions = rows
         .into_iter()
-        .map(|r| Revision {
-            id: r.get("id"),
-            project_id: r.get("project_id"),
-            actor_user_id: r.get("actor_user_id"),
-            summary: r.get("summary"),
-            created_at: r.get("created_at"),
+        .map(|r| {
+            let id: Uuid = r.get("id");
+            Revision {
+                id,
+                project_id: r.get("project_id"),
+                actor_user_id: r.get("actor_user_id"),
+                summary: r.get("summary"),
+                created_at: r.get("created_at"),
+                authors: author_map.get(&id).cloned().unwrap_or_default(),
+            }
         })
         .collect();
 
@@ -1463,6 +1912,10 @@ async fn create_revision(
     Json(input): Json<CreateRevisionInput>,
 ) -> Result<Json<Revision>, StatusCode> {
     let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Write).await?;
+    let summary = input.summary.trim().to_string();
+    if summary.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     let now = Utc::now();
     let id = Uuid::new_v4();
     let row = sqlx::query(
@@ -1473,11 +1926,23 @@ async fn create_revision(
     .bind(id)
     .bind(project_id)
     .bind(actor)
-    .bind(input.summary)
+    .bind(summary)
     .bind(now)
     .fetch_one(&state.db)
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    snapshot_revision_documents(&state.db, project_id, id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let _ = sqlx::query(
+        "insert into revision_authors (revision_id, user_id)
+         values ($1, $2)
+         on conflict (revision_id, user_id) do nothing",
+    )
+    .bind(id)
+    .bind(actor)
+    .execute(&state.db)
+    .await;
 
     write_audit(
         &state.db,
@@ -1494,6 +1959,55 @@ async fn create_revision(
         actor_user_id: row.get("actor_user_id"),
         summary: row.get("summary"),
         created_at: row.get("created_at"),
+        authors: vec![RevisionAuthor {
+            user_id: actor,
+            display_name: lookup_user_display_name(&state.db, actor)
+                .await
+                .unwrap_or_else(|| "Unknown".to_string()),
+            email: lookup_user_email(&state.db, actor)
+                .await
+                .unwrap_or_else(|| "unknown@example.com".to_string()),
+        }],
+    }))
+}
+
+async fn get_revision_documents(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, revision_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<RevisionDocumentsResponse>, StatusCode> {
+    ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
+    let exists = sqlx::query(
+        "select 1 from revisions where id = $1 and project_id = $2",
+    )
+    .bind(revision_id)
+    .bind(project_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if exists.is_none() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let rows = sqlx::query(
+        "select path, content
+         from revision_documents
+         where revision_id = $1
+         order by path asc",
+    )
+    .bind(revision_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let documents = rows
+        .into_iter()
+        .map(|row| RevisionDocument {
+            path: row.get("path"),
+            content: row.get("content"),
+        })
+        .collect();
+    Ok(Json(RevisionDocumentsResponse {
+        revision_id,
+        documents,
     }))
 }
 
@@ -1950,9 +2464,6 @@ async fn upload_project_asset(
     Json(input): Json<UploadAssetInput>,
 ) -> Result<Json<ProjectAsset>, StatusCode> {
     let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Write).await?;
-    let Some(storage) = state.storage.clone() else {
-        return Err(StatusCode::SERVICE_UNAVAILABLE);
-    };
     let path = input.path.trim().to_string();
     if path.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
@@ -1963,15 +2474,20 @@ async fn upload_project_asset(
         .content_type
         .unwrap_or_else(|| "application/octet-stream".to_string());
     let asset_id = Uuid::new_v4();
-    let object_key = format!("projects/{project_id}/assets/{asset_id}");
-    put_object(&storage, &object_key, &content_type, bytes.clone())
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let (object_key, inline_data) = if let Some(storage) = state.storage.clone() {
+        let object_key = format!("projects/{project_id}/assets/{asset_id}");
+        put_object(&storage, &object_key, &content_type, bytes.clone())
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        (object_key, None)
+    } else {
+        (format!("inline://{asset_id}"), Some(bytes.clone()))
+    };
     let row = sqlx::query(
-        "insert into project_assets (id, project_id, path, object_key, content_type, size_bytes, uploaded_by, created_at)
-         values ($1, $2, $3, $4, $5, $6, $7, $8)
+        "insert into project_assets (id, project_id, path, object_key, content_type, size_bytes, uploaded_by, created_at, inline_data)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          on conflict (project_id, path)
-         do update set object_key = excluded.object_key, content_type = excluded.content_type, size_bytes = excluded.size_bytes, uploaded_by = excluded.uploaded_by, created_at = excluded.created_at
+         do update set object_key = excluded.object_key, content_type = excluded.content_type, size_bytes = excluded.size_bytes, uploaded_by = excluded.uploaded_by, created_at = excluded.created_at, inline_data = excluded.inline_data
          returning id, project_id, path, object_key, content_type, size_bytes, uploaded_by, created_at",
     )
     .bind(asset_id)
@@ -1982,9 +2498,11 @@ async fn upload_project_asset(
     .bind(bytes.len() as i64)
     .bind(actor)
     .bind(Utc::now())
+    .bind(inline_data)
     .fetch_one(&state.db)
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    mark_project_dirty(&state.db, project_id, Some(actor)).await;
     write_audit(
         &state.db,
         Some(actor),
@@ -2010,11 +2528,8 @@ async fn get_project_asset(
     Path((project_id, asset_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<ProjectAssetContentResponse>, StatusCode> {
     ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
-    let Some(storage) = state.storage.clone() else {
-        return Err(StatusCode::SERVICE_UNAVAILABLE);
-    };
     let row = sqlx::query(
-        "select id, project_id, path, object_key, content_type, size_bytes, uploaded_by, created_at
+        "select id, project_id, path, object_key, content_type, size_bytes, uploaded_by, created_at, inline_data
          from project_assets
          where project_id = $1 and id = $2",
     )
@@ -2026,10 +2541,17 @@ async fn get_project_asset(
     let Some(row) = row else {
         return Err(StatusCode::NOT_FOUND);
     };
-    let object_key: String = row.get("object_key");
-    let bytes = get_object(&storage, &object_key)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let bytes = if let Some(inline) = row.get::<Option<Vec<u8>>, _>("inline_data") {
+        inline
+    } else {
+        let Some(storage) = state.storage.clone() else {
+            return Err(StatusCode::SERVICE_UNAVAILABLE);
+        };
+        let object_key: String = row.get("object_key");
+        get_object(&storage, &object_key)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    };
     Ok(Json(ProjectAssetContentResponse {
         asset: ProjectAsset {
             id: row.get("id"),
@@ -2054,9 +2576,6 @@ async fn delete_project_asset(
     Path((project_id, asset_id)): Path<(Uuid, Uuid)>,
 ) -> Result<StatusCode, StatusCode> {
     let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Write).await?;
-    let Some(storage) = state.storage.clone() else {
-        return Err(StatusCode::SERVICE_UNAVAILABLE);
-    };
     let row = sqlx::query("select object_key from project_assets where project_id = $1 and id = $2")
         .bind(project_id)
         .bind(asset_id)
@@ -2067,7 +2586,11 @@ async fn delete_project_asset(
         return Err(StatusCode::NOT_FOUND);
     };
     let object_key: String = row.get("object_key");
-    let _ = delete_object(&storage, &object_key).await;
+    if !object_key.starts_with("inline://") {
+        if let Some(storage) = state.storage.clone() {
+            let _ = delete_object(&storage, &object_key).await;
+        }
+    }
     let result = sqlx::query("delete from project_assets where project_id = $1 and id = $2")
         .bind(project_id)
         .bind(asset_id)
@@ -2084,6 +2607,7 @@ async fn delete_project_asset(
         serde_json::json!({"project_id": project_id, "asset_id": asset_id}),
     )
     .await;
+    mark_project_dirty(&state.db, project_id, Some(actor)).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2093,11 +2617,8 @@ async fn get_project_asset_raw(
     Path((project_id, asset_id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse, StatusCode> {
     ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
-    let Some(storage) = state.storage.clone() else {
-        return Err(StatusCode::SERVICE_UNAVAILABLE);
-    };
     let row = sqlx::query(
-        "select object_key, content_type from project_assets where project_id = $1 and id = $2",
+        "select object_key, content_type, inline_data from project_assets where project_id = $1 and id = $2",
     )
     .bind(project_id)
     .bind(asset_id)
@@ -2107,11 +2628,18 @@ async fn get_project_asset_raw(
     let Some(row) = row else {
         return Err(StatusCode::NOT_FOUND);
     };
-    let object_key: String = row.get("object_key");
     let content_type: String = row.get("content_type");
-    let bytes = get_object(&storage, &object_key)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let bytes = if let Some(inline) = row.get::<Option<Vec<u8>>, _>("inline_data") {
+        inline
+    } else {
+        let Some(storage) = state.storage.clone() else {
+            return Err(StatusCode::SERVICE_UNAVAILABLE);
+        };
+        let object_key: String = row.get("object_key");
+        get_object(&storage, &object_key)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    };
     let mut resp = axum::http::Response::new(Body::from(bytes));
     resp.headers_mut().insert(
         header::CONTENT_TYPE,
@@ -2144,6 +2672,33 @@ async fn download_project_archive(
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             use std::io::Write;
             zip.write_all(content.as_bytes())
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        }
+        let asset_rows = sqlx::query(
+            "select path, object_key, inline_data from project_assets where project_id = $1 order by path asc",
+        )
+        .bind(project_id)
+        .fetch_all(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        for row in asset_rows {
+            let path: String = row.get("path");
+            let bytes = if let Some(inline) = row.get::<Option<Vec<u8>>, _>("inline_data") {
+                inline
+            } else {
+                let Some(storage) = state.storage.clone() else {
+                    continue;
+                };
+                let object_key: String = row.get("object_key");
+                match get_object(&storage, &object_key).await {
+                    Ok(data) => data,
+                    Err(_) => continue,
+                }
+            };
+            zip.start_file(path, options)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            use std::io::Write;
+            zip.write_all(&bytes)
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         }
         zip.finish().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -2474,9 +3029,9 @@ async fn git_push(
         &config.local_path,
         &[
             "-c",
-            "user.name=Typst School",
+            "user.name=Typst Collaboration Server",
             "-c",
-            "user.email=noreply@typst-school.local",
+            "user.email=noreply@typst-collab.local",
             "commit",
             "-m",
             "Sync from Typst collaboration workspace",
@@ -2942,6 +3497,77 @@ async fn sync_repo_documents_to_project(
     Ok(())
 }
 
+async fn lookup_user_display_name(db: &PgPool, user_id: Uuid) -> Option<String> {
+    let row = sqlx::query("select display_name from users where id = $1")
+        .bind(user_id)
+        .fetch_optional(db)
+        .await
+        .ok()??;
+    Some(row.get("display_name"))
+}
+
+async fn lookup_user_email(db: &PgPool, user_id: Uuid) -> Option<String> {
+    let row = sqlx::query("select email from users where id = $1")
+        .bind(user_id)
+        .fetch_optional(db)
+        .await
+        .ok()??;
+    Some(row.get("email"))
+}
+
+async fn load_revision_authors(
+    db: &PgPool,
+    revision_ids: &[Uuid],
+) -> Result<HashMap<Uuid, Vec<RevisionAuthor>>, sqlx::Error> {
+    let mut out: HashMap<Uuid, Vec<RevisionAuthor>> = HashMap::new();
+    if revision_ids.is_empty() {
+        return Ok(out);
+    }
+    let rows = sqlx::query(
+        "select ra.revision_id, u.id as user_id, u.display_name, u.email
+         from revision_authors ra
+         join users u on u.id = ra.user_id
+         where ra.revision_id = any($1::uuid[])
+         order by ra.revision_id, u.display_name asc",
+    )
+    .bind(revision_ids)
+    .fetch_all(db)
+    .await?;
+    for row in rows {
+        let revision_id: Uuid = row.get("revision_id");
+        out.entry(revision_id).or_default().push(RevisionAuthor {
+            user_id: row.get("user_id"),
+            display_name: row.get("display_name"),
+            email: row.get("email"),
+        });
+    }
+    Ok(out)
+}
+
+async fn snapshot_revision_documents(
+    db: &PgPool,
+    project_id: Uuid,
+    revision_id: Uuid,
+) -> Result<(), sqlx::Error> {
+    let rows = sqlx::query("select path, content from documents where project_id = $1")
+        .bind(project_id)
+        .fetch_all(db)
+        .await?;
+    for row in rows {
+        sqlx::query(
+            "insert into revision_documents (revision_id, path, content)
+             values ($1, $2, $3)
+             on conflict (revision_id, path) do update set content = excluded.content",
+        )
+        .bind(revision_id)
+        .bind(row.get::<String, _>("path"))
+        .bind(row.get::<String, _>("content"))
+        .execute(db)
+        .await?;
+    }
+    Ok(())
+}
+
 async fn mark_project_dirty(db: &PgPool, project_id: Uuid, actor_user_id: Option<Uuid>) {
     let _ = sqlx::query(
         "insert into git_repositories (project_id, remote_url, local_path, default_branch, pending_sync, updated_at)
@@ -2965,6 +3591,70 @@ async fn mark_project_dirty(db: &PgPool, project_id: Uuid, actor_user_id: Option
         .bind(Utc::now())
         .execute(db)
         .await;
+    }
+    let interval_sec = env::var("AUTO_REVISION_INTERVAL_SECONDS")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|v| *v >= 10)
+        .unwrap_or(120);
+    let recent = sqlx::query(
+        "select created_at from revisions where project_id = $1 order by created_at desc limit 1",
+    )
+    .bind(project_id)
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
+    let should_create = if let Some(row) = recent {
+        let created_at: DateTime<Utc> = row.get("created_at");
+        Utc::now().signed_duration_since(created_at) >= chrono::Duration::seconds(interval_sec)
+    } else {
+        true
+    };
+    if should_create {
+        let revision_id = Uuid::new_v4();
+        let now = Utc::now();
+        let _ = sqlx::query(
+            "insert into revisions (id, project_id, actor_user_id, summary, created_at)
+             values ($1, $2, $3, $4, $5)",
+        )
+        .bind(revision_id)
+        .bind(project_id)
+        .bind(actor_user_id)
+        .bind("Automatic snapshot")
+        .bind(now)
+        .execute(db)
+        .await;
+        let _ = snapshot_revision_documents(db, project_id, revision_id).await;
+        let authors = sqlx::query("select user_id from git_pending_authors where project_id = $1")
+            .bind(project_id)
+            .fetch_all(db)
+            .await
+            .ok()
+            .unwrap_or_default();
+        for row in authors {
+            let user_id: Uuid = row.get("user_id");
+            let _ = sqlx::query(
+                "insert into revision_authors (revision_id, user_id)
+                 values ($1, $2)
+                 on conflict (revision_id, user_id) do nothing",
+            )
+            .bind(revision_id)
+            .bind(user_id)
+            .execute(db)
+            .await;
+        }
+        if let Some(user_id) = actor_user_id {
+            let _ = sqlx::query(
+                "insert into revision_authors (revision_id, user_id)
+                 values ($1, $2)
+                 on conflict (revision_id, user_id) do nothing",
+            )
+            .bind(revision_id)
+            .bind(user_id)
+            .execute(db)
+            .await;
+        }
     }
 }
 

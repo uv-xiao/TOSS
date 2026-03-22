@@ -26,7 +26,7 @@ echo "[ci] npm ci + build (web)"
 (cd apps/web && npm run build)
 
 echo "[ci] start core-api monolith"
-(cd services/core-api && DATABASE_URL="$DB_URL" CORE_API_PORT="$CORE_API_PORT" GIT_STORAGE_PATH="/tmp/typst-git" CHECKPOINT_STORAGE_PREFIX="/tmp/typst-checkpoints" AUTH_DEV_HEADER_ENABLED=1 WEB_STATIC_DIR="../../apps/web/dist" cargo run >/tmp/typst-core.log 2>&1) &
+(cd services/core-api && DATABASE_URL="$DB_URL" CORE_API_PORT="$CORE_API_PORT" GIT_STORAGE_PATH="/tmp/typst-git" AUTH_DEV_HEADER_ENABLED=1 WEB_STATIC_DIR="../../apps/web/dist" cargo run >/tmp/typst-core.log 2>&1) &
 CORE_PID=$!
 for _ in $(seq 1 60); do
   if curl -fsS "$CORE_API_URL/health" >/dev/null 2>&1; then

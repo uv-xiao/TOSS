@@ -3,7 +3,6 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
@@ -14,7 +13,6 @@ pub struct AppState {
     pub oidc: OidcSettings,
     pub storage: Option<ObjectStorage>,
     pub realtime_channels: Arc<RwLock<HashMap<String, broadcast::Sender<CollabEvent>>>>,
-    pub realtime_checkpoint_dir: PathBuf,
 }
 
 #[derive(Clone)]
@@ -24,6 +22,19 @@ pub struct OidcSettings {
     pub client_secret: String,
     pub redirect_uri: String,
     pub groups_claim: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct AuthSettings {
+    pub allow_local_login: bool,
+    pub allow_local_registration: bool,
+    pub allow_oidc: bool,
+    pub oidc_issuer: Option<String>,
+    pub oidc_client_id: Option<String>,
+    pub oidc_client_secret: Option<String>,
+    pub oidc_redirect_uri: Option<String>,
+    pub oidc_groups_claim: String,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Clone)]
@@ -157,6 +168,23 @@ pub struct UpsertOrgGroupRoleMappingInput {
 }
 
 #[derive(Serialize)]
+pub struct AdminAuthSettingsResponse {
+    pub settings: AuthSettings,
+}
+
+#[derive(Deserialize)]
+pub struct UpsertAdminAuthSettingsInput {
+    pub allow_local_login: bool,
+    pub allow_local_registration: bool,
+    pub allow_oidc: bool,
+    pub oidc_discovery_url: Option<String>,
+    pub oidc_client_id: Option<String>,
+    pub oidc_client_secret: Option<String>,
+    pub oidc_redirect_uri: Option<String>,
+    pub oidc_groups_claim: Option<String>,
+}
+
+#[derive(Serialize)]
 pub struct GitSyncState {
     pub project_id: Uuid,
     pub branch: String,
@@ -193,9 +221,12 @@ pub struct UpsertGitRemoteConfigInput {
 
 #[derive(Serialize)]
 pub struct AuthConfigResponse {
-    pub issuer: String,
-    pub client_id: String,
-    pub redirect_uri: String,
+    pub allow_local_login: bool,
+    pub allow_local_registration: bool,
+    pub allow_oidc: bool,
+    pub issuer: Option<String>,
+    pub client_id: Option<String>,
+    pub redirect_uri: Option<String>,
     pub groups_claim: String,
 }
 
@@ -217,6 +248,19 @@ pub struct AuthMeResponse {
     pub email: String,
     pub display_name: String,
     pub session_expires_at: DateTime<Utc>,
+}
+
+#[derive(Deserialize)]
+pub struct LocalLoginInput {
+    pub email: String,
+    pub password: String,
+}
+
+#[derive(Deserialize)]
+pub struct LocalRegisterInput {
+    pub email: String,
+    pub password: String,
+    pub display_name: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -287,38 +331,37 @@ pub struct PdfArtifact {
 }
 
 #[derive(Serialize)]
-pub struct Comment {
-    pub id: Uuid,
-    pub project_id: Uuid,
-    pub actor_user_id: Option<Uuid>,
-    pub body: String,
-    pub anchor: Option<String>,
-    pub created_at: DateTime<Utc>,
-}
-
-#[derive(Serialize)]
-pub struct CommentsResponse {
-    pub comments: Vec<Comment>,
-}
-
-#[derive(Deserialize)]
-pub struct CreateCommentInput {
-    pub body: String,
-    pub anchor: Option<String>,
-}
-
-#[derive(Serialize)]
 pub struct Revision {
     pub id: Uuid,
     pub project_id: Uuid,
     pub actor_user_id: Option<Uuid>,
     pub summary: String,
     pub created_at: DateTime<Utc>,
+    pub authors: Vec<RevisionAuthor>,
 }
 
 #[derive(Serialize)]
 pub struct RevisionsResponse {
     pub revisions: Vec<Revision>,
+}
+
+#[derive(Serialize, Clone)]
+pub struct RevisionAuthor {
+    pub user_id: Uuid,
+    pub display_name: String,
+    pub email: String,
+}
+
+#[derive(Serialize)]
+pub struct RevisionDocumentsResponse {
+    pub revision_id: Uuid,
+    pub documents: Vec<RevisionDocument>,
+}
+
+#[derive(Serialize)]
+pub struct RevisionDocument {
+    pub path: String,
+    pub content: String,
 }
 
 #[derive(Deserialize)]

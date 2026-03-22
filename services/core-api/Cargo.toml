@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+argon2 = "0.5"
 aws-config = "1"
 aws-credential-types = "1"
 aws-sdk-s3 = "1"
@@ -15,6 +16,7 @@ dotenvy = "0.15"
 futures = "0.3"
 openidconnect = "4"
 rand = "0.9"
+password-hash = "0.5"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 http = "1"
 serde = { version = "1", features = ["derive"] }
