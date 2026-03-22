@@ -41,6 +41,21 @@ OIDC group claim mapping:
 - `GET /v1/projects/{project_id}/revisions`
 - `POST /v1/projects/{project_id}/revisions`
 
+## Snapshots and assets (S3-compatible storage)
+
+- `GET /v1/projects/{project_id}/snapshots`
+- `POST /v1/projects/{project_id}/snapshots`
+- `POST /v1/projects/{project_id}/snapshots/{snapshot_id}/restore`
+- `GET /v1/projects/{project_id}/assets`
+- `POST /v1/projects/{project_id}/assets` (JSON body with `path`, `content_base64`, optional `content_type`)
+- `GET /v1/projects/{project_id}/assets/{asset_id}`
+- `DELETE /v1/projects/{project_id}/assets/{asset_id}`
+
+Storage configuration:
+- `S3_BUCKET` enables object storage integration.
+- Optional: `S3_ENDPOINT` (for MinIO), `S3_REGION`, `S3_KEY_PREFIX`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`.
+- If `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` are missing, service falls back to `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD`.
+
 ## Git sync (main branch in v1)
 
 - `GET /v1/git/status/{project_id}`
@@ -60,6 +75,7 @@ Current implementation stores sync state with audit events and uses a per-projec
 Force push is rejected (`receive.denyNonFastForwards=true`).
 If collaborative edits happened on server, clients must pull/rebase/merge, then push again.
 Branch-aware PR flows are intentionally deferred to later phases.
+Successful pull/push/receive-pack also upload git bundle artifacts into object storage when S3 is configured.
 
 ## Security tokens
 

@@ -7,7 +7,7 @@
 - `services/realtime` (Rust/Axum WebSocket): Realtime channel for collaboration events and Yjs update payload forwarding.
 - `services/realtime` also persists per-doc checkpoint payloads on update and replays last checkpoint when a client reconnects.
 - `postgres`: Source of truth for metadata and permissions.
-- `minio` (S3-compatible): Intended store for snapshots/assets/git artifacts.
+- `minio` (S3-compatible): Store for snapshots/assets/git bundle artifacts.
 
 ## Realtime path
 
@@ -47,3 +47,9 @@ OIDC group-to-role mapping:
 - Basic structured logging.
 - Backup scripts for PostgreSQL and MinIO.
 - Health endpoints at `/health` for core-api and realtime.
+
+## Object storage path
+
+1. Core API serializes project snapshots and uploads them to S3-compatible object storage.
+2. Project assets are uploaded/downloaded through API and stored as objects keyed by project.
+3. On successful Git pull/push/receive-pack events, API emits git bundle artifacts to storage for backup/recovery flows.

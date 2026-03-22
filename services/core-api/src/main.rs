@@ -5,6 +5,12 @@ use axum::response::{IntoResponse, Redirect};
 use axum::routing::{any, delete, get, post, put};
 use axum::{Json, Router};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
+use aws_config::BehaviorVersion;
+use aws_config::Region;
+use aws_credential_types::Credentials;
+use aws_sdk_s3::config::Builder as S3ConfigBuilder;
+use aws_sdk_s3::primitives::ByteStream;
+use aws_sdk_s3::Client as S3Client;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
 use openidconnect::core::{
@@ -25,6 +31,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::{Component, Path as FsPath, PathBuf};
 use std::process::Command;
+use std::str::FromStr;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::{error, info};
@@ -34,6 +41,7 @@ use uuid::Uuid;
 struct AppState {
     db: PgPool,
     oidc: OidcSettings,
+    storage: Option<ObjectStorage>,
 }
 
 #[derive(Clone)]
@@ -43,6 +51,13 @@ struct OidcSettings {
     client_secret: String,
     redirect_uri: String,
     groups_claim: String,
+}
+
+#[derive(Clone)]
+struct ObjectStorage {
+    client: S3Client,
+    bucket: String,
+    key_prefix: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -280,6 +295,52 @@ struct UpdateDocumentInput {
     content: String,
 }
 
+#[derive(Serialize)]
+struct ProjectSnapshot {
+    id: Uuid,
+    project_id: Uuid,
+    object_key: String,
+    created_by: Option<Uuid>,
+    created_at: DateTime<Utc>,
+    document_count: i32,
+    byte_size: i64,
+}
+
+#[derive(Serialize)]
+struct ProjectSnapshotListResponse {
+    snapshots: Vec<ProjectSnapshot>,
+}
+
+#[derive(Serialize)]
+struct ProjectAsset {
+    id: Uuid,
+    project_id: Uuid,
+    path: String,
+    object_key: String,
+    content_type: String,
+    size_bytes: i64,
+    uploaded_by: Option<Uuid>,
+    created_at: DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ProjectAssetListResponse {
+    assets: Vec<ProjectAsset>,
+}
+
+#[derive(Deserialize)]
+struct UploadAssetInput {
+    path: String,
+    content_base64: String,
+    content_type: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ProjectAssetContentResponse {
+    asset: ProjectAsset,
+    content_base64: String,
+}
+
 #[derive(Deserialize)]
 struct UpsertDocumentByPathInput {
     content: String,
@@ -318,7 +379,8 @@ async fn main() {
         groups_claim: env::var("OIDC_GROUPS_CLAIM").unwrap_or_else(|_| "groups".to_string()),
     };
 
-    let state = AppState { db, oidc };
+    let storage = init_object_storage_from_env().await;
+    let state = AppState { db, oidc, storage };
     let app = Router::new()
         .route("/health", get(health))
         .route("/v1/auth/config", get(auth_config))
@@ -348,6 +410,22 @@ async fn main() {
         .route(
             "/v1/projects/{project_id}/documents/{document_id}",
             get(get_document).put(update_document).delete(delete_document),
+        )
+        .route(
+            "/v1/projects/{project_id}/snapshots",
+            get(list_project_snapshots).post(create_project_snapshot),
+        )
+        .route(
+            "/v1/projects/{project_id}/snapshots/{snapshot_id}/restore",
+            post(restore_project_snapshot),
+        )
+        .route(
+            "/v1/projects/{project_id}/assets",
+            get(list_project_assets).post(upload_project_asset),
+        )
+        .route(
+            "/v1/projects/{project_id}/assets/{asset_id}",
+            get(get_project_asset).delete(delete_project_asset),
         )
         .route("/v1/git/status/{project_id}", get(git_status))
         .route("/v1/git/repo-link/{project_id}", get(git_repo_link))
@@ -1476,6 +1554,372 @@ async fn delete_document(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(Serialize, Deserialize)]
+struct SnapshotDocumentPayload {
+    path: String,
+    content: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SnapshotPayload {
+    project_id: Uuid,
+    created_at: DateTime<Utc>,
+    documents: Vec<SnapshotDocumentPayload>,
+}
+
+async fn list_project_snapshots(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+) -> Result<Json<ProjectSnapshotListResponse>, StatusCode> {
+    ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
+    let rows = sqlx::query(
+        "select id, project_id, object_key, created_by, created_at, document_count, byte_size
+         from project_snapshots
+         where project_id = $1
+         order by created_at desc
+         limit 200",
+    )
+    .bind(project_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let snapshots = rows
+        .into_iter()
+        .map(|row| ProjectSnapshot {
+            id: row.get("id"),
+            project_id: row.get("project_id"),
+            object_key: row.get("object_key"),
+            created_by: row.get("created_by"),
+            created_at: row.get("created_at"),
+            document_count: row.get("document_count"),
+            byte_size: row.get("byte_size"),
+        })
+        .collect();
+    Ok(Json(ProjectSnapshotListResponse { snapshots }))
+}
+
+async fn create_project_snapshot(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+) -> Result<Json<ProjectSnapshot>, StatusCode> {
+    let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Write).await?;
+    let Some(storage) = state.storage.clone() else {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    };
+    let rows = sqlx::query("select path, content from documents where project_id = $1 order by path asc")
+        .bind(project_id)
+        .fetch_all(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let documents = rows
+        .iter()
+        .map(|row| SnapshotDocumentPayload {
+            path: row.get("path"),
+            content: row.get("content"),
+        })
+        .collect::<Vec<_>>();
+    let snapshot_payload = SnapshotPayload {
+        project_id,
+        created_at: Utc::now(),
+        documents,
+    };
+    let bytes = serde_json::to_vec(&snapshot_payload).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let snapshot_id = Uuid::new_v4();
+    let object_key = format!("projects/{project_id}/snapshots/{snapshot_id}.json");
+    put_object(&storage, &object_key, "application/json", bytes.clone())
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let row = sqlx::query(
+        "insert into project_snapshots (id, project_id, object_key, created_by, created_at, document_count, byte_size)
+         values ($1, $2, $3, $4, $5, $6, $7)
+         returning id, project_id, object_key, created_by, created_at, document_count, byte_size",
+    )
+    .bind(snapshot_id)
+    .bind(project_id)
+    .bind(object_key)
+    .bind(actor)
+    .bind(Utc::now())
+    .bind(snapshot_payload.documents.len() as i32)
+    .bind(bytes.len() as i64)
+    .fetch_one(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    write_audit(
+        &state.db,
+        Some(actor),
+        "project.snapshot.create",
+        serde_json::json!({"project_id": project_id, "snapshot_id": snapshot_id}),
+    )
+    .await;
+
+    Ok(Json(ProjectSnapshot {
+        id: row.get("id"),
+        project_id: row.get("project_id"),
+        object_key: row.get("object_key"),
+        created_by: row.get("created_by"),
+        created_at: row.get("created_at"),
+        document_count: row.get("document_count"),
+        byte_size: row.get("byte_size"),
+    }))
+}
+
+async fn restore_project_snapshot(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, snapshot_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, StatusCode> {
+    let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Write).await?;
+    let Some(storage) = state.storage.clone() else {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    };
+    let row = sqlx::query(
+        "select object_key from project_snapshots where project_id = $1 and id = $2",
+    )
+    .bind(project_id)
+    .bind(snapshot_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let Some(row) = row else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    let object_key: String = row.get("object_key");
+    let bytes = get_object(&storage, &object_key)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let payload: SnapshotPayload =
+        serde_json::from_slice(&bytes).map_err(|_| StatusCode::UNPROCESSABLE_ENTITY)?;
+    if payload.project_id != project_id {
+        return Err(StatusCode::CONFLICT);
+    }
+
+    let existing_rows = sqlx::query("select id, path from documents where project_id = $1")
+        .bind(project_id)
+        .fetch_all(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut existing_map: HashMap<String, Uuid> = HashMap::new();
+    for row in existing_rows {
+        existing_map.insert(row.get("path"), row.get("id"));
+    }
+    let mut restored_paths = HashSet::new();
+    for doc in payload.documents {
+        restored_paths.insert(doc.path.clone());
+        sqlx::query(
+            "insert into documents (id, project_id, path, content, updated_at)
+             values ($1, $2, $3, $4, $5)
+             on conflict (project_id, path)
+             do update set content = excluded.content, updated_at = excluded.updated_at",
+        )
+        .bind(Uuid::new_v4())
+        .bind(project_id)
+        .bind(doc.path)
+        .bind(doc.content)
+        .bind(Utc::now())
+        .execute(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+    for (path, doc_id) in existing_map {
+        if !restored_paths.contains(&path) {
+            let _ = sqlx::query("delete from documents where project_id = $1 and id = $2")
+                .bind(project_id)
+                .bind(doc_id)
+                .execute(&state.db)
+                .await;
+        }
+    }
+    mark_project_dirty(&state.db, project_id, Some(actor)).await;
+    write_audit(
+        &state.db,
+        Some(actor),
+        "project.snapshot.restore",
+        serde_json::json!({"project_id": project_id, "snapshot_id": snapshot_id}),
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn list_project_assets(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+) -> Result<Json<ProjectAssetListResponse>, StatusCode> {
+    ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
+    let rows = sqlx::query(
+        "select id, project_id, path, object_key, content_type, size_bytes, uploaded_by, created_at
+         from project_assets
+         where project_id = $1
+         order by created_at desc
+         limit 500",
+    )
+    .bind(project_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let assets = rows
+        .into_iter()
+        .map(|row| ProjectAsset {
+            id: row.get("id"),
+            project_id: row.get("project_id"),
+            path: row.get("path"),
+            object_key: row.get("object_key"),
+            content_type: row.get("content_type"),
+            size_bytes: row.get("size_bytes"),
+            uploaded_by: row.get("uploaded_by"),
+            created_at: row.get("created_at"),
+        })
+        .collect();
+    Ok(Json(ProjectAssetListResponse { assets }))
+}
+
+async fn upload_project_asset(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Json(input): Json<UploadAssetInput>,
+) -> Result<Json<ProjectAsset>, StatusCode> {
+    let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Write).await?;
+    let Some(storage) = state.storage.clone() else {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    };
+    let path = input.path.trim().to_string();
+    if path.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, input.content_base64)
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let content_type = input
+        .content_type
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+    let asset_id = Uuid::new_v4();
+    let object_key = format!("projects/{project_id}/assets/{asset_id}");
+    put_object(&storage, &object_key, &content_type, bytes.clone())
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let row = sqlx::query(
+        "insert into project_assets (id, project_id, path, object_key, content_type, size_bytes, uploaded_by, created_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8)
+         on conflict (project_id, path)
+         do update set object_key = excluded.object_key, content_type = excluded.content_type, size_bytes = excluded.size_bytes, uploaded_by = excluded.uploaded_by, created_at = excluded.created_at
+         returning id, project_id, path, object_key, content_type, size_bytes, uploaded_by, created_at",
+    )
+    .bind(asset_id)
+    .bind(project_id)
+    .bind(path)
+    .bind(object_key)
+    .bind(content_type)
+    .bind(bytes.len() as i64)
+    .bind(actor)
+    .bind(Utc::now())
+    .fetch_one(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    write_audit(
+        &state.db,
+        Some(actor),
+        "project.asset.upload",
+        serde_json::json!({"project_id": project_id, "asset_id": row.get::<Uuid, _>("id")}),
+    )
+    .await;
+    Ok(Json(ProjectAsset {
+        id: row.get("id"),
+        project_id: row.get("project_id"),
+        path: row.get("path"),
+        object_key: row.get("object_key"),
+        content_type: row.get("content_type"),
+        size_bytes: row.get("size_bytes"),
+        uploaded_by: row.get("uploaded_by"),
+        created_at: row.get("created_at"),
+    }))
+}
+
+async fn get_project_asset(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, asset_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<ProjectAssetContentResponse>, StatusCode> {
+    ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
+    let Some(storage) = state.storage.clone() else {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    };
+    let row = sqlx::query(
+        "select id, project_id, path, object_key, content_type, size_bytes, uploaded_by, created_at
+         from project_assets
+         where project_id = $1 and id = $2",
+    )
+    .bind(project_id)
+    .bind(asset_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let Some(row) = row else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    let object_key: String = row.get("object_key");
+    let bytes = get_object(&storage, &object_key)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(ProjectAssetContentResponse {
+        asset: ProjectAsset {
+            id: row.get("id"),
+            project_id: row.get("project_id"),
+            path: row.get("path"),
+            object_key: row.get("object_key"),
+            content_type: row.get("content_type"),
+            size_bytes: row.get("size_bytes"),
+            uploaded_by: row.get("uploaded_by"),
+            created_at: row.get("created_at"),
+        },
+        content_base64: base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            bytes,
+        ),
+    }))
+}
+
+async fn delete_project_asset(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, asset_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, StatusCode> {
+    let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Write).await?;
+    let Some(storage) = state.storage.clone() else {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    };
+    let row = sqlx::query("select object_key from project_assets where project_id = $1 and id = $2")
+        .bind(project_id)
+        .bind(asset_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let Some(row) = row else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    let object_key: String = row.get("object_key");
+    let _ = delete_object(&storage, &object_key).await;
+    let result = sqlx::query("delete from project_assets where project_id = $1 and id = $2")
+        .bind(project_id)
+        .bind(asset_id)
+        .execute(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if result.rows_affected() == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    write_audit(
+        &state.db,
+        Some(actor),
+        "project.asset.delete",
+        serde_json::json!({"project_id": project_id, "asset_id": asset_id}),
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn git_status(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1656,6 +2100,7 @@ async fn git_pull(
     update_git_sync_state(&state.db, project_id, "pulled", false, Some(Utc::now()), None)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let _ = create_git_bundle_artifact(&state, project_id, &config.local_path, "pull").await;
 
     write_audit(
         &state.db,
@@ -1721,6 +2166,7 @@ async fn git_push(
     update_git_sync_state(&state.db, project_id, "pushed", false, None, Some(Utc::now()))
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let _ = create_git_bundle_artifact(&state, project_id, &config.local_path, "push").await;
 
     write_audit(
         &state.db,
@@ -1833,6 +2279,7 @@ async fn git_http_backend(
                 serde_json::json!({"project_id": project_id}),
             )
             .await;
+            let _ = create_git_bundle_artifact(&state, project_id, &config.local_path, "receive_pack").await;
         }
     }
 
@@ -2139,6 +2586,138 @@ async fn update_git_sync_state(
     .bind(last_push_at)
     .execute(db)
     .await?;
+    Ok(())
+}
+
+async fn init_object_storage_from_env() -> Option<ObjectStorage> {
+    let bucket = env::var("S3_BUCKET").ok()?;
+    if bucket.trim().is_empty() {
+        return None;
+    }
+    let endpoint = env::var("S3_ENDPOINT").ok();
+    let region = env::var("S3_REGION").unwrap_or_else(|_| "us-east-1".to_string());
+    let key_prefix = env::var("S3_KEY_PREFIX").unwrap_or_else(|_| "".to_string());
+    let access_key = env::var("S3_ACCESS_KEY_ID")
+        .ok()
+        .or_else(|| env::var("MINIO_ROOT_USER").ok());
+    let secret_key = env::var("S3_SECRET_ACCESS_KEY")
+        .ok()
+        .or_else(|| env::var("MINIO_ROOT_PASSWORD").ok());
+
+    let shared = aws_config::defaults(BehaviorVersion::latest())
+        .region(Region::new(region.clone()))
+        .load()
+        .await;
+    let mut builder = S3ConfigBuilder::from(&shared).region(Region::new(region));
+    if let Some(ep) = endpoint {
+        if let Ok(uri) = http::Uri::from_str(&ep) {
+            builder = builder.endpoint_url(uri.to_string()).force_path_style(true);
+        }
+    }
+    if let (Some(ak), Some(sk)) = (access_key, secret_key) {
+        builder = builder.credentials_provider(Credentials::new(ak, sk, None, None, "env"));
+    }
+    let client = S3Client::from_conf(builder.build());
+    Some(ObjectStorage {
+        client,
+        bucket,
+        key_prefix,
+    })
+}
+
+fn storage_key(storage: &ObjectStorage, raw: &str) -> String {
+    if storage.key_prefix.is_empty() {
+        raw.to_string()
+    } else {
+        format!(
+            "{}/{}",
+            storage.key_prefix.trim_matches('/'),
+            raw.trim_start_matches('/')
+        )
+    }
+}
+
+async fn put_object(
+    storage: &ObjectStorage,
+    key: &str,
+    content_type: &str,
+    data: Vec<u8>,
+) -> Result<(), String> {
+    let final_key = storage_key(storage, key);
+    storage
+        .client
+        .put_object()
+        .bucket(&storage.bucket)
+        .key(final_key)
+        .content_type(content_type)
+        .body(ByteStream::from(data))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+async fn get_object(storage: &ObjectStorage, key: &str) -> Result<Vec<u8>, String> {
+    let final_key = storage_key(storage, key);
+    let output = storage
+        .client
+        .get_object()
+        .bucket(&storage.bucket)
+        .key(final_key)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let bytes = output
+        .body
+        .collect()
+        .await
+        .map_err(|e| e.to_string())?
+        .into_bytes()
+        .to_vec();
+    Ok(bytes)
+}
+
+async fn delete_object(storage: &ObjectStorage, key: &str) -> Result<(), String> {
+    let final_key = storage_key(storage, key);
+    storage
+        .client
+        .delete_object()
+        .bucket(&storage.bucket)
+        .key(final_key)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+async fn create_git_bundle_artifact(
+    state: &AppState,
+    project_id: Uuid,
+    repo_path: &str,
+    event_type: &str,
+) -> Result<(), String> {
+    let Some(storage) = state.storage.clone() else {
+        return Ok(());
+    };
+    let temp = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
+    let bundle_path = temp.path().to_string_lossy().to_string();
+    run_git(repo_path, &["bundle", "create", &bundle_path, "--all"])?;
+    let bytes = std::fs::read(&bundle_path).map_err(|e| e.to_string())?;
+    let artifact_id = Uuid::new_v4();
+    let object_key = format!("projects/{project_id}/git-bundles/{artifact_id}.bundle");
+    put_object(&storage, &object_key, "application/x-git-bundle", bytes.clone()).await?;
+    let _ = sqlx::query(
+        "insert into git_bundle_artifacts (id, project_id, event_type, object_key, size_bytes, created_at)
+         values ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(artifact_id)
+    .bind(project_id)
+    .bind(event_type)
+    .bind(object_key)
+    .bind(bytes.len() as i64)
+    .bind(Utc::now())
+    .execute(&state.db)
+    .await;
     Ok(())
 }
 

@@ -98,6 +98,29 @@ content-type: application/json
   "content": "= Demo\n\nUpdated content.\n"
 }
 
+### Create project snapshot
+POST http://localhost:8080/v1/projects/00000000-0000-0000-0000-000000000010/snapshots
+x-user-id: 00000000-0000-0000-0000-000000000100
+
+### List project snapshots
+GET http://localhost:8080/v1/projects/00000000-0000-0000-0000-000000000010/snapshots
+x-user-id: 00000000-0000-0000-0000-000000000100
+
+### Upload project asset
+POST http://localhost:8080/v1/projects/00000000-0000-0000-0000-000000000010/assets
+x-user-id: 00000000-0000-0000-0000-000000000100
+content-type: application/json
+
+{
+  "path": "assets/logo.txt",
+  "content_base64": "RHVtbXkgYXNzZXQgY29udGVudA==",
+  "content_type": "text/plain"
+}
+
+### List project assets
+GET http://localhost:8080/v1/projects/00000000-0000-0000-0000-000000000010/assets
+x-user-id: 00000000-0000-0000-0000-000000000100
+
 ### Git pull
 POST http://localhost:8080/v1/git/sync/pull/00000000-0000-0000-0000-000000000010
 x-user-id: 00000000-0000-0000-0000-000000000100
