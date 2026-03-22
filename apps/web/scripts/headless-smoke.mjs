@@ -54,7 +54,26 @@ try {
     (msg) => !msg.startsWith("New token (shown once):")
   );
   const previewCanvasCount = await page.locator(".pdf-frame canvas").count();
+  const previewNonWhitePixels = await page.evaluate(() => {
+    const canvas = document.querySelector(".pdf-frame canvas");
+    if (!canvas) return 0;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return 0;
+    const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    let nonWhite = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      const a = data[i + 3];
+      if (a !== 0 && !(r === 255 && g === 255 && b === 255)) nonWhite += 1;
+    }
+    return nonWhite;
+  });
   if (previewCanvasCount === 0) throw new Error("Preview canvas did not render");
+  if (previewNonWhitePixels === 0) {
+    throw new Error("Preview canvas rendered blank output");
+  }
   if (unexpectedErrors.length > 0) {
     throw new Error(`Unexpected UI errors: ${unexpectedErrors.join(" | ")}`);
   }
@@ -66,6 +85,7 @@ try {
         screenshots: artifacts,
         visibleErrors,
         previewCanvasCount,
+        previewNonWhitePixels,
         browserErrors
       },
       null,

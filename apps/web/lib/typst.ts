@@ -16,6 +16,7 @@ type WorkerCompileResponse = {
 type CompileOptions = {
   coreApiUrl: string;
   fontData: Uint8Array[];
+  appOrigin?: string;
 };
 
 class TypstWorkerRuntime {
@@ -66,14 +67,18 @@ class TypstWorkerRuntime {
         id,
         source,
         coreApiUrl: options.coreApiUrl,
-        fontData: options.fontData
+        fontData: options.fontData,
+        appOrigin: options.appOrigin
       });
     });
   }
 }
 
 let rendererPromise: ReturnType<typeof createTypstRenderer> | null = null;
-const RENDERER_WASM_URL = "/typst-wasm/typst_ts_renderer_bg.wasm";
+const RENDERER_WASM_URL =
+  typeof window === "undefined"
+    ? "/typst-wasm/typst_ts_renderer_bg.wasm"
+    : new URL("/typst-wasm/typst_ts_renderer_bg.wasm", window.location.origin).toString();
 
 async function getRenderer() {
   if (!rendererPromise) {

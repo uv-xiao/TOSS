@@ -11,6 +11,7 @@ type CompileRequest = {
   source: string;
   coreApiUrl: string;
   fontData: Uint8Array[];
+  appOrigin?: string;
 };
 
 type CompileResponse = {
@@ -28,14 +29,32 @@ class NormalizedFetchAccessModel extends FetchAccessModel {
 }
 
 let typstPromise: Promise<TypstSnippet> | null = null;
-let fallbackTypstPromise: Promise<TypstSnippet> | null = null;
+let localTypstPromise: Promise<TypstSnippet> | null = null;
 let configKey = "";
-let fallbackConfigKey = "";
-const COMPILER_WASM_URL = "/typst-wasm/typst_ts_web_compiler_bg.wasm";
+let localConfigKey = "";
 
-async function getTypst(coreApiUrl: string, fontData: Uint8Array[]) {
+function compilerWasmUrl(appOrigin: string) {
+  return new URL("/typst-wasm/typst_ts_web_compiler_bg.wasm", appOrigin).toString();
+}
+
+async function fetchArrayBufferWithContext(url: string, label: string) {
+  let response: Response;
+  try {
+    response = await fetch(url);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "unknown";
+    throw new Error(`${label} fetch failed at ${url}: ${message}`);
+  }
+  if (!response.ok) {
+    throw new Error(`${label} fetch failed at ${url}: status ${response.status}`);
+  }
+  return response.arrayBuffer();
+}
+
+async function getTypst(coreApiUrl: string, fontData: Uint8Array[], appOrigin: string) {
   const nextKey = JSON.stringify({
     coreApiUrl: coreApiUrl.replace(/\/$/, ""),
+    appOrigin,
     fontCount: fontData.length,
     fontSizes: fontData.map((f) => f.byteLength)
   });
@@ -51,12 +70,11 @@ async function getTypst(coreApiUrl: string, fontData: Uint8Array[]) {
         withPackageRegistry(new FetchPackageRegistry(accessModel)),
         disableDefaultFontAssets()
       ];
-      if (fontData.length > 0) {
-        beforeBuild.push(loadFonts(fontData));
-      }
+      beforeBuild.push(loadFonts(fontData));
       typst.setCompilerInitOptions({
         beforeBuild,
-        getModule: async () => fetch(COMPILER_WASM_URL).then((resp) => resp.arrayBuffer())
+        getModule: async () =>
+          fetchArrayBufferWithContext(compilerWasmUrl(appOrigin), "compiler wasm")
       });
       return typst;
     })();
@@ -64,63 +82,69 @@ async function getTypst(coreApiUrl: string, fontData: Uint8Array[]) {
   return typstPromise;
 }
 
-async function getFallbackTypst(fontData: Uint8Array[]) {
+async function getLocalTypst(fontData: Uint8Array[], appOrigin: string) {
   const nextKey = JSON.stringify({
+    appOrigin,
     fontCount: fontData.length,
     fontSizes: fontData.map((f) => f.byteLength)
   });
-  if (!fallbackTypstPromise || fallbackConfigKey !== nextKey) {
-    fallbackConfigKey = nextKey;
-    fallbackTypstPromise = (async () => {
+  if (!localTypstPromise || localConfigKey !== nextKey) {
+    localConfigKey = nextKey;
+    localTypstPromise = (async () => {
       const typst = new TypstSnippet();
       const beforeBuild = [disableDefaultFontAssets()];
-      if (fontData.length > 0) {
-        beforeBuild.push(loadFonts(fontData));
-      }
+      beforeBuild.push(loadFonts(fontData));
       typst.setCompilerInitOptions({
         beforeBuild,
-        getModule: async () => fetch(COMPILER_WASM_URL).then((resp) => resp.arrayBuffer())
+        getModule: async () =>
+          fetchArrayBufferWithContext(compilerWasmUrl(appOrigin), "compiler wasm")
       });
       return typst;
     })();
   }
-  return fallbackTypstPromise;
+  return localTypstPromise;
+}
+
+function sourceLikelyNeedsPackages(source: string) {
+  return (
+    source.includes("@preview/") ||
+    source.includes("@local/") ||
+    source.includes("@github/")
+  );
 }
 
 self.onmessage = async (event: MessageEvent<CompileRequest>) => {
   const { id, source, coreApiUrl, fontData } = event.data;
+  const appOrigin = event.data.appOrigin ?? self.location.origin;
   try {
-    const typst = await getTypst(coreApiUrl, fontData);
-    const vector = await typst.vector({ mainContent: source });
-    const errors: string[] = [];
-    const response: CompileResponse = {
-      id, 
-      ok: !!vector && errors.length === 0,
+    const localTypst = await getLocalTypst(fontData, appOrigin);
+    const vector = await localTypst.vector({ mainContent: source });
+    self.postMessage({
+      id,
+      ok: !!vector,
       vectorBytes: vector,
-      errors,
-    };
-    self.postMessage(response);
-  } catch (err) {
-    const primaryError = err instanceof Error ? err.message : "Typst compile failed";
-    if (primaryError.includes("Failed to fetch")) {
+      errors: []
+    } satisfies CompileResponse);
+    return;
+  } catch (localErr) {
+    const localError = localErr instanceof Error ? localErr.message : "Typst compile failed";
+    if (sourceLikelyNeedsPackages(source)) {
       try {
-        const fallback = await getFallbackTypst(fontData);
-        const vector = await fallback.vector({ mainContent: source });
-        const response: CompileResponse = {
+        const typst = await getTypst(coreApiUrl, fontData, appOrigin);
+        const vector = await typst.vector({ mainContent: source });
+        self.postMessage({
           id,
           ok: !!vector,
           vectorBytes: vector,
-          errors: vector ? [] : ["Typst compile failed"]
-        };
-        self.postMessage(response);
+          errors: []
+        } satisfies CompileResponse);
         return;
-      } catch (fallbackErr) {
-        const fallbackError =
-          fallbackErr instanceof Error ? fallbackErr.message : "fallback compile failed";
+      } catch (pkgErr) {
+        const pkgError = pkgErr instanceof Error ? pkgErr.message : "package compile failed";
         self.postMessage({
           id,
           ok: false,
-          errors: [`${primaryError} (fallback: ${fallbackError})`]
+          errors: [`${localError} (package retry: ${pkgError})`]
         } satisfies CompileResponse);
         return;
       }
@@ -128,7 +152,7 @@ self.onmessage = async (event: MessageEvent<CompileRequest>) => {
     self.postMessage({
       id,
       ok: false,
-      errors: [primaryError]
+      errors: [localError]
     } satisfies CompileResponse);
   }
 };

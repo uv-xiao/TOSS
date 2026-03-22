@@ -186,6 +186,15 @@ export default function HomePage() {
       .catch(() => setGroupRoles([]));
     listProjectAssets(selectedProject)
       .then(async (res) => {
+        const fallbackFonts: Uint8Array[] = [];
+        try {
+          const bundled = await fetch("/typst-fonts/NotoSans-Regular.ttf");
+          if (bundled.ok) {
+            fallbackFonts.push(new Uint8Array(await bundled.arrayBuffer()));
+          }
+        } catch {
+          // Keep going with project-provided fonts only.
+        }
         const fontAssets = res.assets.filter((asset) =>
           /\.(ttf|otf|woff|woff2)$/i.test(asset.path)
         );
@@ -200,9 +209,20 @@ export default function HomePage() {
           }
           return bytes;
         });
-        setFontData(buffers);
+        setFontData([...fallbackFonts, ...buffers]);
       })
-      .catch(() => setFontData([]));
+      .catch(async () => {
+        try {
+          const bundled = await fetch("/typst-fonts/NotoSans-Regular.ttf");
+          if (bundled.ok) {
+            setFontData([new Uint8Array(await bundled.arrayBuffer())]);
+            return;
+          }
+        } catch {
+          // Ignore and keep empty font set.
+        }
+        setFontData([]);
+      });
 
     listDocuments(selectedProject)
       .then((res) => {
@@ -220,7 +240,8 @@ export default function HomePage() {
     startTransition(() => {
       compileTypstClientSide(deferredDocument, {
         coreApiUrl: CORE_API_URL,
-        fontData
+        fontData,
+        appOrigin: window.location.origin
       }).then((output) => {
         if (cancelled) return;
         setVectorData(output.vectorData);
