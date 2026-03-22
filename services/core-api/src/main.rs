@@ -1794,6 +1794,8 @@ async fn git_pull(
     let config = load_git_config(&state.db, project_id).await?;
     ensure_git_repo_initialized(&config.local_path, &config.default_branch)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    ensure_git_branch_checked_out(&config.local_path, &config.default_branch)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if let Some(remote_url) = &config.remote_url {
         let _ = run_git(&config.local_path, &["remote", "remove", "origin"]);
         run_git(&config.local_path, &["remote", "add", "origin", remote_url])
@@ -1859,6 +1861,8 @@ async fn git_push(
     let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::GitSync).await?;
     let config = load_git_config(&state.db, project_id).await?;
     ensure_git_repo_initialized(&config.local_path, &config.default_branch)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    ensure_git_branch_checked_out(&config.local_path, &config.default_branch)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     sync_project_documents_to_repo(&state.db, project_id, &config.local_path)
         .await
@@ -2380,6 +2384,7 @@ async fn flush_pending_server_commit(
     let local_path: String = row.get("local_path");
     let default_branch: String = row.get("default_branch");
     ensure_git_repo_initialized(&local_path, &default_branch)?;
+    ensure_git_branch_checked_out(&local_path, &default_branch)?;
     sync_project_documents_to_repo(db, project_id, &local_path).await?;
     let _ = run_git(&local_path, &["add", "."]);
 

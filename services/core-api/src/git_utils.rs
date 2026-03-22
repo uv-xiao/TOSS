@@ -27,6 +27,20 @@ pub fn ensure_git_repo_initialized(repo_path: &str, default_branch: &str) -> Res
     Ok(())
 }
 
+pub fn ensure_git_branch_checked_out(repo_path: &str, default_branch: &str) -> Result<(), String> {
+    let has_branch = run_git(
+        repo_path,
+        &["show-ref", "--verify", &format!("refs/heads/{}", default_branch)],
+    )
+    .is_ok();
+    if !has_branch {
+        let _ = run_git(repo_path, &["checkout", "-B", default_branch]);
+    } else {
+        run_git(repo_path, &["checkout", default_branch])?;
+    }
+    Ok(())
+}
+
 pub fn run_git(repo_path: &str, args: &[&str]) -> Result<String, String> {
     let output = Command::new("git")
         .arg("-C")

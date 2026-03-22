@@ -9,6 +9,7 @@ import { CommentsPanel } from "@/components/CommentsPanel";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { compileTypstClientSide, renderTypstVectorToCanvas } from "@/lib/typst";
 import { bindRealtimeYDoc } from "@/lib/realtime";
+import { resolveDevUserId } from "@/lib/dev-auth";
 import {
   CORE_API_URL,
   createPersonalAccessToken,
@@ -53,12 +54,7 @@ const DEFAULT_PROJECT_ID = "00000000-0000-0000-0000-000000000010";
 
 export default function HomePage() {
   const localUserId = "local-user";
-  const devUserId =
-    process.env.NEXT_PUBLIC_DEV_USER_ID ??
-    (typeof window !== "undefined" &&
-    (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
-      ? "00000000-0000-0000-0000-000000000100"
-      : "");
+  const devUserId = resolveDevUserId();
   const ydocRef = useRef<Y.Doc | null>(null);
   const ytextRef = useRef<Y.Text | null>(null);
   const lastSavedDocRef = useRef<string>(DEFAULT_DOC);

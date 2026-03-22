@@ -114,8 +114,17 @@ function sourceLikelyNeedsPackages(source: string) {
 }
 
 self.onmessage = async (event: MessageEvent<CompileRequest>) => {
-  const { id, source, coreApiUrl, fontData } = event.data;
-  const appOrigin = event.data.appOrigin ?? self.location.origin;
+  const request = event.data;
+  compileQueue = compileQueue
+    .then(() => handleCompile(request))
+    .catch(() => handleCompile(request));
+};
+
+let compileQueue: Promise<void> = Promise.resolve();
+
+async function handleCompile(eventData: CompileRequest) {
+  const { id, source, coreApiUrl, fontData } = eventData;
+  const appOrigin = eventData.appOrigin ?? self.location.origin;
   try {
     const localTypst = await getLocalTypst(fontData, appOrigin);
     const vector = await localTypst.vector({ mainContent: source });
@@ -155,4 +164,4 @@ self.onmessage = async (event: MessageEvent<CompileRequest>) => {
       errors: [localError]
     } satisfies CompileResponse);
   }
-};
+}

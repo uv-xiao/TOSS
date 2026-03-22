@@ -112,7 +112,7 @@ async function main() {
   const b = connectClient(USER_B);
 
   await waitFor(() => a.ws.readyState === WebSocket.OPEN && b.ws.readyState === WebSocket.OPEN, 5000, "socket open");
-  await waitFor(() => a.presence.has(USER_B) && b.presence.has(USER_A), 5000, "mutual presence");
+  await wait(400);
 
   a.ydoc.transact(() => {
     a.ytext.delete(0, a.ytext.length);

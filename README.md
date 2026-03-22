@@ -87,9 +87,13 @@ Use these IDs in `x-user-id` header for RBAC-protected API calls.
 ## Useful scripts
 
 - `scripts/smoke-test.sh`: checks core/realtime health and project listing.
+- `scripts/ci-checks.sh`: full local CI suite (Rust checks + web build + API/browser collaboration and Git tests).
 - `scripts/bootstrap-admin.sh`: creates school admin user in PostgreSQL.
 - `scripts/backup-postgres.sh`: postgres dump into `tmp/backups`.
 - `scripts/backup-minio.sh`: minio data archive into `tmp/backups`.
+- `apps/web/scripts/realtime-multiuser-test.mjs`: two-user realtime sync/reconnect simulation.
+- `apps/web/scripts/git-multiuser-test.sh`: strict-sync Git policy simulation (stale push rejection + force-push rejection).
+- `apps/web/scripts/headless-collab-git.mjs`: headless browser multi-user collaboration + Git integration scenario with screenshots.
 
 ## Docs
 
