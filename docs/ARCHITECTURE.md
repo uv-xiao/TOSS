@@ -19,6 +19,13 @@
 6. Presence join/leave events are surfaced in the editor header.
 7. Latest update payload is checkpointed and replayed to newly connected clients.
 
+## Client compile path
+
+1. Browser editor updates are debounced by React state and sent to a dedicated Typst Web Worker.
+2. Worker holds a long-lived Typst compiler instance and updates `main.typ` in compiler memory.
+3. Worker compiles to PDF bytes and returns deterministic diagnostics.
+4. UI renders PDF blob URL when successful, or inline compile diagnostics otherwise.
+
 ## Git sync path
 
 1. Project config stores remote URL + default branch and local mirror path.

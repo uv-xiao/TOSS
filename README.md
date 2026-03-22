@@ -46,12 +46,13 @@ This repository implements a working v1 foundation and API surface with:
 - realtime collaboration service with presence and checkpoint replay
 - realtime websocket authorization against project RBAC
 - client-side Typst WASM PDF compile path with fallback preview
+- worker-based persistent Typst compiler runtime in browser for faster repeated compiles
 - Git mirror config + pull/push synchronization against a real remote
 - smart HTTP Git server endpoint per project with force-push rejection policy
 - S3-compatible storage-backed project snapshots/assets and git bundle artifacts
 
 Remaining advanced work includes browser compatibility hardening for Typst WASM,
-richer in-app Git conflict UX, and finer-grained group-to-role policies beyond project level.
+richer in-app Git conflict UX, and full incremental vector-preview pipeline wiring.
 
 ## Git server behavior
 
