@@ -35,9 +35,13 @@ class TypstWorkerRuntime {
       this.pending.delete(response.id);
       resolve(response);
     };
-    this.worker.onerror = () => {
+    this.worker.onerror = (event) => {
+      const detail =
+        event && "message" in event && typeof event.message === "string"
+          ? event.message
+          : "Typst worker crashed";
       for (const resolve of this.pending.values()) {
-        resolve({ id: -1, ok: false, errors: ["Typst worker crashed"] });
+        resolve({ id: -1, ok: false, errors: [detail] });
       }
       this.pending.clear();
       this.worker?.terminate();
@@ -69,10 +73,14 @@ class TypstWorkerRuntime {
 }
 
 let rendererPromise: ReturnType<typeof createTypstRenderer> | null = null;
+const RENDERER_WASM_URL = "/typst-wasm/typst_ts_renderer_bg.wasm";
+
 async function getRenderer() {
   if (!rendererPromise) {
     const renderer = createTypstRenderer();
-    await renderer.init();
+    await renderer.init({
+      getModule: async () => fetch(RENDERER_WASM_URL).then((resp) => resp.arrayBuffer())
+    });
     rendererPromise = renderer;
   }
   return rendererPromise;

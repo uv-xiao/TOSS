@@ -472,27 +472,27 @@ async fn oidc_callback(
     (jar, Json(SessionResponse { session_token: token, user_id })).into_response()
 }
 
-async fn auth_me(State(state): State<AppState>, jar: CookieJar) -> impl IntoResponse {
-    let Some(token) = jar.get("typst_session").map(|c| c.value().to_string()) else {
-        return (StatusCode::UNAUTHORIZED, "No session").into_response();
+async fn auth_me(State(state): State<AppState>, headers: HeaderMap, jar: CookieJar) -> impl IntoResponse {
+    let user_id = match authenticated_user_id(&state.db, &headers, &jar).await {
+        Ok(id) => id,
+        Err(_) => return (StatusCode::UNAUTHORIZED, "No session").into_response(),
     };
     let row = sqlx::query(
-        "select u.id, u.email, u.display_name, s.expires_at
-         from auth_sessions s
-         join users u on u.id = s.user_id
-         where s.session_token = $1 and s.expires_at > now()",
+        "select id, email, display_name
+         from users
+         where id = $1",
     )
-    .bind(token)
+    .bind(user_id)
     .fetch_optional(&state.db)
     .await;
     let Ok(Some(row)) = row else {
-        return (StatusCode::UNAUTHORIZED, "Session expired").into_response();
+        return (StatusCode::UNAUTHORIZED, "User not found").into_response();
     };
     Json(AuthMeResponse {
         user_id: row.get("id"),
         email: row.get("email"),
         display_name: row.get("display_name"),
-        session_expires_at: row.get("expires_at"),
+        session_expires_at: Utc::now() + chrono::Duration::hours(12),
     })
     .into_response()
 }

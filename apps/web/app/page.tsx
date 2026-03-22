@@ -53,6 +53,12 @@ const DEFAULT_PROJECT_ID = "00000000-0000-0000-0000-000000000010";
 
 export default function HomePage() {
   const localUserId = "local-user";
+  const devUserId =
+    process.env.NEXT_PUBLIC_DEV_USER_ID ??
+    (typeof window !== "undefined" &&
+    (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
+      ? "00000000-0000-0000-0000-000000000100"
+      : "");
   const ydocRef = useRef<Y.Doc | null>(null);
   const ytextRef = useRef<Y.Text | null>(null);
   const lastSavedDocRef = useRef<string>(DEFAULT_DOC);
@@ -93,6 +99,7 @@ export default function HomePage() {
     session_expires_at: string;
   } | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const effectiveUserId = (authUser?.user_id ?? devUserId) || localUserId;
 
   useEffect(() => {
     const ydoc = new Y.Doc();
@@ -111,9 +118,10 @@ export default function HomePage() {
     const realtime = bindRealtimeYDoc({
       docId: `${selectedProject || DEFAULT_PROJECT_ID}:main.typ`,
       projectId: selectedProject || DEFAULT_PROJECT_ID,
-      wsBaseUrl: process.env.NEXT_PUBLIC_REALTIME_URL ?? "ws://localhost:8090",
+      wsBaseUrl:
+        process.env.NEXT_PUBLIC_REALTIME_URL ?? "ws://127.0.0.1:18090",
       ydoc,
-      userId: authUser?.user_id ?? localUserId,
+      userId: effectiveUserId,
       onPresenceChange: setPresenceUserIds
     });
 
@@ -126,7 +134,7 @@ export default function HomePage() {
       ydocRef.current = null;
       ytextRef.current = null;
     };
-  }, [authUser?.user_id, selectedProject]);
+  }, [effectiveUserId, selectedProject]);
 
   useEffect(() => {
     getAuthMe()
@@ -438,8 +446,8 @@ export default function HomePage() {
         <PresenceBar
           users={presenceUserIds.map((id, idx) => ({
             id,
-            name: id === (authUser?.user_id ?? localUserId) ? "You" : `Peer ${idx + 1}`,
-            color: id === (authUser?.user_id ?? localUserId) ? "#1d6fa5" : "#2f8f2f"
+            name: id === effectiveUserId ? "You" : `Peer ${idx + 1}`,
+            color: id === effectiveUserId ? "#1d6fa5" : "#2f8f2f"
           }))}
         />
       </header>

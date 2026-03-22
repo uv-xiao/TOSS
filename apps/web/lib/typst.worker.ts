@@ -1,8 +1,10 @@
-import { createTypstCompiler, CompileFormatEnum } from "@myriaddreamin/typst.ts/compiler";
+import {
+  TypstSnippet
+} from "@myriaddreamin/typst.ts/contrib/snippet";
 import { FetchAccessModel } from "@myriaddreamin/typst.ts/fs/fetch";
 import { FetchPackageRegistry } from "@myriaddreamin/typst.ts/fs/package";
-import { loadFonts, withAccessModel, withPackageRegistry } from "@myriaddreamin/typst.ts/options.init";
-import type { TypstCompiler } from "@myriaddreamin/typst.ts/compiler";
+import { disableDefaultFontAssets, loadFonts } from "@myriaddreamin/typst.ts/options.init";
+import { withAccessModel, withPackageRegistry } from "@myriaddreamin/typst.ts/options.init";
 
 type CompileRequest = {
   id: number;
@@ -18,75 +20,115 @@ type CompileResponse = {
   errors?: string[];
 };
 
-const MAIN_PATH = "/main.typ";
-let compilerPromise: Promise<TypstCompiler> | null = null;
-let configKey = "";
-
-function extractErrors(diagnostics: unknown): string[] {
-  if (!Array.isArray(diagnostics)) return [];
-  return diagnostics
-    .map((d) => {
-      if (typeof d === "string") return d;
-      if (d && typeof d === "object" && "message" in d) {
-        return String((d as { message: unknown }).message ?? "compile error");
-      }
-      return "compile error";
-    })
-    .filter((x) => x.trim().length > 0);
+class NormalizedFetchAccessModel extends FetchAccessModel {
+  resolvePath(path: string): string {
+    const normalized = path.startsWith("/") ? path : `/${path}`;
+    return super.resolvePath(normalized);
+  }
 }
 
-async function getCompiler(coreApiUrl: string, fontData: Uint8Array[]) {
+let typstPromise: Promise<TypstSnippet> | null = null;
+let fallbackTypstPromise: Promise<TypstSnippet> | null = null;
+let configKey = "";
+let fallbackConfigKey = "";
+const COMPILER_WASM_URL = "/typst-wasm/typst_ts_web_compiler_bg.wasm";
+
+async function getTypst(coreApiUrl: string, fontData: Uint8Array[]) {
   const nextKey = JSON.stringify({
     coreApiUrl: coreApiUrl.replace(/\/$/, ""),
     fontCount: fontData.length,
     fontSizes: fontData.map((f) => f.byteLength)
   });
-  if (!compilerPromise || configKey !== nextKey) {
+  if (!typstPromise || configKey !== nextKey) {
     configKey = nextKey;
-    compilerPromise = (async () => {
-      const compiler = createTypstCompiler();
-      const accessModel = new FetchAccessModel(
+    typstPromise = (async () => {
+      const typst = new TypstSnippet();
+      const accessModel = new NormalizedFetchAccessModel(
         `${coreApiUrl.replace(/\/$/, "")}/v1/typst/packages`
       );
       const beforeBuild = [
         withAccessModel(accessModel),
-        withPackageRegistry(new FetchPackageRegistry(accessModel))
+        withPackageRegistry(new FetchPackageRegistry(accessModel)),
+        disableDefaultFontAssets()
       ];
       if (fontData.length > 0) {
         beforeBuild.push(loadFonts(fontData));
       }
-      await compiler.init({ beforeBuild });
-      compiler.addSource(MAIN_PATH, "");
-      return compiler;
+      typst.setCompilerInitOptions({
+        beforeBuild,
+        getModule: async () => fetch(COMPILER_WASM_URL).then((resp) => resp.arrayBuffer())
+      });
+      return typst;
     })();
   }
-  return compilerPromise;
+  return typstPromise;
+}
+
+async function getFallbackTypst(fontData: Uint8Array[]) {
+  const nextKey = JSON.stringify({
+    fontCount: fontData.length,
+    fontSizes: fontData.map((f) => f.byteLength)
+  });
+  if (!fallbackTypstPromise || fallbackConfigKey !== nextKey) {
+    fallbackConfigKey = nextKey;
+    fallbackTypstPromise = (async () => {
+      const typst = new TypstSnippet();
+      const beforeBuild = [disableDefaultFontAssets()];
+      if (fontData.length > 0) {
+        beforeBuild.push(loadFonts(fontData));
+      }
+      typst.setCompilerInitOptions({
+        beforeBuild,
+        getModule: async () => fetch(COMPILER_WASM_URL).then((resp) => resp.arrayBuffer())
+      });
+      return typst;
+    })();
+  }
+  return fallbackTypstPromise;
 }
 
 self.onmessage = async (event: MessageEvent<CompileRequest>) => {
   const { id, source, coreApiUrl, fontData } = event.data;
   try {
-    const compiler = await getCompiler(coreApiUrl, fontData);
-    compiler.addSource(MAIN_PATH, source);
-    const result = await compiler.compile({
-      mainFilePath: MAIN_PATH,
-      format: CompileFormatEnum.vector,
-      diagnostics: "full"
-    });
-    const errors = extractErrors(result?.diagnostics);
+    const typst = await getTypst(coreApiUrl, fontData);
+    const vector = await typst.vector({ mainContent: source });
+    const errors: string[] = [];
     const response: CompileResponse = {
-      id,
-      ok: !!result?.result && errors.length === 0,
-      vectorBytes: result?.result,
-      errors
+      id, 
+      ok: !!vector && errors.length === 0,
+      vectorBytes: vector,
+      errors,
     };
     self.postMessage(response);
   } catch (err) {
-    const response: CompileResponse = {
+    const primaryError = err instanceof Error ? err.message : "Typst compile failed";
+    if (primaryError.includes("Failed to fetch")) {
+      try {
+        const fallback = await getFallbackTypst(fontData);
+        const vector = await fallback.vector({ mainContent: source });
+        const response: CompileResponse = {
+          id,
+          ok: !!vector,
+          vectorBytes: vector,
+          errors: vector ? [] : ["Typst compile failed"]
+        };
+        self.postMessage(response);
+        return;
+      } catch (fallbackErr) {
+        const fallbackError =
+          fallbackErr instanceof Error ? fallbackErr.message : "fallback compile failed";
+        self.postMessage({
+          id,
+          ok: false,
+          errors: [`${primaryError} (fallback: ${fallbackError})`]
+        } satisfies CompileResponse);
+        return;
+      }
+    }
+    self.postMessage({
       id,
       ok: false,
-      errors: [err instanceof Error ? err.message : "Typst compile failed"]
-    };
-    self.postMessage(response);
+      errors: [primaryError]
+    } satisfies CompileResponse);
   }
 };

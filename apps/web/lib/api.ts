@@ -1,6 +1,27 @@
 export const CORE_API_URL =
-  process.env.NEXT_PUBLIC_CORE_API_URL ?? "http://localhost:8080";
-const DEV_USER_ID = process.env.NEXT_PUBLIC_DEV_USER_ID ?? "";
+  process.env.NEXT_PUBLIC_CORE_API_URL ?? "http://127.0.0.1:18080";
+const DEV_USER_ID = (() => {
+  if (process.env.NEXT_PUBLIC_DEV_USER_ID) {
+    return process.env.NEXT_PUBLIC_DEV_USER_ID;
+  }
+  if (typeof window === "undefined") {
+    return "";
+  }
+  const host = window.location.hostname;
+  if (host === "localhost" || host === "127.0.0.1") {
+    return "00000000-0000-0000-0000-000000000100";
+  }
+  return "";
+})();
+const AUTH_CREDENTIALS: RequestCredentials = (() => {
+  if (DEV_USER_ID) return "omit";
+  if (typeof window === "undefined") return "include";
+  try {
+    return new URL(CORE_API_URL).origin === window.location.origin ? "include" : "omit";
+  } catch {
+    return "include";
+  }
+})();
 
 function authHeaders(extra?: Record<string, string>) {
   const headers: Record<string, string> = { ...(extra ?? {}) };
@@ -106,7 +127,7 @@ export type ProjectAssetContent = {
 export async function getAuthMe() {
   const res = await fetch(`${CORE_API_URL}/v1/auth/me`, {
     cache: "no-store",
-    credentials: "include",
+    credentials: AUTH_CREDENTIALS,
     headers: authHeaders()
   });
   if (!res.ok) return null;
@@ -125,7 +146,7 @@ export function oidcLoginUrl() {
 export async function logout() {
   await fetch(`${CORE_API_URL}/v1/auth/logout`, {
     method: "POST",
-    credentials: "include",
+    credentials: AUTH_CREDENTIALS,
     headers: authHeaders()
   });
 }
@@ -133,7 +154,7 @@ export async function logout() {
 export async function listProjects() {
   const res = await fetch(`${CORE_API_URL}/v1/projects`, {
     cache: "no-store",
-    credentials: "include",
+    credentials: AUTH_CREDENTIALS,
     headers: authHeaders()
   });
   if (!res.ok) {
@@ -145,7 +166,7 @@ export async function listProjects() {
 export async function getGitStatus(projectId: string) {
   const res = await fetch(`${CORE_API_URL}/v1/git/status/${projectId}`, {
     cache: "no-store",
-    credentials: "include",
+    credentials: AUTH_CREDENTIALS,
     headers: authHeaders()
   });
   if (!res.ok) {
@@ -157,7 +178,7 @@ export async function getGitStatus(projectId: string) {
 export async function getGitConfig(projectId: string) {
   const res = await fetch(`${CORE_API_URL}/v1/git/config/${projectId}`, {
     cache: "no-store",
-    credentials: "include",
+    credentials: AUTH_CREDENTIALS,
     headers: authHeaders()
   });
   if (!res.ok) throw new Error("Unable to get git config");
@@ -170,7 +191,7 @@ export async function upsertGitConfig(
 ) {
   const res = await fetch(`${CORE_API_URL}/v1/git/config/${projectId}`, {
     method: "PUT",
-    credentials: "include",
+    credentials: AUTH_CREDENTIALS,
     headers: authHeaders({
       "content-type": "application/json"
     }),
@@ -186,7 +207,7 @@ export async function upsertGitConfig(
 export async function triggerGitPull(projectId: string) {
   const res = await fetch(`${CORE_API_URL}/v1/git/sync/pull/${projectId}`, {
     method: "POST",
-    credentials: "include",
+    credentials: AUTH_CREDENTIALS,
     headers: authHeaders({
       "content-type": "application/json"
     }),
@@ -199,7 +220,7 @@ export async function triggerGitPull(projectId: string) {
 export async function triggerGitPush(projectId: string) {
   const res = await fetch(`${CORE_API_URL}/v1/git/sync/push/${projectId}`, {
     method: "POST",
-    credentials: "include",
+    credentials: AUTH_CREDENTIALS,
     headers: authHeaders({
       "content-type": "application/json"
     }),
@@ -212,7 +233,7 @@ export async function triggerGitPush(projectId: string) {
 export async function listPersonalAccessTokens() {
   const res = await fetch(`${CORE_API_URL}/v1/security/tokens`, {
     cache: "no-store",
-    credentials: "include",
+    credentials: AUTH_CREDENTIALS,
     headers: authHeaders()
   });
   if (!res.ok) throw new Error("Unable to list tokens");
@@ -225,7 +246,7 @@ export async function createPersonalAccessToken(input: {
 }) {
   const res = await fetch(`${CORE_API_URL}/v1/security/tokens`, {
     method: "POST",
-    credentials: "include",
+    credentials: AUTH_CREDENTIALS,
     headers: authHeaders({
       "content-type": "application/json"
     }),
@@ -241,7 +262,7 @@ export async function createPersonalAccessToken(input: {
 export async function revokePersonalAccessToken(tokenId: string) {
   const res = await fetch(`${CORE_API_URL}/v1/security/tokens/${tokenId}`, {
     method: "DELETE",
-    credentials: "include",
+    credentials: AUTH_CREDENTIALS,
     headers: authHeaders()
   });
   if (!res.ok) throw new Error("Unable to revoke token");
@@ -250,7 +271,7 @@ export async function revokePersonalAccessToken(tokenId: string) {
 export async function listComments(projectId: string) {
   const res = await fetch(`${CORE_API_URL}/v1/projects/${projectId}/comments`, {
     cache: "no-store",
-    credentials: "include",
+    credentials: AUTH_CREDENTIALS,
     headers: authHeaders()
   });
   if (!res.ok) throw new Error("Unable to list comments");
@@ -260,7 +281,7 @@ export async function listComments(projectId: string) {
 export async function listRevisions(projectId: string) {
   const res = await fetch(`${CORE_API_URL}/v1/projects/${projectId}/revisions`, {
     cache: "no-store",
-    credentials: "include",
+    credentials: AUTH_CREDENTIALS,
     headers: authHeaders()
   });
   if (!res.ok) throw new Error("Unable to list revisions");
@@ -270,7 +291,7 @@ export async function listRevisions(projectId: string) {
 export async function listDocuments(projectId: string) {
   const res = await fetch(`${CORE_API_URL}/v1/projects/${projectId}/documents`, {
     cache: "no-store",
-    credentials: "include",
+    credentials: AUTH_CREDENTIALS,
     headers: authHeaders()
   });
   if (!res.ok) throw new Error("Unable to list documents");
@@ -281,7 +302,7 @@ export async function upsertDocumentByPath(projectId: string, path: string, cont
   const safePath = encodeURIComponent(path);
   const res = await fetch(`${CORE_API_URL}/v1/projects/${projectId}/documents/by-path/${safePath}`, {
     method: "PUT",
-    credentials: "include",
+    credentials: AUTH_CREDENTIALS,
     headers: authHeaders({
       "content-type": "application/json"
     }),
@@ -294,7 +315,7 @@ export async function upsertDocumentByPath(projectId: string, path: string, cont
 export async function createComment(projectId: string, body: string, anchor?: string) {
   const res = await fetch(`${CORE_API_URL}/v1/projects/${projectId}/comments`, {
     method: "POST",
-    credentials: "include",
+    credentials: AUTH_CREDENTIALS,
     headers: authHeaders({
       "content-type": "application/json"
     }),
@@ -307,7 +328,7 @@ export async function createComment(projectId: string, body: string, anchor?: st
 export async function createRevision(projectId: string, summary: string) {
   const res = await fetch(`${CORE_API_URL}/v1/projects/${projectId}/revisions`, {
     method: "POST",
-    credentials: "include",
+    credentials: AUTH_CREDENTIALS,
     headers: authHeaders({
       "content-type": "application/json"
     }),
@@ -320,7 +341,7 @@ export async function createRevision(projectId: string, summary: string) {
 export async function listProjectAssets(projectId: string) {
   const res = await fetch(`${CORE_API_URL}/v1/projects/${projectId}/assets`, {
     cache: "no-store",
-    credentials: "include",
+    credentials: AUTH_CREDENTIALS,
     headers: authHeaders()
   });
   if (!res.ok) throw new Error("Unable to list assets");
@@ -334,7 +355,7 @@ export function projectAssetRawUrl(projectId: string, assetId: string) {
 export async function getProjectAssetContent(projectId: string, assetId: string) {
   const res = await fetch(`${CORE_API_URL}/v1/projects/${projectId}/assets/${assetId}`, {
     cache: "no-store",
-    credentials: "include",
+    credentials: AUTH_CREDENTIALS,
     headers: authHeaders()
   });
   if (!res.ok) throw new Error("Unable to load asset content");
@@ -344,7 +365,7 @@ export async function getProjectAssetContent(projectId: string, assetId: string)
 export async function listProjectGroupRoles(projectId: string) {
   const res = await fetch(`${CORE_API_URL}/v1/projects/${projectId}/group-roles`, {
     cache: "no-store",
-    credentials: "include",
+    credentials: AUTH_CREDENTIALS,
     headers: authHeaders()
   });
   if (!res.ok) throw new Error("Unable to list project group roles");
@@ -357,7 +378,7 @@ export async function upsertProjectGroupRole(
 ) {
   const res = await fetch(`${CORE_API_URL}/v1/projects/${projectId}/group-roles`, {
     method: "POST",
-    credentials: "include",
+    credentials: AUTH_CREDENTIALS,
     headers: authHeaders({
       "content-type": "application/json"
     }),
@@ -371,7 +392,7 @@ export async function deleteProjectGroupRole(projectId: string, groupName: strin
   const safeName = encodeURIComponent(groupName);
   const res = await fetch(`${CORE_API_URL}/v1/projects/${projectId}/group-roles/${safeName}`, {
     method: "DELETE",
-    credentials: "include",
+    credentials: AUTH_CREDENTIALS,
     headers: authHeaders()
   });
   if (!res.ok) throw new Error("Unable to delete project group role");
