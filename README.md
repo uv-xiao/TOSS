@@ -1,97 +1,132 @@
-# Typst School Collaboration Platform (v1 Scaffold)
+# Typst Collaboration Platform
 
-Monorepo scaffold for a self-hosted Typst collaboration platform with:
+Self-hosted Typst collaboration platform with:
 
-- React + Vite static frontend SPA
-- Rust core API monolith (auth/session, RBAC, project APIs, WebSocket realtime, Git server, static hosting)
-- PostgreSQL + MinIO + Docker Compose ops baseline
+- Static React SPA (`apps/web`, Vite build output)
+- Rust monolith (`services/core-api`) serving:
+  - REST APIs
+  - Realtime WebSocket collaboration
+  - Smart HTTP Git endpoint
+  - Static SPA assets on the same origin
+- PostgreSQL metadata store
+- Optional S3-compatible storage for snapshots/assets/artifacts
 
-## Quick start
+## Current Product Surface (v1.1-dev)
 
-1. Copy `.env.example` to `.env`.
-2. Build SPA:
-   - `cd apps/web && npm install && npm run build`
-3. Start infra and services:
-   - `docker compose up --build`
-4. Open app at `http://localhost:8080`.
-5. API check:
-   - `curl http://localhost:8080/health`
+- Multi-project workspace with project/file tree (directories + file CRUD + uploads)
+- Realtime per-file collaboration with Yjs + collaborator presence/cursor locations
+- Client-side Typst WASM compile/render (canvas preview + `Download PDF (Client)`)
+- Package proxy/cache for Typst Universe (`/v1/typst/packages/...`)
+- Git server access per project (PAT auth, no force push)
+- Project archive download
+- Automatic periodic revisions with author attribution + read-only revision browsing
+- Admin panel for auth/OIDC settings and OIDC group-role mappings
+- Profile security panel for personal access tokens
 
-## Local dev without Docker
+## Local Development (No Docker)
 
-1. Ensure PostgreSQL is running and `DATABASE_URL` points to it.
-2. Build web SPA:
-   - `cd apps/web`
-   - `npm install`
-   - `npm run build`
-2. Start core API:
-   - `cd services/core-api`
-   - `DATABASE_URL=postgres://... CORE_API_PORT=8080 GIT_STORAGE_PATH=/tmp/typst-git CHECKPOINT_STORAGE_PREFIX=/tmp/typst-checkpoints AUTH_DEV_HEADER_ENABLED=1 WEB_STATIC_DIR=../../apps/web/dist cargo run`
-3. Open `http://localhost:8080`.
+### 1. Build frontend static assets
 
-## Services
+```bash
+cd apps/web
+npm install
+npm run build
+```
 
-- `apps/web`: Vite React SPA
-- `services/core-api`: Axum monolith (REST + WebSocket + Git HTTP + static files)
-- `packages/shared`: Shared TypeScript contracts used by web app
+### 2. Start backend monolith
 
-## Current status
+```bash
+cd services/core-api
+DATABASE_URL=postgres://typstapp:iv61v6mRPCGxvWjt@127.0.0.1:5432/typstappdb \
+CORE_API_PORT=18080 \
+GIT_STORAGE_PATH=/tmp/typst-git \
+AUTH_DEV_HEADER_ENABLED=1 \
+WEB_STATIC_DIR=../../apps/web/dist \
+cargo run
+```
 
-This repository implements a working v1 foundation and API surface with:
-- project-level RBAC + org-admin APIs
-- OIDC login/session with group-claim to project-role mapping
-- realtime collaboration with presence and checkpoint replay in core-api monolith
-- client-side Typst WASM canvas preview + PDF compile path with fallback source-only editing
-- worker-based persistent Typst compiler runtime in browser for faster repeated compiles
-- file tree APIs (multi-file + directories) and per-file realtime doc channels
-- smart HTTP Git server endpoint per project with force-push rejection policy
-- S3-compatible storage-backed project snapshots/assets and git bundle artifacts
-- project archive and PDF artifact download APIs
+Open: [http://127.0.0.1:18080](http://127.0.0.1:18080)
 
-Remaining advanced work includes deeper package/import-aware incremental compile,
-branch/PR Git workflows, and Kubernetes deployment hardening.
+Health check:
 
-## Git server behavior
+```bash
+curl http://127.0.0.1:18080/health
+```
 
-- Repo link endpoint: `GET /v1/git/repo-link/{project_id}`
-- Git auth uses Personal Access Tokens only (HTTP Basic password = PAT)
-- Collaborative changes are wrapped into a system commit:
-  - `Recent updates on Typst server`
-  - `Co-authored-by` trailers for collaborative users
-- Force push is rejected by server policy (`receive.denyNonFastForwards=true`)
-- Offline users must `git pull`, rebase/merge, and retry push when server changed.
+## Initial Admin Account
 
-## Security tokens behavior
+On first startup, the backend seeds an initial admin user and generates a random local password once.
 
-- User can create one or more PATs in security settings APIs
-- Plaintext PAT is shown once at creation time only
-- Optional expiration is supported
-- Last-used timestamp is recorded on successful Git auth
+Look for this log line in backend output:
 
-## Browser fallback policy
+```text
+INITIAL ADMIN ACCOUNT: email=admin@example.com password=...
+```
 
-If Typst WASM cannot run in browser, users can still edit Typst source in web UI.
-PDF preview is unavailable in that case; users should sync via Git and compile offline.
+Rotate this password immediately after first login.
 
-## Seed users
+An additional seeded collaborator account is available for local testing:
 
-- Teacher: `00000000-0000-0000-0000-000000000100`
-- Student: `00000000-0000-0000-0000-000000000101`
+- `member@example.com` / `member1234!`
 
-Use these IDs in `x-user-id` header for RBAC-protected API calls.
+## Auth Model
 
-## Useful scripts
+- Local account login and registration are supported.
+- OIDC is supported with discovery/issuer URL configuration from the Admin panel.
+- Admin can enable/disable:
+  - local login
+  - local self-registration
+  - OIDC login
+- If self-registration is disabled and OIDC is enabled, users can still be auto-provisioned on successful OIDC login.
 
-- `scripts/smoke-test.sh`: checks core/realtime health and project listing.
-- `scripts/ci-checks.sh`: full local CI suite (Rust checks + SPA build + API/browser collaboration and Git tests).
-- `scripts/bootstrap-admin.sh`: creates school admin user in PostgreSQL.
-- `scripts/backup-postgres.sh`: postgres dump into `tmp/backups`.
-- `scripts/backup-minio.sh`: minio data archive into `tmp/backups`.
-- `apps/web/scripts/realtime-multiuser-test.mjs`: two-user realtime sync/reconnect simulation.
-- `apps/web/scripts/git-multiuser-test.sh`: strict-sync Git policy simulation (stale push rejection + force-push rejection).
-- `apps/web/scripts/headless-collab-git.mjs`: headless browser multi-user collaboration + Git integration scenario with screenshots.
+## Git Access Model
 
-## Docs
+- Each project exposes a Git clone URL (`GET /v1/git/repo-link/{project_id}`).
+- Git transport authenticates with Personal Access Token (HTTP Basic password).
+- Force push is rejected.
+- If collaborative server-side updates exist, pushes can be rejected until client pulls/rebases/merges and retries.
 
-- API reference: `docs/API.md`
-- Architecture overview: `docs/ARCHITECTURE.md`
+## Useful Commands
+
+```bash
+# Rust checks
+cd services/core-api && cargo check
+
+# Web build
+cd apps/web && npm run build
+
+# Full local CI (checks + API tests + headless browser tests)
+scripts/ci-checks.sh
+```
+
+## Headless Test Scripts
+
+- `apps/web/scripts/realtime-multiuser-test.mjs`
+- `apps/web/scripts/git-multiuser-test.sh`
+- `apps/web/scripts/headless-smoke.mjs`
+- `apps/web/scripts/headless-collab-git.mjs`
+
+Screenshots are written to:
+
+- `/tmp/typst-headless`
+- `/tmp/typst-collab-git`
+
+## Admin Bootstrap Helper
+
+`scripts/bootstrap-admin.sh` can ensure an email is an org admin:
+
+```bash
+DATABASE_URL=postgres://... scripts/bootstrap-admin.sh
+```
+
+Optional variables:
+
+- `ORG_ID`
+- `ADMIN_EMAIL`
+- `ADMIN_NAME`
+- `ADMIN_ID`
+
+## Notes
+
+- Non-WASM browsers can still edit source but do not get live Typst preview.
+- Production deployment hardening is intentionally deferred until feature-complete validation is finished.

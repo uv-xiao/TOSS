@@ -1,64 +1,60 @@
-# Architecture (v1)
+# Architecture (v1.1-dev)
 
-## Components
+## Runtime Topology
 
-- `apps/web` (Vite React SPA): Project dashboard, file tree, collaborative editor shell, client-side Typst compile loop, canvas preview pane.
-- `services/core-api` (Rust/Axum + PostgreSQL): Monolith serving static SPA, Auth/OIDC, project metadata, RBAC, file tree APIs, realtime WebSocket channel, Git smart HTTP endpoint, export APIs, audit logs.
-- Realtime checkpoint replay is persisted by core-api under `CHECKPOINT_STORAGE_PREFIX`.
-- `postgres`: Source of truth for metadata and permissions.
-- `minio` (S3-compatible): Store for snapshots/assets/git bundle artifacts.
+- `apps/web`: static Vite React SPA bundle
+- `services/core-api`: Rust/Axum monolith
+  - serves static SPA assets
+  - serves REST APIs
+  - serves realtime WebSocket endpoint
+  - serves smart HTTP Git endpoint
+- PostgreSQL: metadata, auth/session, RBAC, revisions, assets metadata, Git state
+- Optional S3-compatible storage: snapshots/assets/pdf artifacts/git bundles
 
-## Realtime path
+Single-origin deployment removes cross-origin auth complexity in normal operation.
 
-1. Browser opens websocket to `/v1/realtime/ws/{doc_id}?project_id=...` on the same origin as API/static app.
-2. Core API validates RBAC/session directly for websocket upgrades.
-3. Editor state emits Yjs update payloads.
-4. Core API realtime channel broadcasts events to subscribed peers.
-5. Clients apply incoming updates and converge.
-6. Presence join/leave events are surfaced in the editor header.
-7. Latest update payload is checkpointed and replayed to newly connected clients.
+## Realtime Collaboration
 
-## Client compile path
+1. Client opens `ws /v1/realtime/ws/{doc_id}?project_id=...`.
+2. Backend authorizes project access.
+3. Clients exchange Yjs updates (`yjs.sync`, `yjs.update`) and presence payloads.
+4. Backend broadcasts events to connected peers for that doc channel.
+5. Clients converge on same text state and display collaborator cursor positions.
 
-1. Browser editor updates are debounced by React state and sent to a dedicated Typst Web Worker.
-2. Worker holds a long-lived Typst compiler instance and compiles the configured entry file (`main.typ` default).
-3. Worker compiles to vector artifact and returns deterministic diagnostics.
-4. UI renders vector artifact to canvas with Typst renderer when successful, or inline diagnostics otherwise.
-5. Worker also compiles PDF bytes; UI can download directly and upload latest PDF artifact to server.
-5. Worker uses server package proxy/cache endpoint for Typst universe dependency fetch.
+## Typst Client Compile Path
 
-## Git sync path
+1. Editor/workspace state is passed to a browser worker.
+2. Worker compiles entry Typst file via Typst WASM.
+3. Worker returns:
+  - vector artifact for canvas preview
+  - PDF bytes for client download
+  - deterministic diagnostics on compile failure
+4. UI renders vector output to canvas and updates on content changes.
+5. Typst packages are fetched through backend proxy/cache (`/v1/typst/packages/...`).
 
-1. Project config stores remote URL + default branch and local mirror path.
-2. On push, project documents are materialized into local mirror files, committed, and pushed to remote.
-3. On pull, mirror fetch/rebase runs and pulled files are imported back into project documents.
-4. Server also exposes project repo as smart HTTP Git endpoint for external clients.
-  Git transport authenticates with PAT only.
-5. Before serving Git traffic, pending collaborative changes are wrapped into a system commit `Recent updates on Typst server` with collaborative users captured in `Co-authored-by` trailers.
-6. Non-fast-forward updates (including force push) are rejected so offline users must pull/rebase/merge first.
+If WASM is unavailable, source editing remains available without live preview.
 
-## Permission model (v1.1)
+## Git Server Behavior
 
-Project-level roles:
+1. Each project maps to a local bare/non-bare Git repository path.
+2. Backend exposes smart HTTP endpoints for clone/pull/push.
+3. PAT auth is enforced for Git transport.
+4. Pending collaborative server-side edits are wrapped into system commit:
+   - `Recent updates on Typst server`
+   - `Co-authored-by` trailers for contributing collaborators
+5. Force push is rejected (`denyNonFastForwards`).
+6. Stale pushes are rejected when server advanced; users pull/rebase/merge and retry.
 
-- `Owner`, `Teacher`: manage roles and project controls.
-- `TA`: collaborator with git sync rights.
-- `Student`: project read/write for document + comment activity.
+## Auth and Identity
 
-OIDC group-to-role mapping:
-- Org admins define `group_name -> role` mappings per organization.
-- During OIDC callback, backend reads configured groups claim and syncs user group membership.
-- Mapped roles are projected into `project_roles` across org projects with strict sync semantics.
+- Local accounts (password hash in DB) + session cookies
+- OIDC auth flow with issuer/discovery settings configurable in Admin panel
+- Org-admin scoped OIDC group-role mappings
+- Project-level RBAC enforced for API and realtime endpoints
+- Dev-only `x-user-id` header override gated by `AUTH_DEV_HEADER_ENABLED`
 
-## Deployment shape
+## Revision Model
 
-- Single VM, Docker Compose.
-- Basic structured logging.
-- Backup scripts for PostgreSQL and MinIO.
-- Health endpoint at `/health` for the core monolith.
-
-## Object storage path
-
-1. Core API serializes project snapshots and uploads them to S3-compatible object storage.
-2. Project assets are uploaded/downloaded through API and stored as objects keyed by project.
-3. On successful Git pull/push/receive-pack events, API emits git bundle artifacts to storage for backup/recovery flows.
+- Revisions are created automatically on periodic dirty intervals.
+- Each revision stores file snapshots plus associated authors.
+- Users can open a revision in read-only mode in workspace UI.
