@@ -10,21 +10,26 @@ import { HistoryPanel } from "@/components/HistoryPanel";
 import { compileTypstClientSide } from "@/lib/typst";
 import { bindRealtimeYDoc } from "@/lib/realtime";
 import {
+  createPersonalAccessToken,
   createComment,
   createRevision,
   getGitConfig,
   getGitStatus,
+  listPersonalAccessTokens,
   listComments,
   listDocuments,
   listProjects,
   listRevisions,
+  revokePersonalAccessToken,
   triggerGitPull,
   triggerGitPush,
   upsertGitConfig,
   upsertDocumentByPath,
   type Comment,
+  type CreatePatResponse,
   type GitRemoteConfig,
   type GitSyncState,
+  type PersonalAccessTokenInfo,
   type Project,
   type Revision
 } from "@/lib/api";
@@ -55,6 +60,11 @@ export default function HomePage() {
   const [gitBranchInput, setGitBranchInput] = useState("main");
   const [gitBusy, setGitBusy] = useState<"idle" | "saving" | "pulling" | "pushing">("idle");
   const [gitError, setGitError] = useState<string | null>(null);
+  const [tokens, setTokens] = useState<PersonalAccessTokenInfo[]>([]);
+  const [tokenLabel, setTokenLabel] = useState("CLI token");
+  const [tokenExpiresAt, setTokenExpiresAt] = useState("");
+  const [newToken, setNewToken] = useState<CreatePatResponse | null>(null);
+  const [tokenError, setTokenError] = useState<string | null>(null);
   const [presenceUserIds, setPresenceUserIds] = useState<string[]>([]);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [newComment, setNewComment] = useState("");
@@ -103,6 +113,10 @@ export default function HomePage() {
         }
       })
       .catch(() => setProjects([]));
+
+    listPersonalAccessTokens()
+      .then((res) => setTokens(res.tokens))
+      .catch(() => setTokens([]));
   }, []);
 
   useEffect(() => {
@@ -274,6 +288,40 @@ export default function HomePage() {
     }
   }
 
+  async function refreshTokens() {
+    try {
+      const res = await listPersonalAccessTokens();
+      setTokens(res.tokens);
+    } catch {
+      setTokens([]);
+    }
+  }
+
+  async function handleCreateToken() {
+    if (tokenLabel.trim().length === 0) return;
+    setTokenError(null);
+    try {
+      const created = await createPersonalAccessToken({
+        label: tokenLabel.trim(),
+        expires_at: tokenExpiresAt.trim() || null
+      });
+      setNewToken(created);
+      await refreshTokens();
+    } catch {
+      setTokenError("Unable to create access token");
+    }
+  }
+
+  async function handleRevokeToken(tokenId: string) {
+    setTokenError(null);
+    try {
+      await revokePersonalAccessToken(tokenId);
+      await refreshTokens();
+    } catch {
+      setTokenError("Unable to revoke token");
+    }
+  }
+
   return (
     <main className="app">
       <header className="topbar">
@@ -393,6 +441,41 @@ export default function HomePage() {
                 createdAt: r.created_at
               }))}
             />
+            <h3>Security Settings: Access Tokens</h3>
+            <div className="meta">
+              <input
+                value={tokenLabel}
+                onChange={(e) => setTokenLabel(e.target.value)}
+                placeholder="Token label"
+                style={{ flex: 1, padding: 6 }}
+              />
+              <input
+                value={tokenExpiresAt}
+                onChange={(e) => setTokenExpiresAt(e.target.value)}
+                placeholder="Expires at (RFC3339, optional)"
+                style={{ flex: 1, padding: 6 }}
+              />
+              <button className="button" onClick={handleCreateToken}>
+                Create token
+              </button>
+            </div>
+            {newToken && (
+              <div className="error">
+                New token (shown once): <code>{newToken.token}</code>
+              </div>
+            )}
+            {tokens.map((t) => (
+              <div key={t.id} className="meta" style={{ justifyContent: "space-between" }}>
+                <span>
+                  {t.label} ({t.token_prefix}...) last used:{" "}
+                  {t.last_used_at ? new Date(t.last_used_at).toLocaleString() : "never"}
+                </span>
+                <button className="button" onClick={() => handleRevokeToken(t.id)}>
+                  Revoke
+                </button>
+              </div>
+            ))}
+            {tokenError && <div className="error">{tokenError}</div>}
             {actionError && <div className="error">{actionError}</div>}
           </div>
         </article>

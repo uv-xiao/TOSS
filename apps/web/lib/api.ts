@@ -53,6 +53,25 @@ export type Document = {
   updated_at: string;
 };
 
+export type PersonalAccessTokenInfo = {
+  id: string;
+  label: string;
+  token_prefix: string;
+  created_at: string;
+  expires_at: string | null;
+  last_used_at: string | null;
+  revoked_at: string | null;
+};
+
+export type CreatePatResponse = {
+  id: string;
+  label: string;
+  token: string;
+  token_prefix: string;
+  created_at: string;
+  expires_at: string | null;
+};
+
 export async function listProjects() {
   const res = await fetch(`${CORE_API_URL}/v1/projects`, {
     cache: "no-store",
@@ -127,6 +146,44 @@ export async function triggerGitPush(projectId: string) {
   });
   if (!res.ok) throw new Error("Git push failed");
   return (await res.json()) as GitSyncState;
+}
+
+export async function listPersonalAccessTokens() {
+  const res = await fetch(`${CORE_API_URL}/v1/security/tokens`, {
+    cache: "no-store",
+    headers: { "x-user-id": DEFAULT_USER_ID }
+  });
+  if (!res.ok) throw new Error("Unable to list tokens");
+  return (await res.json()) as { tokens: PersonalAccessTokenInfo[] };
+}
+
+export async function createPersonalAccessToken(input: {
+  label: string;
+  expires_at?: string | null;
+}) {
+  const res = await fetch(`${CORE_API_URL}/v1/security/tokens`, {
+    method: "POST",
+    headers: {
+      "x-user-id": DEFAULT_USER_ID,
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({
+      label: input.label,
+      expires_at: input.expires_at ?? null
+    })
+  });
+  if (!res.ok) throw new Error("Unable to create token");
+  return (await res.json()) as CreatePatResponse;
+}
+
+export async function revokePersonalAccessToken(tokenId: string) {
+  const res = await fetch(`${CORE_API_URL}/v1/security/tokens/${tokenId}`, {
+    method: "DELETE",
+    headers: {
+      "x-user-id": DEFAULT_USER_ID
+    }
+  });
+  if (!res.ok) throw new Error("Unable to revoke token");
 }
 
 export async function listComments(projectId: string) {

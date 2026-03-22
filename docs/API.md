@@ -39,8 +39,20 @@ Most project-scoped endpoints require `x-user-id` for RBAC context.
 - `POST /v1/git/sync/push/{project_id}`
 - `/{repo_url}` smart HTTP Git endpoint served by backend (`git clone`, `git pull`, `git push`)
 
+Git HTTP authentication:
+- Personal Access Token (PAT) only via HTTP Basic auth password field.
+- Session cookies are not accepted for Git transport.
+
 Current implementation stores sync state with audit events and uses a per-project local mirror to run real git pull/push commands.
 `git pull` imports remote files back into `documents` rows.
 Force push is rejected (`receive.denyNonFastForwards=true`).
 If collaborative edits happened on server, clients must pull/rebase/merge, then push again.
 Branch-aware PR flows are intentionally deferred to later phases.
+
+## Security tokens
+
+- `GET /v1/security/tokens` list current user tokens (without plaintext secrets)
+- `POST /v1/security/tokens` create token:
+  - accepts label and optional `expires_at` (RFC3339 or null)
+  - returns plaintext token exactly once in response
+- `DELETE /v1/security/tokens/{token_id}` revoke token

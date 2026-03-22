@@ -2,7 +2,7 @@ use axum::body::{Body, Bytes};
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Redirect};
-use axum::routing::{any, get, post, put};
+use axum::routing::{any, delete, get, post, put};
 use axum::{Json, Router};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use chrono::{DateTime, Utc};
@@ -16,6 +16,7 @@ use openidconnect::{
 use rand::distr::{Alphanumeric, SampleString};
 use reqwest::redirect::Policy;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
 use std::env;
@@ -170,6 +171,38 @@ struct AuthMeResponse {
 }
 
 #[derive(Serialize)]
+struct PersonalAccessTokenInfo {
+    id: Uuid,
+    label: String,
+    token_prefix: String,
+    created_at: DateTime<Utc>,
+    expires_at: Option<DateTime<Utc>>,
+    last_used_at: Option<DateTime<Utc>>,
+    revoked_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Serialize)]
+struct PersonalAccessTokenListResponse {
+    tokens: Vec<PersonalAccessTokenInfo>,
+}
+
+#[derive(Deserialize)]
+struct CreatePatInput {
+    label: String,
+    expires_at: Option<String>,
+}
+
+#[derive(Serialize)]
+struct CreatePatResponse {
+    id: Uuid,
+    label: String,
+    token: String,
+    token_prefix: String,
+    created_at: DateTime<Utc>,
+    expires_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Serialize)]
 struct Comment {
     id: Uuid,
     project_id: Uuid,
@@ -280,6 +313,8 @@ async fn main() {
         .route("/v1/auth/oidc/callback", get(oidc_callback))
         .route("/v1/auth/me", get(auth_me))
         .route("/v1/auth/logout", post(auth_logout))
+        .route("/v1/security/tokens", get(list_personal_access_tokens).post(create_personal_access_token))
+        .route("/v1/security/tokens/{token_id}", delete(revoke_personal_access_token))
         .route("/v1/projects", get(list_projects).post(create_project))
         .route("/v1/projects/{project_id}/roles", get(list_roles).post(upsert_role))
         .route("/v1/projects/{project_id}/comments", get(list_comments).post(create_comment))
@@ -675,6 +710,126 @@ async fn auth_logout(State(state): State<AppState>, jar: CookieJar) -> impl Into
     }
     let jar = jar.remove(Cookie::from("typst_session"));
     (jar, StatusCode::NO_CONTENT).into_response()
+}
+
+async fn list_personal_access_tokens(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    jar: CookieJar,
+) -> Result<Json<PersonalAccessTokenListResponse>, StatusCode> {
+    let user_id = authenticated_user_id(&state.db, &headers, &jar).await?;
+    let rows = sqlx::query(
+        "select id, label, token_prefix, created_at, expires_at, last_used_at, revoked_at
+         from personal_access_tokens
+         where user_id = $1
+         order by created_at desc",
+    )
+    .bind(user_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let tokens = rows
+        .into_iter()
+        .map(|r| PersonalAccessTokenInfo {
+            id: r.get("id"),
+            label: r.get("label"),
+            token_prefix: r.get("token_prefix"),
+            created_at: r.get("created_at"),
+            expires_at: r.get("expires_at"),
+            last_used_at: r.get("last_used_at"),
+            revoked_at: r.get("revoked_at"),
+        })
+        .collect();
+    Ok(Json(PersonalAccessTokenListResponse { tokens }))
+}
+
+async fn create_personal_access_token(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    jar: CookieJar,
+    Json(input): Json<CreatePatInput>,
+) -> Result<Json<CreatePatResponse>, StatusCode> {
+    let user_id = authenticated_user_id(&state.db, &headers, &jar).await?;
+    let label = input.label.trim();
+    if label.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let expires_at = if let Some(raw) = input.expires_at {
+        Some(
+            DateTime::parse_from_rfc3339(&raw)
+                .map_err(|_| StatusCode::BAD_REQUEST)?
+                .with_timezone(&Utc),
+        )
+    } else {
+        None
+    };
+    let token_id = Uuid::new_v4();
+    let created_at = Utc::now();
+    let plain = format!("tpat_{}", random_token(40));
+    let token_prefix = plain.chars().take(12).collect::<String>();
+    let token_hash = token_sha256(&plain);
+    sqlx::query(
+        "insert into personal_access_tokens (id, user_id, label, token_prefix, token_hash, created_at, expires_at, last_used_at, revoked_at)
+         values ($1, $2, $3, $4, $5, $6, $7, null, null)",
+    )
+    .bind(token_id)
+    .bind(user_id)
+    .bind(label)
+    .bind(&token_prefix)
+    .bind(token_hash)
+    .bind(created_at)
+    .bind(expires_at)
+    .execute(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    write_audit(
+        &state.db,
+        Some(user_id),
+        "security.token.create",
+        serde_json::json!({"token_id": token_id, "label": label}),
+    )
+    .await;
+
+    Ok(Json(CreatePatResponse {
+        id: token_id,
+        label: label.to_string(),
+        token: plain,
+        token_prefix,
+        created_at,
+        expires_at,
+    }))
+}
+
+async fn revoke_personal_access_token(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    jar: CookieJar,
+    Path(token_id): Path<Uuid>,
+) -> Result<StatusCode, StatusCode> {
+    let user_id = authenticated_user_id(&state.db, &headers, &jar).await?;
+    let res = sqlx::query(
+        "update personal_access_tokens
+         set revoked_at = $3
+         where id = $1 and user_id = $2 and revoked_at is null",
+    )
+    .bind(token_id)
+    .bind(user_id)
+    .bind(Utc::now())
+    .execute(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if res.rows_affected() == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    write_audit(
+        &state.db,
+        Some(user_id),
+        "security.token.revoke",
+        serde_json::json!({"token_id": token_id}),
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn list_projects(
@@ -1461,7 +1616,14 @@ async fn git_http_backend(
 ) -> impl IntoResponse {
     let actor = match git_http_user(&state.db, &headers).await {
         Some(user_id) => user_id,
-        None => return (StatusCode::UNAUTHORIZED, "Git auth required").into_response(),
+        None => {
+            let mut resp = (StatusCode::UNAUTHORIZED, "Git auth required").into_response();
+            resp.headers_mut().insert(
+                header::WWW_AUTHENTICATE,
+                header::HeaderValue::from_static("Basic realm=\"Typst Git\""),
+            );
+            return resp;
+        }
     };
     let can_push = rest.ends_with("git-receive-pack");
     let need = if can_push { AccessNeed::GitSync } else { AccessNeed::Read };
@@ -1993,24 +2155,63 @@ fn parse_cgi_http_backend_output(raw: &[u8]) -> (StatusCode, Vec<(String, String
 }
 
 async fn git_http_user(db: &PgPool, headers: &HeaderMap) -> Option<Uuid> {
-    if let Some(uid) = actor_user_id(headers) {
-        return Some(uid);
-    }
     let auth = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
     let basic = auth.strip_prefix("Basic ")?;
     let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, basic).ok()?;
     let creds = String::from_utf8(decoded).ok()?;
-    let (_, password) = creds.split_once(':')?;
+    let (_, token) = creds.split_once(':')?;
+    let hash = token_sha256(token);
     let row = sqlx::query(
-        "select user_id from auth_sessions where session_token = $1 and expires_at > now()",
+        "select user_id from personal_access_tokens
+         where token_hash = $1
+           and revoked_at is null
+           and (expires_at is null or expires_at > now())",
     )
-    .bind(password)
+    .bind(hash)
     .fetch_optional(db)
     .await
     .ok()??;
-    Some(row.get("user_id"))
+    let user_id: Uuid = row.get("user_id");
+    let _ = sqlx::query(
+        "update personal_access_tokens set last_used_at = $2 where token_hash = $1",
+    )
+    .bind(token_sha256(token))
+    .bind(Utc::now())
+    .execute(db)
+    .await;
+    Some(user_id)
 }
 
 fn random_token(length: usize) -> String {
     Alphanumeric.sample_string(&mut rand::rng(), length)
+}
+
+fn token_sha256(value: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(value.as_bytes());
+    let bytes = hasher.finalize();
+    bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+}
+
+async fn authenticated_user_id(
+    db: &PgPool,
+    headers: &HeaderMap,
+    jar: &CookieJar,
+) -> Result<Uuid, StatusCode> {
+    if let Some(token) = jar.get("typst_session").map(|c| c.value().to_string()) {
+        let row = sqlx::query(
+            "select user_id from auth_sessions where session_token = $1 and expires_at > now()",
+        )
+        .bind(token)
+        .fetch_optional(db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if let Some(r) = row {
+            return Ok(r.get("user_id"));
+        }
+    }
+    if let Some(uid) = actor_user_id(headers) {
+        return Ok(uid);
+    }
+    Err(StatusCode::UNAUTHORIZED)
 }

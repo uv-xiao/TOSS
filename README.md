@@ -53,11 +53,19 @@ browser compatibility hardening for Typst WASM, and richer in-app Git conflict U
 ## Git server behavior
 
 - Repo link endpoint: `GET /v1/git/repo-link/{project_id}`
+- Git auth uses Personal Access Tokens only (HTTP Basic password = PAT)
 - Collaborative changes are wrapped into a system commit:
   - `Recent updates on Typst server`
   - `Co-authored-by` trailers for collaborative users
 - Force push is rejected by server policy (`receive.denyNonFastForwards=true`)
 - Offline users must `git pull`, rebase/merge, and retry push when server changed.
+
+## Security tokens behavior
+
+- User can create one or more PATs in security settings APIs
+- Plaintext PAT is shown once at creation time only
+- Optional expiration is supported
+- Last-used timestamp is recorded on successful Git auth
 
 ## Browser fallback policy
 
