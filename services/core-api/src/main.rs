@@ -2215,7 +2215,7 @@ async fn git_http_backend(
     };
     let can_push = rest.ends_with("git-receive-pack");
     let need = if can_push { AccessNeed::GitSync } else { AccessNeed::Read };
-    if ensure_project_role(&state.db, &headers, project_id, need)
+    if ensure_project_role_for_user(&state.db, actor, project_id, need)
         .await
         .is_err()
     {
@@ -2323,13 +2323,22 @@ async fn ensure_project_role(
     let Some(actor) = request_user_id(db, headers).await else {
         return Err(StatusCode::UNAUTHORIZED);
     };
+    ensure_project_role_for_user(db, actor, project_id, need).await?;
+    Ok(actor)
+}
+
+async fn ensure_project_role_for_user(
+    db: &PgPool,
+    actor: Uuid,
+    project_id: Uuid,
+    need: AccessNeed,
+) -> Result<(), StatusCode> {
     let row = sqlx::query("select role from project_roles where project_id = $1 and user_id = $2")
         .bind(project_id)
         .bind(actor)
         .fetch_optional(db)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
     let Some(row) = row else {
         return Err(StatusCode::FORBIDDEN);
     };
@@ -2337,7 +2346,6 @@ async fn ensure_project_role(
     let Some(role) = ProjectRole::from_db(&role_str) else {
         return Err(StatusCode::FORBIDDEN);
     };
-
     let allowed = match need {
         AccessNeed::Read => true,
         AccessNeed::Write => matches!(
@@ -2347,9 +2355,8 @@ async fn ensure_project_role(
         AccessNeed::Manage => matches!(role, ProjectRole::Owner | ProjectRole::Teacher),
         AccessNeed::GitSync => matches!(role, ProjectRole::Owner | ProjectRole::Teacher | ProjectRole::TA),
     };
-
     if allowed {
-        Ok(actor)
+        Ok(())
     } else {
         Err(StatusCode::FORBIDDEN)
     }
