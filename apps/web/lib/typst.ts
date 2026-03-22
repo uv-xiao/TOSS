@@ -5,12 +5,39 @@ export type CompileOutput = {
 };
 
 const encoder = new TextEncoder();
+let typstPromise: Promise<typeof import("@myriaddreamin/typst.ts")> | null = null;
+
+function getTypstModule() {
+  if (!typstPromise) {
+    typstPromise = import("@myriaddreamin/typst.ts");
+  }
+  return typstPromise;
+}
 
 function fakePdfFromSource(source: string): string {
   const payload = btoa(
     unescape(encodeURIComponent(`Typst preview placeholder\n\n${source}`))
   );
   return `data:application/pdf;base64,${payload}`;
+}
+
+async function compileWithTypstWasm(source: string): Promise<string | null> {
+  try {
+    const { $typst } = await getTypstModule();
+    const result = await $typst.pdf({
+      mainContent: source
+    });
+    if (!result || result.byteLength === 0) return null;
+    const bytes = new Uint8Array(result);
+    const buffer = bytes.buffer.slice(
+      bytes.byteOffset,
+      bytes.byteOffset + bytes.byteLength
+    ) as ArrayBuffer;
+    const blob = new Blob([buffer], { type: "application/pdf" });
+    return URL.createObjectURL(blob);
+  } catch {
+    return null;
+  }
 }
 
 export async function compileTypstClientSide(source: string): Promise<CompileOutput> {
@@ -24,18 +51,18 @@ export async function compileTypstClientSide(source: string): Promise<CompileOut
 
   encoder.encode(source);
 
-  if (source.includes("compile_error_demo")) {
+  const wasmPdf = await compileWithTypstWasm(source);
+  if (wasmPdf) {
     return {
-      pdfDataUrl: null,
-      errors: ["Compilation error: unknown identifier `compile_error_demo`"],
+      pdfDataUrl: wasmPdf,
+      errors: [],
       compiledAt: Date.now()
     };
   }
 
   return {
     pdfDataUrl: fakePdfFromSource(source),
-    errors: [],
+    errors: ["Typst WASM runtime unavailable, using fallback preview"],
     compiledAt: Date.now()
   };
 }
-

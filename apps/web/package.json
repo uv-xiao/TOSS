@@ -12,12 +12,15 @@
     "@codemirror/lang-markdown": "^6.3.3",
     "@codemirror/state": "^6.5.2",
     "@codemirror/view": "^6.36.7",
+    "@myriaddreamin/typst-ts-renderer": "^0.7.0-rc2",
+    "@myriaddreamin/typst-ts-web-compiler": "^0.7.0-rc2",
+    "@myriaddreamin/typst.ts": "^0.7.0-rc2",
     "@uiw/react-codemirror": "^4.23.12",
     "next": "^15.3.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "yjs": "^13.6.22",
-    "y-websocket": "^1.5.4"
+    "y-websocket": "^1.5.4",
+    "yjs": "^13.6.22"
   },
   "devDependencies": {
     "@types/node": "^22.15.18",
@@ -26,4 +29,3 @@
     "typescript": "^5.8.3"
   }
 }
-

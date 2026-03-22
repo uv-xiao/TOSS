@@ -39,6 +39,7 @@ export default function HomePage() {
   const ydocRef = useRef<Y.Doc | null>(null);
   const ytextRef = useRef<Y.Text | null>(null);
   const lastSavedDocRef = useRef<string>(DEFAULT_DOC);
+  const currentPdfUrlRef = useRef<string | null>(null);
   const [document, setDocument] = useState(DEFAULT_DOC);
   const deferredDocument = useDeferredValue(document);
   const [pdfDataUrl, setPdfDataUrl] = useState<string | null>(null);
@@ -144,6 +145,10 @@ export default function HomePage() {
     startTransition(() => {
       compileTypstClientSide(deferredDocument).then((output) => {
         if (cancelled) return;
+        if (currentPdfUrlRef.current?.startsWith("blob:")) {
+          URL.revokeObjectURL(currentPdfUrlRef.current);
+        }
+        currentPdfUrlRef.current = output.pdfDataUrl;
         setPdfDataUrl(output.pdfDataUrl);
         setCompileErrors(output.errors);
         setCompiledAt(output.compiledAt);
@@ -153,6 +158,14 @@ export default function HomePage() {
       cancelled = true;
     };
   }, [deferredDocument]);
+
+  useEffect(() => {
+    return () => {
+      if (currentPdfUrlRef.current?.startsWith("blob:")) {
+        URL.revokeObjectURL(currentPdfUrlRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!selectedProject) return;
