@@ -78,6 +78,16 @@ export function bindRealtimeYDoc(params: {
       if (kind === "presence.join" && typeof eventUserId === "string") {
         presenceUsers.add(eventUserId);
         notifyPresence();
+        if (eventUserId !== userId && ws.readyState === WebSocket.OPEN) {
+          const snapshot = Y.encodeStateAsUpdate(params.ydoc);
+          ws.send(
+            JSON.stringify({
+              kind: "yjs.sync",
+              origin,
+              payload: uint8ToBase64(snapshot)
+            })
+          );
+        }
       }
       if (kind === "presence.leave" && typeof eventUserId === "string") {
         presenceUsers.delete(eventUserId);
