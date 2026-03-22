@@ -1,6 +1,14 @@
 export const CORE_API_URL =
   process.env.NEXT_PUBLIC_CORE_API_URL ?? "http://localhost:8080";
-const DEFAULT_USER_ID = "00000000-0000-0000-0000-000000000100";
+const DEV_USER_ID = process.env.NEXT_PUBLIC_DEV_USER_ID ?? "";
+
+function authHeaders(extra?: Record<string, string>) {
+  const headers: Record<string, string> = { ...(extra ?? {}) };
+  if (DEV_USER_ID) {
+    headers["x-user-id"] = DEV_USER_ID;
+  }
+  return headers;
+}
 
 export type ProjectRole = "Owner" | "Teacher" | "Student" | "TA";
 
@@ -72,10 +80,38 @@ export type CreatePatResponse = {
   expires_at: string | null;
 };
 
+export async function getAuthMe() {
+  const res = await fetch(`${CORE_API_URL}/v1/auth/me`, {
+    cache: "no-store",
+    credentials: "include",
+    headers: authHeaders()
+  });
+  if (!res.ok) return null;
+  return (await res.json()) as {
+    user_id: string;
+    email: string;
+    display_name: string;
+    session_expires_at: string;
+  };
+}
+
+export function oidcLoginUrl() {
+  return `${CORE_API_URL}/v1/auth/oidc/login`;
+}
+
+export async function logout() {
+  await fetch(`${CORE_API_URL}/v1/auth/logout`, {
+    method: "POST",
+    credentials: "include",
+    headers: authHeaders()
+  });
+}
+
 export async function listProjects() {
   const res = await fetch(`${CORE_API_URL}/v1/projects`, {
     cache: "no-store",
-    headers: { "x-user-id": DEFAULT_USER_ID }
+    credentials: "include",
+    headers: authHeaders()
   });
   if (!res.ok) {
     throw new Error("Unable to load projects");
@@ -86,7 +122,8 @@ export async function listProjects() {
 export async function getGitStatus(projectId: string) {
   const res = await fetch(`${CORE_API_URL}/v1/git/status/${projectId}`, {
     cache: "no-store",
-    headers: { "x-user-id": DEFAULT_USER_ID }
+    credentials: "include",
+    headers: authHeaders()
   });
   if (!res.ok) {
     throw new Error("Unable to get git status");
@@ -97,7 +134,8 @@ export async function getGitStatus(projectId: string) {
 export async function getGitConfig(projectId: string) {
   const res = await fetch(`${CORE_API_URL}/v1/git/config/${projectId}`, {
     cache: "no-store",
-    headers: { "x-user-id": DEFAULT_USER_ID }
+    credentials: "include",
+    headers: authHeaders()
   });
   if (!res.ok) throw new Error("Unable to get git config");
   return (await res.json()) as GitRemoteConfig;
@@ -109,10 +147,10 @@ export async function upsertGitConfig(
 ) {
   const res = await fetch(`${CORE_API_URL}/v1/git/config/${projectId}`, {
     method: "PUT",
-    headers: {
-      "x-user-id": DEFAULT_USER_ID,
+    credentials: "include",
+    headers: authHeaders({
       "content-type": "application/json"
-    },
+    }),
     body: JSON.stringify({
       remote_url: input.remote_url ?? null,
       default_branch: input.default_branch ?? "main"
@@ -125,11 +163,11 @@ export async function upsertGitConfig(
 export async function triggerGitPull(projectId: string) {
   const res = await fetch(`${CORE_API_URL}/v1/git/sync/pull/${projectId}`, {
     method: "POST",
-    headers: {
-      "x-user-id": DEFAULT_USER_ID,
+    credentials: "include",
+    headers: authHeaders({
       "content-type": "application/json"
-    },
-    body: JSON.stringify({ actor_user_id: DEFAULT_USER_ID })
+    }),
+    body: JSON.stringify({})
   });
   if (!res.ok) throw new Error("Git pull failed");
   return (await res.json()) as GitSyncState;
@@ -138,11 +176,11 @@ export async function triggerGitPull(projectId: string) {
 export async function triggerGitPush(projectId: string) {
   const res = await fetch(`${CORE_API_URL}/v1/git/sync/push/${projectId}`, {
     method: "POST",
-    headers: {
-      "x-user-id": DEFAULT_USER_ID,
+    credentials: "include",
+    headers: authHeaders({
       "content-type": "application/json"
-    },
-    body: JSON.stringify({ actor_user_id: DEFAULT_USER_ID })
+    }),
+    body: JSON.stringify({})
   });
   if (!res.ok) throw new Error("Git push failed");
   return (await res.json()) as GitSyncState;
@@ -151,7 +189,8 @@ export async function triggerGitPush(projectId: string) {
 export async function listPersonalAccessTokens() {
   const res = await fetch(`${CORE_API_URL}/v1/security/tokens`, {
     cache: "no-store",
-    headers: { "x-user-id": DEFAULT_USER_ID }
+    credentials: "include",
+    headers: authHeaders()
   });
   if (!res.ok) throw new Error("Unable to list tokens");
   return (await res.json()) as { tokens: PersonalAccessTokenInfo[] };
@@ -163,10 +202,10 @@ export async function createPersonalAccessToken(input: {
 }) {
   const res = await fetch(`${CORE_API_URL}/v1/security/tokens`, {
     method: "POST",
-    headers: {
-      "x-user-id": DEFAULT_USER_ID,
+    credentials: "include",
+    headers: authHeaders({
       "content-type": "application/json"
-    },
+    }),
     body: JSON.stringify({
       label: input.label,
       expires_at: input.expires_at ?? null
@@ -179,9 +218,8 @@ export async function createPersonalAccessToken(input: {
 export async function revokePersonalAccessToken(tokenId: string) {
   const res = await fetch(`${CORE_API_URL}/v1/security/tokens/${tokenId}`, {
     method: "DELETE",
-    headers: {
-      "x-user-id": DEFAULT_USER_ID
-    }
+    credentials: "include",
+    headers: authHeaders()
   });
   if (!res.ok) throw new Error("Unable to revoke token");
 }
@@ -189,7 +227,8 @@ export async function revokePersonalAccessToken(tokenId: string) {
 export async function listComments(projectId: string) {
   const res = await fetch(`${CORE_API_URL}/v1/projects/${projectId}/comments`, {
     cache: "no-store",
-    headers: { "x-user-id": DEFAULT_USER_ID }
+    credentials: "include",
+    headers: authHeaders()
   });
   if (!res.ok) throw new Error("Unable to list comments");
   return (await res.json()) as { comments: Comment[] };
@@ -198,7 +237,8 @@ export async function listComments(projectId: string) {
 export async function listRevisions(projectId: string) {
   const res = await fetch(`${CORE_API_URL}/v1/projects/${projectId}/revisions`, {
     cache: "no-store",
-    headers: { "x-user-id": DEFAULT_USER_ID }
+    credentials: "include",
+    headers: authHeaders()
   });
   if (!res.ok) throw new Error("Unable to list revisions");
   return (await res.json()) as { revisions: Revision[] };
@@ -207,7 +247,8 @@ export async function listRevisions(projectId: string) {
 export async function listDocuments(projectId: string) {
   const res = await fetch(`${CORE_API_URL}/v1/projects/${projectId}/documents`, {
     cache: "no-store",
-    headers: { "x-user-id": DEFAULT_USER_ID }
+    credentials: "include",
+    headers: authHeaders()
   });
   if (!res.ok) throw new Error("Unable to list documents");
   return (await res.json()) as { documents: Document[] };
@@ -217,10 +258,10 @@ export async function upsertDocumentByPath(projectId: string, path: string, cont
   const safePath = encodeURIComponent(path);
   const res = await fetch(`${CORE_API_URL}/v1/projects/${projectId}/documents/by-path/${safePath}`, {
     method: "PUT",
-    headers: {
-      "x-user-id": DEFAULT_USER_ID,
+    credentials: "include",
+    headers: authHeaders({
       "content-type": "application/json"
-    },
+    }),
     body: JSON.stringify({ content })
   });
   if (!res.ok) throw new Error("Unable to save document");
@@ -230,10 +271,10 @@ export async function upsertDocumentByPath(projectId: string, path: string, cont
 export async function createComment(projectId: string, body: string, anchor?: string) {
   const res = await fetch(`${CORE_API_URL}/v1/projects/${projectId}/comments`, {
     method: "POST",
-    headers: {
-      "x-user-id": DEFAULT_USER_ID,
+    credentials: "include",
+    headers: authHeaders({
       "content-type": "application/json"
-    },
+    }),
     body: JSON.stringify({ body, anchor })
   });
   if (!res.ok) throw new Error("Unable to create comment");
@@ -243,10 +284,10 @@ export async function createComment(projectId: string, body: string, anchor?: st
 export async function createRevision(projectId: string, summary: string) {
   const res = await fetch(`${CORE_API_URL}/v1/projects/${projectId}/revisions`, {
     method: "POST",
-    headers: {
-      "x-user-id": DEFAULT_USER_ID,
+    credentials: "include",
+    headers: authHeaders({
       "content-type": "application/json"
-    },
+    }),
     body: JSON.stringify({ summary })
   });
   if (!res.ok) throw new Error("Unable to create revision");

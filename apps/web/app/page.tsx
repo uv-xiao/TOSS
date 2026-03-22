@@ -13,6 +13,7 @@ import {
   createPersonalAccessToken,
   createComment,
   createRevision,
+  getAuthMe,
   getGitConfig,
   getGitStatus,
   listPersonalAccessTokens,
@@ -20,6 +21,8 @@ import {
   listDocuments,
   listProjects,
   listRevisions,
+  logout,
+  oidcLoginUrl,
   revokePersonalAccessToken,
   triggerGitPull,
   triggerGitPush,
@@ -40,7 +43,7 @@ This is a collaborative document.
 `;
 
 export default function HomePage() {
-  const userId = "00000000-0000-0000-0000-000000000100";
+  const localUserId = "local-user";
   const ydocRef = useRef<Y.Doc | null>(null);
   const ytextRef = useRef<Y.Text | null>(null);
   const lastSavedDocRef = useRef<string>(DEFAULT_DOC);
@@ -70,6 +73,13 @@ export default function HomePage() {
   const [newComment, setNewComment] = useState("");
   const [newRevision, setNewRevision] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
+  const [authUser, setAuthUser] = useState<{
+    user_id: string;
+    email: string;
+    display_name: string;
+    session_expires_at: string;
+  } | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
 
   useEffect(() => {
     const ydoc = new Y.Doc();
@@ -89,7 +99,7 @@ export default function HomePage() {
       docId: "demo-main-typ",
       wsBaseUrl: process.env.NEXT_PUBLIC_REALTIME_URL ?? "ws://localhost:8090",
       ydoc,
-      userId,
+      userId: authUser?.user_id ?? localUserId,
       onPresenceChange: setPresenceUserIds
     });
 
@@ -102,9 +112,16 @@ export default function HomePage() {
       ydocRef.current = null;
       ytextRef.current = null;
     };
+  }, [authUser?.user_id]);
+
+  useEffect(() => {
+    getAuthMe()
+      .then((me) => setAuthUser(me))
+      .finally(() => setAuthLoading(false));
   }, []);
 
   useEffect(() => {
+    if (authLoading) return;
     listProjects()
       .then((data) => {
         setProjects(data.projects);
@@ -117,7 +134,7 @@ export default function HomePage() {
     listPersonalAccessTokens()
       .then((res) => setTokens(res.tokens))
       .catch(() => setTokens([]));
-  }, []);
+  }, [authLoading, authUser?.user_id]);
 
   useEffect(() => {
     if (!selectedProject) return;
@@ -322,15 +339,37 @@ export default function HomePage() {
     }
   }
 
+  async function handleLogout() {
+    await logout();
+    setAuthUser(null);
+    setProjects([]);
+    setSelectedProject("");
+    setTokens([]);
+  }
+
   return (
     <main className="app">
       <header className="topbar">
         <strong>Typst School Collaboration</strong>
+        <div className="meta">
+          {authUser ? (
+            <>
+              <span>{authUser.display_name}</span>
+              <button className="button" onClick={handleLogout}>
+                Logout
+              </button>
+            </>
+          ) : (
+            <a className="button" href={oidcLoginUrl()}>
+              Sign in with OIDC
+            </a>
+          )}
+        </div>
         <PresenceBar
           users={presenceUserIds.map((id, idx) => ({
             id,
-            name: id === userId ? "You" : `Peer ${idx + 1}`,
-            color: id === userId ? "#1d6fa5" : "#2f8f2f"
+            name: id === (authUser?.user_id ?? localUserId) ? "You" : `Peer ${idx + 1}`,
+            color: id === (authUser?.user_id ?? localUserId) ? "#1d6fa5" : "#2f8f2f"
           }))}
         />
       </header>

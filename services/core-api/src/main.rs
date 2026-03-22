@@ -29,8 +29,6 @@ use tower_http::trace::TraceLayer;
 use tracing::{error, info};
 use uuid::Uuid;
 
-const DEFAULT_USER_ID: &str = "00000000-0000-0000-0000-000000000100";
-
 #[derive(Clone)]
 struct AppState {
     db: PgPool,
@@ -836,7 +834,9 @@ async fn list_projects(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<ProjectListResponse>, StatusCode> {
-    let actor = actor_user_id(&headers).unwrap_or_else(|| Uuid::parse_str(DEFAULT_USER_ID).unwrap());
+    let Some(actor) = request_user_id(&state.db, &headers).await else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
     let rows = sqlx::query(
         "select p.id, p.organization_id, p.name, p.description, p.created_at
          from projects p
@@ -868,7 +868,9 @@ async fn create_project(
     headers: HeaderMap,
     Json(input): Json<CreateProjectInput>,
 ) -> Result<Json<Project>, StatusCode> {
-    let actor = actor_user_id(&headers).unwrap_or_else(|| Uuid::parse_str(DEFAULT_USER_ID).unwrap());
+    let Some(actor) = request_user_id(&state.db, &headers).await else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
     let id = Uuid::new_v4();
     let created_at = Utc::now();
     let row = sqlx::query(
@@ -1731,7 +1733,9 @@ async fn ensure_project_role(
     project_id: Uuid,
     need: AccessNeed,
 ) -> Result<Uuid, StatusCode> {
-    let actor = actor_user_id(headers).unwrap_or_else(|| Uuid::parse_str(DEFAULT_USER_ID).unwrap());
+    let Some(actor) = request_user_id(db, headers).await else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
     let row = sqlx::query("select role from project_roles where project_id = $1 and user_id = $2")
         .bind(project_id)
         .bind(actor)
@@ -1769,6 +1773,55 @@ fn actor_user_id(headers: &HeaderMap) -> Option<Uuid> {
         .get("x-user-id")
         .and_then(|h| h.to_str().ok())
         .and_then(|v| Uuid::parse_str(v).ok())
+}
+
+async fn request_user_id(db: &PgPool, headers: &HeaderMap) -> Option<Uuid> {
+    if let Some(uid) = actor_user_id(headers) {
+        return Some(uid);
+    }
+    if let Some(token) = bearer_token(headers) {
+        if let Some(uid) = session_user_id(db, &token).await {
+            return Some(uid);
+        }
+    }
+    if let Some(token) = cookie_value(headers, "typst_session") {
+        if let Some(uid) = session_user_id(db, &token).await {
+            return Some(uid);
+        }
+    }
+    None
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(|v| v.trim().to_string())
+}
+
+fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
+    let cookie_header = headers.get(header::COOKIE)?.to_str().ok()?;
+    for part in cookie_header.split(';') {
+        let p = part.trim();
+        if let Some((k, v)) = p.split_once('=') {
+            if k.trim() == name {
+                return Some(v.trim().to_string());
+            }
+        }
+    }
+    None
+}
+
+async fn session_user_id(db: &PgPool, token: &str) -> Option<Uuid> {
+    let row = sqlx::query(
+        "select user_id from auth_sessions where session_token = $1 and expires_at > now()",
+    )
+    .bind(token)
+    .fetch_optional(db)
+    .await
+    .ok()??;
+    Some(row.get("user_id"))
 }
 
 async fn write_audit(db: &PgPool, actor_user_id: Option<Uuid>, event_type: &str, payload: serde_json::Value) {
@@ -2198,20 +2251,13 @@ async fn authenticated_user_id(
     headers: &HeaderMap,
     jar: &CookieJar,
 ) -> Result<Uuid, StatusCode> {
-    if let Some(token) = jar.get("typst_session").map(|c| c.value().to_string()) {
-        let row = sqlx::query(
-            "select user_id from auth_sessions where session_token = $1 and expires_at > now()",
-        )
-        .bind(token)
-        .fetch_optional(db)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        if let Some(r) = row {
-            return Ok(r.get("user_id"));
-        }
-    }
-    if let Some(uid) = actor_user_id(headers) {
+    if let Some(uid) = request_user_id(db, headers).await {
         return Ok(uid);
+    }
+    if let Some(token) = jar.get("typst_session").map(|c| c.value().to_string()) {
+        if let Some(uid) = session_user_id(db, &token).await {
+            return Ok(uid);
+        }
     }
     Err(StatusCode::UNAUTHORIZED)
 }
