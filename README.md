@@ -17,6 +17,20 @@ Monorepo scaffold for a self-hosted Typst collaboration platform with:
    - `curl http://localhost:8080/health`
    - `curl http://localhost:8090/health`
 
+## Local dev without Docker
+
+1. Ensure PostgreSQL is running and `DATABASE_URL` points to it.
+2. Start core API:
+   - `cd services/core-api`
+   - `DATABASE_URL=postgres://... CORE_API_PORT=8080 GIT_STORAGE_PATH=/tmp/typst-git cargo run`
+3. Start realtime:
+   - `cd services/realtime`
+   - `REALTIME_PORT=8090 CHECKPOINT_STORAGE_PREFIX=/tmp/typst-checkpoints cargo run`
+4. Start web:
+   - `cd apps/web`
+   - `npm install`
+   - `NEXT_PUBLIC_CORE_API_URL=http://localhost:8080 NEXT_PUBLIC_REALTIME_URL=ws://localhost:8090 npm run dev`
+
 ## Services
 
 - `apps/web`: Next.js app
@@ -26,10 +40,14 @@ Monorepo scaffold for a self-hosted Typst collaboration platform with:
 
 ## Current status
 
-This repository implements a working v1 foundation and API surface.
-Some advanced capabilities (full OIDC handshake with external provider,
-Typst WASM incremental compile internals, real Git remote auth workflows)
-are scaffolded with clean interfaces and mocked/default behavior for local bring-up.
+This repository implements a working v1 foundation and API surface with:
+- project-level RBAC APIs
+- realtime collaboration service with presence and checkpoint replay
+- client-side Typst WASM PDF compile path with fallback preview
+- Git mirror config + pull/push synchronization against a real remote
+
+Remaining advanced work includes production-grade OIDC token validation,
+browser compatibility hardening for Typst WASM, and richer Git conflict UI/flows.
 
 ## Seed users
 

@@ -32,8 +32,11 @@ Most project-scoped endpoints require `x-user-id` for RBAC context.
 ## Git sync (main branch in v1)
 
 - `GET /v1/git/status/{project_id}`
+- `GET /v1/git/config/{project_id}`
+- `PUT /v1/git/config/{project_id}`
 - `POST /v1/git/sync/pull/{project_id}`
 - `POST /v1/git/sync/push/{project_id}`
 
-Current implementation stores and updates sync state with audit events.
+Current implementation stores sync state with audit events and uses a per-project local mirror to run real git pull/push commands.
+`git pull` imports remote files back into `documents` rows.
 Branch-aware PR flows are intentionally deferred to later phases.

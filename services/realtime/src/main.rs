@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio::sync::RwLock;
@@ -20,6 +21,7 @@ use uuid::Uuid;
 #[derive(Clone)]
 struct AppState {
     channels: Arc<RwLock<HashMap<String, broadcast::Sender<CollabEvent>>>>,
+    checkpoint_dir: PathBuf,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -49,7 +51,11 @@ async fn main() {
 
     let state = AppState {
         channels: Arc::new(RwLock::new(HashMap::new())),
+        checkpoint_dir: env::var("CHECKPOINT_STORAGE_PREFIX")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("/tmp/typst-checkpoints")),
     };
+    let _ = std::fs::create_dir_all(&state.checkpoint_dir);
 
     let app = Router::new()
         .route("/health", get(health))
@@ -119,6 +125,18 @@ async fn handle_socket(socket: WebSocket, doc_id: String, query: WsQuery, state:
     let sender = get_or_create_sender(&state.channels, &doc_id).await;
     let mut rx = sender.subscribe();
     let (mut ws_tx, mut ws_rx) = socket.split();
+    if let Some(checkpoint) = load_checkpoint(&state.checkpoint_dir, &doc_id) {
+        let checkpoint_event = CollabEvent {
+            doc_id: doc_id.clone(),
+            user_id: "system".to_string(),
+            kind: "checkpoint.replay".to_string(),
+            payload: checkpoint,
+            at: Utc::now(),
+        };
+        if let Ok(text) = serde_json::to_string(&checkpoint_event) {
+            let _ = ws_tx.send(Message::Text(text.into())).await;
+        }
+    }
 
     let joined = CollabEvent {
         doc_id: doc_id.clone(),
@@ -153,6 +171,7 @@ async fn handle_socket(socket: WebSocket, doc_id: String, query: WsQuery, state:
                     payload: incoming,
                     at: Utc::now(),
                 };
+                store_checkpoint(&state.checkpoint_dir, &doc_id, &event.payload);
                 let _ = sender.send(event);
             }
             Message::Binary(bin) => {
@@ -163,6 +182,7 @@ async fn handle_socket(socket: WebSocket, doc_id: String, query: WsQuery, state:
                     payload: serde_json::json!({ "bytes": bin.len() }),
                     at: Utc::now(),
                 };
+                store_checkpoint(&state.checkpoint_dir, &doc_id, &event.payload);
                 let _ = sender.send(event);
             }
             Message::Close(_) => break,
@@ -179,4 +199,25 @@ async fn handle_socket(socket: WebSocket, doc_id: String, query: WsQuery, state:
     };
     let _ = sender.send(left);
     send_task.abort();
+}
+
+fn checkpoint_path(base: &PathBuf, doc_id: &str) -> PathBuf {
+    let sanitized = doc_id.replace('/', "_");
+    base.join(format!("{sanitized}.json"))
+}
+
+fn store_checkpoint(base: &PathBuf, doc_id: &str, payload: &serde_json::Value) {
+    let path = checkpoint_path(base, doc_id);
+    let body = serde_json::json!({
+        "doc_id": doc_id,
+        "at": Utc::now(),
+        "payload": payload
+    });
+    let _ = std::fs::write(path, body.to_string());
+}
+
+fn load_checkpoint(base: &PathBuf, doc_id: &str) -> Option<serde_json::Value> {
+    let path = checkpoint_path(base, doc_id);
+    let content = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str::<serde_json::Value>(&content).ok()
 }
