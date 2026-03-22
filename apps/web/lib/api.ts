@@ -80,6 +80,13 @@ export type CreatePatResponse = {
   expires_at: string | null;
 };
 
+export type ProjectGroupRoleBinding = {
+  project_id: string;
+  group_name: string;
+  role: ProjectRole;
+  granted_at: string;
+};
+
 export async function getAuthMe() {
   const res = await fetch(`${CORE_API_URL}/v1/auth/me`, {
     cache: "no-store",
@@ -292,4 +299,40 @@ export async function createRevision(projectId: string, summary: string) {
   });
   if (!res.ok) throw new Error("Unable to create revision");
   return (await res.json()) as Revision;
+}
+
+export async function listProjectGroupRoles(projectId: string) {
+  const res = await fetch(`${CORE_API_URL}/v1/projects/${projectId}/group-roles`, {
+    cache: "no-store",
+    credentials: "include",
+    headers: authHeaders()
+  });
+  if (!res.ok) throw new Error("Unable to list project group roles");
+  return (await res.json()) as ProjectGroupRoleBinding[];
+}
+
+export async function upsertProjectGroupRole(
+  projectId: string,
+  input: { group_name: string; role: ProjectRole }
+) {
+  const res = await fetch(`${CORE_API_URL}/v1/projects/${projectId}/group-roles`, {
+    method: "POST",
+    credentials: "include",
+    headers: authHeaders({
+      "content-type": "application/json"
+    }),
+    body: JSON.stringify(input)
+  });
+  if (!res.ok) throw new Error("Unable to upsert project group role");
+  return (await res.json()) as ProjectGroupRoleBinding;
+}
+
+export async function deleteProjectGroupRole(projectId: string, groupName: string) {
+  const safeName = encodeURIComponent(groupName);
+  const res = await fetch(`${CORE_API_URL}/v1/projects/${projectId}/group-roles/${safeName}`, {
+    method: "DELETE",
+    credentials: "include",
+    headers: authHeaders()
+  });
+  if (!res.ok) throw new Error("Unable to delete project group role");
 }

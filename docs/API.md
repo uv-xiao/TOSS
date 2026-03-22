@@ -3,11 +3,15 @@
 Core API base URL: `http://localhost:8080`
 
 Most project-scoped endpoints require `x-user-id` for RBAC context.
+In browser usage, session cookie auth from OIDC login is preferred; `x-user-id` remains a dev override.
 
 ## Auth
 
 - `GET /v1/auth/config`: Returns OIDC provider/client config.
+- `GET /v1/auth/oidc/login`: Starts OIDC authorization code flow.
 - `GET /v1/auth/oidc/callback?code=...&state=...`: Dev callback that issues a session token and writes an audit event.
+- `GET /v1/auth/me`: Returns current session user profile.
+- `POST /v1/auth/logout`: Revokes current session.
 
 ## Projects and RBAC
 
@@ -15,6 +19,14 @@ Most project-scoped endpoints require `x-user-id` for RBAC context.
 - `POST /v1/projects`: Create project and grant caller `Owner`.
 - `GET /v1/projects/{project_id}/roles`: List role bindings.
 - `POST /v1/projects/{project_id}/roles`: Upsert role binding (`Owner | Teacher | Student | TA`), requires `Owner/Teacher`.
+- `GET /v1/projects/{project_id}/group-roles`: List OIDC group -> project role mappings.
+- `POST /v1/projects/{project_id}/group-roles`: Upsert OIDC group -> project role mapping, requires `Owner/Teacher`.
+- `DELETE /v1/projects/{project_id}/group-roles/{group_name}`: Remove mapping.
+
+OIDC group claim mapping:
+- Group claim name comes from `OIDC_GROUPS_CLAIM` (default `groups`).
+- On each successful OIDC login, backend syncs current groups into `user_oidc_groups`.
+- Matching `project_group_roles` mappings are applied to the user as project roles (only upgrades; no automatic downgrades).
 
 ## Documents, comments, revisions
 

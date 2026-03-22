@@ -36,6 +36,11 @@ Project-level roles:
 - `TA`: collaborator with git sync rights.
 - `Student`: project read/write for document + comment activity.
 
+OIDC group-to-role mapping:
+- Each project can define `group_name -> role` bindings.
+- During OIDC callback, backend reads configured groups claim and syncs user group membership.
+- Matching group bindings are projected into `project_roles` (upgrade-only to avoid stripping manually granted stronger roles).
+
 ## Deployment shape
 
 - Single VM, Docker Compose.

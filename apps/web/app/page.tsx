@@ -13,12 +13,14 @@ import {
   createPersonalAccessToken,
   createComment,
   createRevision,
+  deleteProjectGroupRole,
   getAuthMe,
   getGitConfig,
   getGitStatus,
   listPersonalAccessTokens,
   listComments,
   listDocuments,
+  listProjectGroupRoles,
   listProjects,
   listRevisions,
   logout,
@@ -26,11 +28,14 @@ import {
   revokePersonalAccessToken,
   triggerGitPull,
   triggerGitPush,
+  upsertProjectGroupRole,
   upsertGitConfig,
   upsertDocumentByPath,
   type Comment,
   type CreatePatResponse,
   type GitRemoteConfig,
+  type ProjectRole,
+  type ProjectGroupRoleBinding,
   type GitSyncState,
   type PersonalAccessTokenInfo,
   type Project,
@@ -73,6 +78,9 @@ export default function HomePage() {
   const [newComment, setNewComment] = useState("");
   const [newRevision, setNewRevision] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
+  const [groupRoles, setGroupRoles] = useState<ProjectGroupRoleBinding[]>([]);
+  const [newGroupName, setNewGroupName] = useState("");
+  const [newGroupRole, setNewGroupRole] = useState<ProjectRole>("Student");
   const [authUser, setAuthUser] = useState<{
     user_id: string;
     email: string;
@@ -159,6 +167,9 @@ export default function HomePage() {
     listRevisions(selectedProject)
       .then((res) => setRevisions(res.revisions))
       .catch(() => setRevisions([]));
+    listProjectGroupRoles(selectedProject)
+      .then((res) => setGroupRoles(res))
+      .catch(() => setGroupRoles([]));
 
     listDocuments(selectedProject)
       .then((res) => {
@@ -347,6 +358,43 @@ export default function HomePage() {
     setTokens([]);
   }
 
+  async function refreshGroupRoles() {
+    if (!selectedProject) return;
+    try {
+      const next = await listProjectGroupRoles(selectedProject);
+      setGroupRoles(next);
+    } catch {
+      setGroupRoles([]);
+    }
+  }
+
+  async function handleUpsertGroupRole() {
+    if (!selectedProject) return;
+    if (!newGroupName.trim()) return;
+    setActionError(null);
+    try {
+      await upsertProjectGroupRole(selectedProject, {
+        group_name: newGroupName.trim(),
+        role: newGroupRole
+      });
+      await refreshGroupRoles();
+      setNewGroupName("");
+    } catch {
+      setActionError("Unable to save OIDC group mapping");
+    }
+  }
+
+  async function handleDeleteGroupRole(groupName: string) {
+    if (!selectedProject) return;
+    setActionError(null);
+    try {
+      await deleteProjectGroupRole(selectedProject, groupName);
+      await refreshGroupRoles();
+    } catch {
+      setActionError("Unable to delete OIDC group mapping");
+    }
+  }
+
   return (
     <main className="app">
       <header className="topbar">
@@ -480,6 +528,38 @@ export default function HomePage() {
                 createdAt: r.created_at
               }))}
             />
+            <h3>OIDC Group Role Mapping</h3>
+            <div className="meta">
+              <input
+                value={newGroupName}
+                onChange={(e) => setNewGroupName(e.target.value)}
+                placeholder="OIDC group (claim value)"
+                style={{ flex: 1, padding: 6 }}
+              />
+              <select
+                value={newGroupRole}
+                onChange={(e) => setNewGroupRole(e.target.value as ProjectRole)}
+                style={{ padding: 6 }}
+              >
+                <option value="Student">Student</option>
+                <option value="TA">TA</option>
+                <option value="Teacher">Teacher</option>
+                <option value="Owner">Owner</option>
+              </select>
+              <button className="button" onClick={handleUpsertGroupRole}>
+                Save Mapping
+              </button>
+            </div>
+            {groupRoles.map((g) => (
+              <div key={g.group_name} className="meta" style={{ justifyContent: "space-between" }}>
+                <span>
+                  {g.group_name} → {g.role}
+                </span>
+                <button className="button" onClick={() => handleDeleteGroupRole(g.group_name)}>
+                  Remove
+                </button>
+              </div>
+            ))}
             <h3>Security Settings: Access Tokens</h3>
             <div className="meta">
               <input

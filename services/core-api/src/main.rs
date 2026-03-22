@@ -5,6 +5,7 @@ use axum::response::{IntoResponse, Redirect};
 use axum::routing::{any, delete, get, post, put};
 use axum::{Json, Router};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
 use openidconnect::core::{
     CoreAuthenticationFlow, CoreClient, CoreIdTokenClaims, CoreProviderMetadata,
@@ -102,6 +103,20 @@ struct ProjectRoleBinding {
 #[derive(Deserialize)]
 struct UpsertRoleInput {
     user_id: Uuid,
+    role: String,
+}
+
+#[derive(Serialize)]
+struct ProjectGroupRoleBinding {
+    project_id: Uuid,
+    group_name: String,
+    role: String,
+    granted_at: DateTime<Utc>,
+}
+
+#[derive(Deserialize)]
+struct UpsertProjectGroupRoleInput {
+    group_name: String,
     role: String,
 }
 
@@ -315,6 +330,14 @@ async fn main() {
         .route("/v1/security/tokens/{token_id}", delete(revoke_personal_access_token))
         .route("/v1/projects", get(list_projects).post(create_project))
         .route("/v1/projects/{project_id}/roles", get(list_roles).post(upsert_role))
+        .route(
+            "/v1/projects/{project_id}/group-roles",
+            get(list_group_roles).post(upsert_group_role),
+        )
+        .route(
+            "/v1/projects/{project_id}/group-roles/{group_name}",
+            delete(delete_group_role),
+        )
         .route("/v1/projects/{project_id}/comments", get(list_comments).post(create_comment))
         .route("/v1/projects/{project_id}/revisions", get(list_revisions).post(create_revision))
         .route("/v1/projects/{project_id}/documents", get(list_documents).post(create_document))
@@ -600,6 +623,7 @@ async fn oidc_callback(
     } else {
         "OIDC User".to_string()
     };
+    let oidc_groups = extract_groups_from_id_token(id_token.to_string(), &state.oidc.groups_claim);
 
     let user_row = sqlx::query(
         "insert into users (id, email, display_name, created_at, oidc_subject, oidc_issuer)
@@ -619,6 +643,8 @@ async fn oidc_callback(
         Ok(r) => r.get::<Uuid, _>("id"),
         Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to upsert user").into_response(),
     };
+    let _ = sync_user_oidc_groups(&state.db, user_id, &oidc_groups).await;
+    let _ = apply_project_group_roles(&state.db, user_id, &oidc_groups).await;
 
     let token = random_token(48);
     let issued_at = Utc::now();
@@ -660,7 +686,7 @@ async fn oidc_callback(
         &state.db,
         Some(user_id),
         "auth.oidc.callback",
-        serde_json::json!({"state": query.state, "source": source, "email": email}),
+        serde_json::json!({"state": query.state, "source": source, "email": email, "groups": oidc_groups}),
     )
     .await;
 
@@ -982,6 +1008,105 @@ async fn upsert_role(
         role: row.get("role"),
         granted_at: row.get("granted_at"),
     }))
+}
+
+async fn list_group_roles(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+) -> Result<Json<Vec<ProjectGroupRoleBinding>>, StatusCode> {
+    ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
+    let rows = sqlx::query(
+        "select project_id, group_name, role, granted_at
+         from project_group_roles
+         where project_id = $1
+         order by group_name asc",
+    )
+    .bind(project_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let roles = rows
+        .into_iter()
+        .map(|r| ProjectGroupRoleBinding {
+            project_id: r.get("project_id"),
+            group_name: r.get("group_name"),
+            role: r.get("role"),
+            granted_at: r.get("granted_at"),
+        })
+        .collect();
+    Ok(Json(roles))
+}
+
+async fn upsert_group_role(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Json(input): Json<UpsertProjectGroupRoleInput>,
+) -> Result<Json<ProjectGroupRoleBinding>, StatusCode> {
+    let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Manage).await?;
+    if ProjectRole::from_db(&input.role).is_none() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let group_name = input.group_name.trim().to_string();
+    if group_name.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let granted_at = Utc::now();
+    let row = sqlx::query(
+        "insert into project_group_roles (project_id, group_name, role, granted_at)
+         values ($1, $2, $3, $4)
+         on conflict (project_id, group_name) do update
+         set role = excluded.role, granted_at = excluded.granted_at
+         returning project_id, group_name, role, granted_at",
+    )
+    .bind(project_id)
+    .bind(&group_name)
+    .bind(&input.role)
+    .bind(granted_at)
+    .fetch_one(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    write_audit(
+        &state.db,
+        Some(actor),
+        "project.group_role.upsert",
+        serde_json::json!({"project_id": project_id, "group_name": group_name, "role": input.role}),
+    )
+    .await;
+    Ok(Json(ProjectGroupRoleBinding {
+        project_id: row.get("project_id"),
+        group_name: row.get("group_name"),
+        role: row.get("role"),
+        granted_at: row.get("granted_at"),
+    }))
+}
+
+async fn delete_group_role(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, group_name)): Path<(Uuid, String)>,
+) -> Result<StatusCode, StatusCode> {
+    let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Manage).await?;
+    let result = sqlx::query(
+        "delete from project_group_roles where project_id = $1 and group_name = $2",
+    )
+    .bind(project_id)
+    .bind(group_name.clone())
+    .execute(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if result.rows_affected() == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    write_audit(
+        &state.db,
+        Some(actor),
+        "project.group_role.delete",
+        serde_json::json!({"project_id": project_id, "group_name": group_name}),
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn list_comments(
@@ -1822,6 +1947,138 @@ async fn session_user_id(db: &PgPool, token: &str) -> Option<Uuid> {
     .await
     .ok()??;
     Some(row.get("user_id"))
+}
+
+fn extract_groups_from_id_token(raw_id_token: String, claim_name: &str) -> Vec<String> {
+    let mut groups = Vec::new();
+    let claims = decode_jwt_claims(&raw_id_token);
+    let Some(claims) = claims else {
+        return groups;
+    };
+    let claim_value = claims.get(claim_name);
+    match claim_value {
+        Some(serde_json::Value::Array(values)) => {
+            for value in values {
+                if let Some(group) = value.as_str() {
+                    let g = group.trim();
+                    if !g.is_empty() {
+                        groups.push(g.to_string());
+                    }
+                }
+            }
+        }
+        Some(serde_json::Value::String(group)) => {
+            let g = group.trim();
+            if !g.is_empty() {
+                groups.push(g.to_string());
+            }
+        }
+        _ => {}
+    }
+    groups.sort();
+    groups.dedup();
+    groups
+}
+
+fn decode_jwt_claims(raw_token: &str) -> Option<serde_json::Value> {
+    let mut parts = raw_token.split('.');
+    let _header = parts.next()?;
+    let payload = parts.next()?;
+    let bytes = base64::Engine::decode(&URL_SAFE_NO_PAD, payload).ok()?;
+    serde_json::from_slice::<serde_json::Value>(&bytes).ok()
+}
+
+async fn sync_user_oidc_groups(
+    db: &PgPool,
+    user_id: Uuid,
+    groups: &[String],
+) -> Result<(), sqlx::Error> {
+    let now = Utc::now();
+    sqlx::query("delete from user_oidc_groups where user_id = $1")
+        .bind(user_id)
+        .execute(db)
+        .await?;
+    for group_name in groups {
+        sqlx::query(
+            "insert into user_oidc_groups (user_id, group_name, synced_at)
+             values ($1, $2, $3)",
+        )
+        .bind(user_id)
+        .bind(group_name)
+        .bind(now)
+        .execute(db)
+        .await?;
+    }
+    Ok(())
+}
+
+fn role_rank(role: &str) -> i32 {
+    match role {
+        "Owner" => 4,
+        "Teacher" => 3,
+        "TA" => 2,
+        "Student" => 1,
+        _ => 0,
+    }
+}
+
+async fn apply_project_group_roles(
+    db: &PgPool,
+    user_id: Uuid,
+    groups: &[String],
+) -> Result<(), sqlx::Error> {
+    if groups.is_empty() {
+        return Ok(());
+    }
+    let rows = sqlx::query("select project_id, group_name, role from project_group_roles")
+        .fetch_all(db)
+        .await?;
+    let group_set: HashSet<String> = groups.iter().cloned().collect();
+    let mut desired: HashMap<Uuid, String> = HashMap::new();
+    for row in rows {
+        let group_name: String = row.get("group_name");
+        if !group_set.contains(&group_name) {
+            continue;
+        }
+        let project_id: Uuid = row.get("project_id");
+        let role: String = row.get("role");
+        let entry = desired.entry(project_id).or_insert_with(|| role.clone());
+        if role_rank(&role) > role_rank(entry) {
+            *entry = role;
+        }
+    }
+
+    for (project_id, mapped_role) in desired {
+        let existing = sqlx::query(
+            "select role from project_roles where project_id = $1 and user_id = $2",
+        )
+        .bind(project_id)
+        .bind(user_id)
+        .fetch_optional(db)
+        .await?;
+        let should_apply = match existing {
+            Some(row) => {
+                let existing_role: String = row.get("role");
+                role_rank(&mapped_role) > role_rank(&existing_role)
+            }
+            None => true,
+        };
+        if should_apply {
+            sqlx::query(
+                "insert into project_roles (project_id, user_id, role, granted_at)
+                 values ($1, $2, $3, $4)
+                 on conflict (project_id, user_id) do update
+                 set role = excluded.role, granted_at = excluded.granted_at",
+            )
+            .bind(project_id)
+            .bind(user_id)
+            .bind(mapped_role)
+            .bind(Utc::now())
+            .execute(db)
+            .await?;
+        }
+    }
+    Ok(())
 }
 
 async fn write_audit(db: &PgPool, actor_user_id: Option<Uuid>, event_type: &str, payload: serde_json::Value) {

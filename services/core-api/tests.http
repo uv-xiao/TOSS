@@ -45,6 +45,20 @@ content-type: application/json
 GET http://localhost:8080/v1/projects/00000000-0000-0000-0000-000000000010/roles
 x-user-id: 00000000-0000-0000-0000-000000000100
 
+### List project OIDC group role mappings
+GET http://localhost:8080/v1/projects/00000000-0000-0000-0000-000000000010/group-roles
+x-user-id: 00000000-0000-0000-0000-000000000100
+
+### Upsert project OIDC group role mapping
+POST http://localhost:8080/v1/projects/00000000-0000-0000-0000-000000000010/group-roles
+x-user-id: 00000000-0000-0000-0000-000000000100
+content-type: application/json
+
+{
+  "group_name": "school:course:math101:teachers",
+  "role": "Teacher"
+}
+
 ### List comments
 GET http://localhost:8080/v1/projects/00000000-0000-0000-0000-000000000010/comments
 x-user-id: 00000000-0000-0000-0000-000000000100

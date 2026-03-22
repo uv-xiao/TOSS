@@ -42,13 +42,14 @@ Monorepo scaffold for a self-hosted Typst collaboration platform with:
 
 This repository implements a working v1 foundation and API surface with:
 - project-level RBAC APIs
+- OIDC login/session with group-claim to project-role mapping
 - realtime collaboration service with presence and checkpoint replay
 - client-side Typst WASM PDF compile path with fallback preview
 - Git mirror config + pull/push synchronization against a real remote
 - smart HTTP Git server endpoint per project with force-push rejection policy
 
-Remaining advanced work includes deeper OIDC group-to-RBAC automation,
-browser compatibility hardening for Typst WASM, and richer in-app Git conflict UX.
+Remaining advanced work includes browser compatibility hardening for Typst WASM,
+richer in-app Git conflict UX, and deeper object-storage snapshot workflows.
 
 ## Git server behavior
 
