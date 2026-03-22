@@ -2,7 +2,7 @@ use axum::body::{Body, Bytes};
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Redirect};
-use axum::routing::{any, delete, get, post, put};
+use axum::routing::{any, delete, get, get_service, patch, post, put};
 use axum::{Json, Router};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -23,8 +23,9 @@ use sqlx::{PgPool, Row};
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::process::Command;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 use tracing::{error, info};
 use uuid::Uuid;
@@ -32,10 +33,12 @@ mod types;
 mod authz;
 mod git_utils;
 mod object_storage;
+mod realtime;
 mod typst_cache;
 use authz::*;
 use git_utils::*;
 use object_storage::*;
+use realtime::ws_handler as realtime_ws_handler;
 use typst_cache::typst_package_proxy;
 use types::*;
 
@@ -68,7 +71,23 @@ async fn main() {
     };
 
     let storage = init_object_storage_from_env().await;
-    let state = AppState { db, oidc, storage };
+    let realtime_checkpoint_dir = env::var("CHECKPOINT_STORAGE_PREFIX")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/typst-checkpoints"));
+    let _ = std::fs::create_dir_all(&realtime_checkpoint_dir);
+    let state = AppState {
+        db,
+        oidc,
+        storage,
+        realtime_channels: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+        realtime_checkpoint_dir,
+    };
+    let static_dir = env::var("WEB_STATIC_DIR").unwrap_or_else(|_| "./web-dist".to_string());
+    let static_service = get_service(
+        ServeDir::new(&static_dir)
+            .append_index_html_on_directories(true)
+            .not_found_service(ServeFile::new(format!("{static_dir}/index.html"))),
+    );
     let app = Router::new()
         .route("/health", get(health))
         .route("/v1/auth/config", get(auth_config))
@@ -77,10 +96,18 @@ async fn main() {
         .route("/v1/auth/me", get(auth_me))
         .route("/v1/auth/logout", post(auth_logout))
         .route("/v1/realtime/auth/{project_id}", get(realtime_auth))
+        .route("/v1/realtime/ws/{doc_id}", get(realtime_ws_handler))
+        .route("/v1/profile/security/tokens", get(list_personal_access_tokens).post(create_personal_access_token))
+        .route("/v1/profile/security/tokens/{token_id}", delete(revoke_personal_access_token))
         .route("/v1/security/tokens", get(list_personal_access_tokens).post(create_personal_access_token))
         .route("/v1/security/tokens/{token_id}", delete(revoke_personal_access_token))
         .route("/v1/projects", get(list_projects).post(create_project))
+        .route("/v1/projects/{project_id}/tree", get(get_project_tree))
+        .route("/v1/projects/{project_id}/files", post(create_project_file))
+        .route("/v1/projects/{project_id}/files/move", patch(move_project_file))
+        .route("/v1/projects/{project_id}/files/{*path}", delete(delete_project_file))
         .route("/v1/projects/{project_id}/roles", get(list_roles).post(upsert_role))
+        .route("/v1/projects/{project_id}/settings", get(get_project_settings).put(upsert_project_settings))
         .route(
             "/v1/projects/{project_id}/group-roles",
             get(list_group_roles).post(upsert_group_role),
@@ -120,6 +147,15 @@ async fn main() {
             "/v1/projects/{project_id}/assets/{asset_id}/raw",
             get(get_project_asset_raw),
         )
+        .route("/v1/projects/{project_id}/archive", get(download_project_archive))
+        .route(
+            "/v1/projects/{project_id}/pdf-artifacts",
+            post(upload_project_pdf_artifact),
+        )
+        .route(
+            "/v1/projects/{project_id}/pdf-artifacts/latest",
+            get(download_latest_project_pdf_artifact),
+        )
         .route("/v1/typst/packages/{*path}", get(typst_package_proxy))
         .route("/v1/git/status/{project_id}", get(git_status))
         .route("/v1/git/repo-link/{project_id}", get(git_repo_link))
@@ -127,7 +163,15 @@ async fn main() {
         .route("/v1/git/sync/pull/{project_id}", post(git_pull))
         .route("/v1/git/sync/push/{project_id}", post(git_push))
         .route("/v1/git/repo/{project_id}/{*rest}", any(git_http_backend))
-        .layer(CorsLayer::new().allow_origin(Any).allow_headers(Any).allow_methods(Any))
+        .route(
+            "/v1/admin/orgs/{org_id}/oidc-group-role-mappings",
+            get(list_org_group_role_mappings).post(upsert_org_group_role_mapping),
+        )
+        .route(
+            "/v1/admin/orgs/{org_id}/oidc-group-role-mappings/{group_name}",
+            delete(delete_org_group_role_mapping),
+        )
+        .fallback_service(static_service)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
@@ -194,6 +238,26 @@ async fn seed_default_data(pool: &PgPool) {
         .execute(pool)
         .await;
 
+    let _ = sqlx::query(
+        "insert into org_admins (organization_id, user_id, granted_at) values ($1, $2, $3)
+         on conflict (organization_id, user_id) do nothing",
+    )
+    .bind(org_id)
+    .bind(teacher_id)
+    .bind(now)
+    .execute(pool)
+    .await;
+
+    let _ = sqlx::query(
+        "insert into project_settings (project_id, entry_file_path, updated_at) values ($1, $2, $3)
+         on conflict (project_id) do nothing",
+    )
+    .bind(project_id)
+    .bind("main.typ")
+    .bind(now)
+    .execute(pool)
+    .await;
+
     let _ = sqlx::query("insert into project_roles (project_id, user_id, role, granted_at) values ($1, $2, $3, $4) on conflict (project_id, user_id) do update set role = excluded.role")
         .bind(project_id)
         .bind(teacher_id)
@@ -258,6 +322,9 @@ async fn auth_config(State(state): State<AppState>) -> Json<AuthConfigResponse> 
 }
 
 async fn oidc_login(State(state): State<AppState>) -> axum::response::Response {
+    let cookie_secure = env::var("COOKIE_SECURE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
     let issuer = match IssuerUrl::new(state.oidc.issuer.clone()) {
         Ok(i) => i,
         Err(_) => return (StatusCode::BAD_REQUEST, "Invalid OIDC issuer").into_response(),
@@ -310,6 +377,7 @@ async fn oidc_login(State(state): State<AppState>) -> axum::response::Response {
     let cookie = Cookie::build(("typst_oidc_state", csrf.secret().to_string()))
         .path("/")
         .http_only(true)
+        .secure(cookie_secure)
         .same_site(SameSite::Lax)
         .build();
     let mut jar = CookieJar::new();
@@ -323,6 +391,9 @@ async fn oidc_callback(
     jar: CookieJar,
     Query(query): Query<OidcCallbackQuery>,
 ) -> axum::response::Response {
+    let cookie_secure = env::var("COOKIE_SECURE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
     let callback_state = query.state.clone().unwrap_or_default();
     let cookie_state = jar
         .get("typst_oidc_state")
@@ -465,6 +536,7 @@ async fn oidc_callback(
     let session_cookie = Cookie::build(("typst_session", token.clone()))
         .path("/")
         .http_only(true)
+        .secure(cookie_secure)
         .same_site(SameSite::Lax)
         .build();
     let mut jar = jar.remove(Cookie::from("typst_oidc_state"));
@@ -791,6 +863,285 @@ async fn upsert_role(
     }))
 }
 
+fn sanitize_project_path(raw: &str) -> Result<String, StatusCode> {
+    let trimmed = raw.trim().trim_start_matches('/').to_string();
+    if trimmed.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let p = std::path::Path::new(&trimmed);
+    if p.is_absolute() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if p.components().any(|c| {
+        matches!(
+            c,
+            std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_)
+        )
+    }) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok(trimmed)
+}
+
+async fn get_project_tree(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+) -> Result<Json<ProjectTreeResponse>, StatusCode> {
+    ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
+    let rows = sqlx::query("select path from documents where project_id = $1 order by path asc")
+        .bind(project_id)
+        .fetch_all(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let dir_rows = sqlx::query("select path from project_directories where project_id = $1 order by path asc")
+        .bind(project_id)
+        .fetch_all(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let settings = sqlx::query(
+        "select entry_file_path from project_settings where project_id = $1",
+    )
+    .bind(project_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let entry_file_path = settings
+        .map(|r| r.get::<String, _>("entry_file_path"))
+        .unwrap_or_else(|| "main.typ".to_string());
+
+    let mut dirs: HashSet<String> = HashSet::new();
+    let mut nodes = Vec::new();
+    for row in rows {
+        let file_path: String = row.get("path");
+        let clean = sanitize_project_path(&file_path)?;
+        let mut acc = String::new();
+        let parts: Vec<&str> = clean.split('/').collect();
+        for part in parts.iter().take(parts.len().saturating_sub(1)) {
+            if acc.is_empty() {
+                acc.push_str(part);
+            } else {
+                acc.push('/');
+                acc.push_str(part);
+            }
+            dirs.insert(acc.clone());
+        }
+        nodes.push(ProjectFileNode {
+            path: clean,
+            kind: "file".to_string(),
+        });
+    }
+    for row in dir_rows {
+        let dir_path: String = row.get("path");
+        let clean = sanitize_project_path(&dir_path)?;
+        dirs.insert(clean);
+    }
+    for dir in dirs {
+        nodes.push(ProjectFileNode {
+            path: dir,
+            kind: "directory".to_string(),
+        });
+    }
+    nodes.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(Json(ProjectTreeResponse {
+        nodes,
+        entry_file_path,
+    }))
+}
+
+async fn create_project_file(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Json(input): Json<CreateProjectFileInput>,
+) -> Result<StatusCode, StatusCode> {
+    let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Write).await?;
+    let path = sanitize_project_path(&input.path)?;
+    let now = Utc::now();
+    match input.kind.as_str() {
+        "directory" => {
+            sqlx::query(
+                "insert into project_directories (project_id, path, created_at)
+                 values ($1, $2, $3)
+                 on conflict (project_id, path) do nothing",
+            )
+            .bind(project_id)
+            .bind(&path)
+            .bind(now)
+            .execute(&state.db)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        }
+        _ => {
+            sqlx::query(
+                "insert into documents (id, project_id, path, content, updated_at)
+                 values ($1, $2, $3, $4, $5)
+                 on conflict (project_id, path) do nothing",
+            )
+            .bind(Uuid::new_v4())
+            .bind(project_id)
+            .bind(&path)
+            .bind(input.content.unwrap_or_default())
+            .bind(now)
+            .execute(&state.db)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            mark_project_dirty(&state.db, project_id, Some(actor)).await;
+        }
+    }
+    write_audit(
+        &state.db,
+        Some(actor),
+        "project.file.create",
+        serde_json::json!({ "project_id": project_id, "path": path, "kind": input.kind }),
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn move_project_file(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Json(input): Json<MoveProjectFileInput>,
+) -> Result<StatusCode, StatusCode> {
+    let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Write).await?;
+    let from_path = sanitize_project_path(&input.from_path)?;
+    let to_path = sanitize_project_path(&input.to_path)?;
+    let now = Utc::now();
+
+    let dir_move = sqlx::query(
+        "update project_directories
+         set path = regexp_replace(path, ('^' || $3), $4)
+         where project_id = $1 and (path = $3 or path like ($3 || '/%'))",
+    )
+    .bind(project_id)
+    .bind(&from_path)
+    .bind(&to_path)
+    .execute(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let doc_move = sqlx::query(
+        "update documents
+         set path = regexp_replace(path, ('^' || $2), $3), updated_at = $4
+         where project_id = $1 and (path = $2 or path like ($2 || '/%'))",
+    )
+    .bind(project_id)
+    .bind(&from_path)
+    .bind(&to_path)
+    .bind(now)
+    .execute(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if dir_move.rows_affected() > 0 || doc_move.rows_affected() > 0 {
+        mark_project_dirty(&state.db, project_id, Some(actor)).await;
+    }
+
+    write_audit(
+        &state.db,
+        Some(actor),
+        "project.file.move",
+        serde_json::json!({ "project_id": project_id, "from_path": from_path, "to_path": to_path }),
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn delete_project_file(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, path)): Path<(Uuid, String)>,
+) -> Result<StatusCode, StatusCode> {
+    let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Write).await?;
+    let clean_path = sanitize_project_path(&path)?;
+
+    let _ = sqlx::query(
+        "delete from project_directories
+         where project_id = $1 and (path = $2 or path like ($2 || '/%'))",
+    )
+    .bind(project_id)
+    .bind(&clean_path)
+    .execute(&state.db)
+    .await;
+
+    let deleted_docs = sqlx::query(
+        "delete from documents
+         where project_id = $1 and (path = $2 or path like ($2 || '/%'))",
+    )
+    .bind(project_id)
+    .bind(&clean_path)
+    .execute(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if deleted_docs.rows_affected() > 0 {
+        mark_project_dirty(&state.db, project_id, Some(actor)).await;
+    }
+    write_audit(
+        &state.db,
+        Some(actor),
+        "project.file.delete",
+        serde_json::json!({ "project_id": project_id, "path": clean_path }),
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn get_project_settings(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+) -> Result<Json<ProjectSettingsResponse>, StatusCode> {
+    ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
+    let row = sqlx::query(
+        "insert into project_settings (project_id, entry_file_path, updated_at)
+         values ($1, 'main.typ', $2)
+         on conflict (project_id) do update set project_id = excluded.project_id
+         returning project_id, entry_file_path, updated_at",
+    )
+    .bind(project_id)
+    .bind(Utc::now())
+    .fetch_one(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(ProjectSettingsResponse {
+        project_id: row.get("project_id"),
+        entry_file_path: row.get("entry_file_path"),
+        updated_at: row.get("updated_at"),
+    }))
+}
+
+async fn upsert_project_settings(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Json(input): Json<UpsertProjectSettingsInput>,
+) -> Result<Json<ProjectSettingsResponse>, StatusCode> {
+    ensure_project_role(&state.db, &headers, project_id, AccessNeed::Manage).await?;
+    let entry_file_path = sanitize_project_path(&input.entry_file_path)?;
+    let row = sqlx::query(
+        "insert into project_settings (project_id, entry_file_path, updated_at)
+         values ($1, $2, $3)
+         on conflict (project_id) do update set entry_file_path = excluded.entry_file_path, updated_at = excluded.updated_at
+         returning project_id, entry_file_path, updated_at",
+    )
+    .bind(project_id)
+    .bind(&entry_file_path)
+    .bind(Utc::now())
+    .fetch_one(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(ProjectSettingsResponse {
+        project_id: row.get("project_id"),
+        entry_file_path: row.get("entry_file_path"),
+        updated_at: row.get("updated_at"),
+    }))
+}
+
 async fn list_group_roles(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -885,6 +1236,126 @@ async fn delete_group_role(
         Some(actor),
         "project.group_role.delete",
         serde_json::json!({"project_id": project_id, "group_name": group_name}),
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn ensure_org_admin(
+    db: &PgPool,
+    headers: &HeaderMap,
+    org_id: Uuid,
+) -> Result<Uuid, StatusCode> {
+    let Some(actor) = request_user_id(db, headers).await else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+    let row = sqlx::query(
+        "select 1 from org_admins where organization_id = $1 and user_id = $2",
+    )
+    .bind(org_id)
+    .bind(actor)
+    .fetch_optional(db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if row.is_none() {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    Ok(actor)
+}
+
+async fn list_org_group_role_mappings(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(org_id): Path<Uuid>,
+) -> Result<Json<Vec<OrgGroupRoleMapping>>, StatusCode> {
+    ensure_org_admin(&state.db, &headers, org_id).await?;
+    let rows = sqlx::query(
+        "select organization_id, group_name, role, granted_at
+         from org_oidc_group_role_mappings
+         where organization_id = $1
+         order by group_name asc",
+    )
+    .bind(org_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let items = rows
+        .into_iter()
+        .map(|r| OrgGroupRoleMapping {
+            organization_id: r.get("organization_id"),
+            group_name: r.get("group_name"),
+            role: r.get("role"),
+            granted_at: r.get("granted_at"),
+        })
+        .collect();
+    Ok(Json(items))
+}
+
+async fn upsert_org_group_role_mapping(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(org_id): Path<Uuid>,
+    Json(input): Json<UpsertOrgGroupRoleMappingInput>,
+) -> Result<Json<OrgGroupRoleMapping>, StatusCode> {
+    let actor = ensure_org_admin(&state.db, &headers, org_id).await?;
+    if ProjectRole::from_db(&input.role).is_none() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let group_name = input.group_name.trim().to_string();
+    if group_name.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let row = sqlx::query(
+        "insert into org_oidc_group_role_mappings (organization_id, group_name, role, granted_at)
+         values ($1, $2, $3, $4)
+         on conflict (organization_id, group_name) do update
+         set role = excluded.role, granted_at = excluded.granted_at
+         returning organization_id, group_name, role, granted_at",
+    )
+    .bind(org_id)
+    .bind(&group_name)
+    .bind(&input.role)
+    .bind(Utc::now())
+    .fetch_one(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    write_audit(
+        &state.db,
+        Some(actor),
+        "admin.org_group_role.upsert",
+        serde_json::json!({"organization_id": org_id, "group_name": group_name, "role": input.role}),
+    )
+    .await;
+    Ok(Json(OrgGroupRoleMapping {
+        organization_id: row.get("organization_id"),
+        group_name: row.get("group_name"),
+        role: row.get("role"),
+        granted_at: row.get("granted_at"),
+    }))
+}
+
+async fn delete_org_group_role_mapping(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((org_id, group_name)): Path<(Uuid, String)>,
+) -> Result<StatusCode, StatusCode> {
+    let actor = ensure_org_admin(&state.db, &headers, org_id).await?;
+    let result = sqlx::query(
+        "delete from org_oidc_group_role_mappings where organization_id = $1 and group_name = $2",
+    )
+    .bind(org_id)
+    .bind(group_name.clone())
+    .execute(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if result.rows_affected() == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    write_audit(
+        &state.db,
+        Some(actor),
+        "admin.org_group_role.delete",
+        serde_json::json!({"organization_id": org_id, "group_name": group_name}),
     )
     .await;
     Ok(StatusCode::NO_CONTENT)
@@ -1657,6 +2128,144 @@ async fn get_project_asset_raw(
     Ok(resp)
 }
 
+async fn download_project_archive(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+) -> Result<impl IntoResponse, StatusCode> {
+    ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
+    let rows = sqlx::query("select path, content from documents where project_id = $1 order by path asc")
+        .bind(project_id)
+        .fetch_all(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut cursor = std::io::Cursor::new(Vec::<u8>::new());
+    {
+        let mut zip = zip::ZipWriter::new(&mut cursor);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for row in rows {
+            let path: String = row.get("path");
+            let content: String = row.get("content");
+            zip.start_file(path, options)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            use std::io::Write;
+            zip.write_all(content.as_bytes())
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        }
+        zip.finish().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+    let bytes = cursor.into_inner();
+    let mut resp = axum::http::Response::new(Body::from(bytes));
+    resp.headers_mut().insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static("application/zip"),
+    );
+    resp.headers_mut().insert(
+        header::CONTENT_DISPOSITION,
+        header::HeaderValue::from_str(&format!(
+            "attachment; filename=\"project-{}.zip\"",
+            project_id
+        ))
+        .unwrap_or_else(|_| header::HeaderValue::from_static("attachment")),
+    );
+    Ok(resp)
+}
+
+async fn upload_project_pdf_artifact(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Json(input): Json<UploadPdfArtifactInput>,
+) -> Result<Json<PdfArtifact>, StatusCode> {
+    let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Write).await?;
+    let entry_file_path = sanitize_project_path(
+        input
+            .entry_file_path
+            .as_deref()
+            .unwrap_or("main.typ"),
+    )?;
+    let content_type = input
+        .content_type
+        .unwrap_or_else(|| "application/pdf".to_string());
+    let bytes = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        input.content_base64,
+    )
+    .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let id = Uuid::new_v4();
+    let row = sqlx::query(
+        "insert into project_pdf_artifacts
+         (id, project_id, entry_file_path, content_type, pdf_bytes, size_bytes, created_by, created_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8)
+         returning id, project_id, entry_file_path, content_type, size_bytes, created_by, created_at",
+    )
+    .bind(id)
+    .bind(project_id)
+    .bind(&entry_file_path)
+    .bind(&content_type)
+    .bind(bytes.clone())
+    .bind(i64::try_from(bytes.len()).unwrap_or(0))
+    .bind(actor)
+    .bind(Utc::now())
+    .fetch_one(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    write_audit(
+        &state.db,
+        Some(actor),
+        "project.pdf.upload",
+        serde_json::json!({ "project_id": project_id, "pdf_id": id, "entry_file_path": entry_file_path }),
+    )
+    .await;
+    Ok(Json(PdfArtifact {
+        id: row.get("id"),
+        project_id: row.get("project_id"),
+        entry_file_path: row.get("entry_file_path"),
+        content_type: row.get("content_type"),
+        size_bytes: row.get("size_bytes"),
+        created_by: row.get("created_by"),
+        created_at: row.get("created_at"),
+    }))
+}
+
+async fn download_latest_project_pdf_artifact(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+) -> Result<impl IntoResponse, StatusCode> {
+    ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
+    let row = sqlx::query(
+        "select entry_file_path, content_type, pdf_bytes
+         from project_pdf_artifacts
+         where project_id = $1
+         order by created_at desc
+         limit 1",
+    )
+    .bind(project_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let Some(row) = row else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    let entry_file_path: String = row.get("entry_file_path");
+    let content_type: String = row.get("content_type");
+    let pdf_bytes: Vec<u8> = row.get("pdf_bytes");
+    let mut resp = axum::http::Response::new(Body::from(pdf_bytes));
+    resp.headers_mut().insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_str(&content_type)
+            .unwrap_or_else(|_| header::HeaderValue::from_static("application/pdf")),
+    );
+    resp.headers_mut().insert(
+        header::CONTENT_DISPOSITION,
+        header::HeaderValue::from_str(&format!("attachment; filename=\"{}\"", entry_file_path))
+            .unwrap_or_else(|_| header::HeaderValue::from_static("attachment")),
+    );
+    Ok(resp)
+}
+
 async fn git_status(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -2111,7 +2720,11 @@ async fn apply_project_group_roles(
     user_id: Uuid,
     groups: &[String],
 ) -> Result<(), sqlx::Error> {
-    let rows = sqlx::query("select project_id, group_name, role from project_group_roles")
+    let rows = sqlx::query(
+        "select p.id as project_id, m.group_name, m.role
+         from projects p
+         join org_oidc_group_role_mappings m on m.organization_id = p.organization_id",
+    )
         .fetch_all(db)
         .await?;
     let group_set: HashSet<String> = groups.iter().cloned().collect();

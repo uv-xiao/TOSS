@@ -2,6 +2,10 @@ use aws_sdk_s3::Client as S3Client;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -9,6 +13,8 @@ pub struct AppState {
     pub db: PgPool,
     pub oidc: OidcSettings,
     pub storage: Option<ObjectStorage>,
+    pub realtime_channels: Arc<RwLock<HashMap<String, broadcast::Sender<CollabEvent>>>>,
+    pub realtime_checkpoint_dir: PathBuf,
 }
 
 #[derive(Clone)]
@@ -25,6 +31,15 @@ pub struct ObjectStorage {
     pub client: S3Client,
     pub bucket: String,
     pub key_prefix: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CollabEvent {
+    pub doc_id: String,
+    pub user_id: String,
+    pub kind: String,
+    pub payload: serde_json::Value,
+    pub at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -75,6 +90,31 @@ pub struct CreateProjectInput {
 }
 
 #[derive(Serialize)]
+pub struct ProjectTreeResponse {
+    pub nodes: Vec<ProjectFileNode>,
+    pub entry_file_path: String,
+}
+
+#[derive(Serialize)]
+pub struct ProjectFileNode {
+    pub path: String,
+    pub kind: String,
+}
+
+#[derive(Deserialize)]
+pub struct CreateProjectFileInput {
+    pub path: String,
+    pub kind: String,
+    pub content: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct MoveProjectFileInput {
+    pub from_path: String,
+    pub to_path: String,
+}
+
+#[derive(Serialize)]
 pub struct ProjectRoleBinding {
     pub project_id: Uuid,
     pub user_id: Uuid,
@@ -98,6 +138,20 @@ pub struct ProjectGroupRoleBinding {
 
 #[derive(Deserialize)]
 pub struct UpsertProjectGroupRoleInput {
+    pub group_name: String,
+    pub role: String,
+}
+
+#[derive(Serialize)]
+pub struct OrgGroupRoleMapping {
+    pub organization_id: Uuid,
+    pub group_name: String,
+    pub role: String,
+    pub granted_at: DateTime<Utc>,
+}
+
+#[derive(Deserialize)]
+pub struct UpsertOrgGroupRoleMappingInput {
     pub group_name: String,
     pub role: String,
 }
@@ -200,6 +254,36 @@ pub struct CreatePatResponse {
     pub token_prefix: String,
     pub created_at: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Deserialize)]
+pub struct UpsertProjectSettingsInput {
+    pub entry_file_path: String,
+}
+
+#[derive(Serialize)]
+pub struct ProjectSettingsResponse {
+    pub project_id: Uuid,
+    pub entry_file_path: String,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Deserialize)]
+pub struct UploadPdfArtifactInput {
+    pub entry_file_path: Option<String>,
+    pub content_base64: String,
+    pub content_type: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct PdfArtifact {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub entry_file_path: String,
+    pub content_type: String,
+    pub size_bytes: i64,
+    pub created_by: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Serialize)]

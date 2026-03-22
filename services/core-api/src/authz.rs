@@ -2,6 +2,7 @@ use crate::types::ProjectRole;
 use axum::http::{header, HeaderMap, StatusCode};
 use axum_extra::extract::cookie::CookieJar;
 use sqlx::{PgPool, Row};
+use std::env;
 use uuid::Uuid;
 
 pub enum AccessNeed {
@@ -12,6 +13,12 @@ pub enum AccessNeed {
 }
 
 pub fn actor_user_id(headers: &HeaderMap) -> Option<Uuid> {
+    let allow_dev_header = env::var("AUTH_DEV_HEADER_ENABLED")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if !allow_dev_header {
+        return None;
+    }
     headers
         .get("x-user-id")
         .and_then(|h| h.to_str().ok())
