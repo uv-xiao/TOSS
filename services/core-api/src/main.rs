@@ -9,6 +9,7 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
 use std::env;
 use std::net::SocketAddr;
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path as FsPath, PathBuf};
 use std::process::Command;
 use tower_http::cors::{Any, CorsLayer};
@@ -977,6 +978,11 @@ async fn upsert_git_config(
     .fetch_one(&state.db)
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let _ = sqlx::query("update git_sync_states set branch = $2 where project_id = $1")
+        .bind(project_id)
+        .bind(row.get::<String, _>("default_branch"))
+        .execute(&state.db)
+        .await;
 
     write_audit(
         &state.db,
@@ -1059,6 +1065,9 @@ async fn git_pull(
             .await;
             return Err(StatusCode::CONFLICT);
         }
+        sync_repo_documents_to_project(&state.db, project_id, &config.local_path)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     } else {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -1309,6 +1318,89 @@ async fn sync_project_documents_to_repo(
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         std::fs::write(&target, content).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+async fn sync_repo_documents_to_project(
+    db: &PgPool,
+    project_id: Uuid,
+    repo_path: &str,
+) -> Result<(), String> {
+    let repo_files = collect_repo_files(repo_path)?;
+    let db_rows = sqlx::query("select id, path from documents where project_id = $1")
+        .bind(project_id)
+        .fetch_all(db)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut current: HashMap<String, Uuid> = HashMap::new();
+    for row in db_rows {
+        current.insert(row.get("path"), row.get("id"));
+    }
+
+    let now = Utc::now();
+    let repo_paths: HashSet<String> = repo_files.keys().cloned().collect();
+    for (path, content) in repo_files {
+        sqlx::query(
+            "insert into documents (id, project_id, path, content, updated_at)
+             values ($1, $2, $3, $4, $5)
+             on conflict (project_id, path) do update set content = excluded.content, updated_at = excluded.updated_at",
+        )
+        .bind(Uuid::new_v4())
+        .bind(project_id)
+        .bind(path)
+        .bind(content)
+        .bind(now)
+        .execute(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+
+    for (path, doc_id) in current {
+        if !repo_paths.contains(&path) {
+            sqlx::query("delete from documents where project_id = $1 and id = $2")
+                .bind(project_id)
+                .bind(doc_id)
+                .execute(db)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn collect_repo_files(repo_path: &str) -> Result<HashMap<String, String>, String> {
+    let root = PathBuf::from(repo_path);
+    let mut out = HashMap::new();
+    collect_repo_files_recursive(&root, &root, &mut out)?;
+    Ok(out)
+}
+
+fn collect_repo_files_recursive(
+    root: &PathBuf,
+    current: &PathBuf,
+    out: &mut HashMap<String, String>,
+) -> Result<(), String> {
+    let entries = std::fs::read_dir(current).map_err(|e| e.to_string())?;
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        let file_type = entry.file_type().map_err(|e| e.to_string())?;
+        if file_type.is_dir() {
+            if path.file_name().and_then(|x| x.to_str()) == Some(".git") {
+                continue;
+            }
+            collect_repo_files_recursive(root, &path, out)?;
+        } else if file_type.is_file() {
+            let rel = path
+                .strip_prefix(root)
+                .map_err(|e| e.to_string())?
+                .to_string_lossy()
+                .to_string();
+            let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+            out.insert(rel, content);
+        }
     }
     Ok(())
 }
