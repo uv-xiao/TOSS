@@ -87,6 +87,17 @@ export type ProjectGroupRoleBinding = {
   granted_at: string;
 };
 
+export type ProjectAsset = {
+  id: string;
+  project_id: string;
+  path: string;
+  object_key: string;
+  content_type: string;
+  size_bytes: number;
+  uploaded_by: string | null;
+  created_at: string;
+};
+
 export async function getAuthMe() {
   const res = await fetch(`${CORE_API_URL}/v1/auth/me`, {
     cache: "no-store",
@@ -299,6 +310,20 @@ export async function createRevision(projectId: string, summary: string) {
   });
   if (!res.ok) throw new Error("Unable to create revision");
   return (await res.json()) as Revision;
+}
+
+export async function listProjectAssets(projectId: string) {
+  const res = await fetch(`${CORE_API_URL}/v1/projects/${projectId}/assets`, {
+    cache: "no-store",
+    credentials: "include",
+    headers: authHeaders()
+  });
+  if (!res.ok) throw new Error("Unable to list assets");
+  return (await res.json()) as { assets: ProjectAsset[] };
+}
+
+export function projectAssetRawUrl(projectId: string, assetId: string) {
+  return `${CORE_API_URL}/v1/projects/${projectId}/assets/${assetId}/raw`;
 }
 
 export async function listProjectGroupRoles(projectId: string) {

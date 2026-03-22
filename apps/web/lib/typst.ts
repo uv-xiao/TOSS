@@ -1,5 +1,7 @@
+import { createTypstRenderer } from "@myriaddreamin/typst.ts";
+
 export type CompileOutput = {
-  pdfDataUrl: string | null;
+  vectorData: Uint8Array | null;
   errors: string[];
   compiledAt: number;
 };
@@ -7,8 +9,13 @@ export type CompileOutput = {
 type WorkerCompileResponse = {
   id: number;
   ok: boolean;
-  pdfBytes?: Uint8Array;
+  vectorBytes?: Uint8Array;
   errors?: string[];
+};
+
+type CompileOptions = {
+  coreApiUrl: string;
+  fontUrls: string[];
 };
 
 class TypstWorkerRuntime {
@@ -39,7 +46,7 @@ class TypstWorkerRuntime {
     return this.worker;
   }
 
-  compile(source: string): Promise<WorkerCompileResponse> {
+  compile(source: string, options: CompileOptions): Promise<WorkerCompileResponse> {
     const worker = this.ensureWorker();
     if (!worker) {
       return Promise.resolve({
@@ -51,39 +58,49 @@ class TypstWorkerRuntime {
     const id = this.seq++;
     return new Promise((resolve) => {
       this.pending.set(id, resolve);
-      worker.postMessage({ id, source });
+      worker.postMessage({
+        id,
+        source,
+        coreApiUrl: options.coreApiUrl,
+        fontUrls: options.fontUrls
+      });
     });
   }
 }
 
+let rendererPromise: ReturnType<typeof createTypstRenderer> | null = null;
+async function getRenderer() {
+  if (!rendererPromise) {
+    const renderer = createTypstRenderer();
+    await renderer.init();
+    rendererPromise = renderer;
+  }
+  return rendererPromise;
+}
+
 const runtime = new TypstWorkerRuntime();
 
-export async function compileTypstClientSide(source: string): Promise<CompileOutput> {
+export async function compileTypstClientSide(
+  source: string,
+  options: CompileOptions
+): Promise<CompileOutput> {
   if (source.trim().length === 0) {
     return {
-      pdfDataUrl: null,
+      vectorData: null,
       errors: ["Document is empty"],
       compiledAt: Date.now()
     };
   }
-
-  const result = await runtime.compile(source);
-  if (result.ok && result.pdfBytes && result.pdfBytes.byteLength > 0) {
-    const bytes = result.pdfBytes;
-    const buffer = bytes.buffer.slice(
-      bytes.byteOffset,
-      bytes.byteOffset + bytes.byteLength
-    ) as ArrayBuffer;
-    const blob = new Blob([buffer], { type: "application/pdf" });
+  const result = await runtime.compile(source, options);
+  if (result.ok && result.vectorBytes && result.vectorBytes.byteLength > 0) {
     return {
-      pdfDataUrl: URL.createObjectURL(blob),
+      vectorData: result.vectorBytes,
       errors: [],
       compiledAt: Date.now()
     };
   }
-
   return {
-    pdfDataUrl: null,
+    vectorData: null,
     errors: result.errors?.length
       ? result.errors
       : [
@@ -91,4 +108,19 @@ export async function compileTypstClientSide(source: string): Promise<CompileOut
         ],
     compiledAt: Date.now()
   };
+}
+
+export async function renderTypstVectorToCanvas(
+  container: HTMLElement,
+  vectorData: Uint8Array
+) {
+  const renderer = await getRenderer();
+  container.replaceChildren();
+  await renderer.renderToCanvas({
+    format: "vector",
+    container,
+    artifactContent: vectorData,
+    backgroundColor: "#ffffff",
+    pixelPerPt: 2
+  });
 }

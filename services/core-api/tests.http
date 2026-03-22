@@ -121,6 +121,13 @@ content-type: application/json
 GET http://localhost:8080/v1/projects/00000000-0000-0000-0000-000000000010/assets
 x-user-id: 00000000-0000-0000-0000-000000000100
 
+### Get raw project asset bytes
+GET http://localhost:8080/v1/projects/00000000-0000-0000-0000-000000000010/assets/00000000-0000-0000-0000-000000000000/raw
+x-user-id: 00000000-0000-0000-0000-000000000100
+
+### Typst package proxy/cache pass-through
+GET http://localhost:8080/v1/typst/packages/preview
+
 ### Git pull
 POST http://localhost:8080/v1/git/sync/pull/00000000-0000-0000-0000-000000000010
 x-user-id: 00000000-0000-0000-0000-000000000100

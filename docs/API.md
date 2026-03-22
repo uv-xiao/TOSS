@@ -56,6 +56,12 @@ OIDC group claim mapping:
 - `POST /v1/projects/{project_id}/assets` (JSON body with `path`, `content_base64`, optional `content_type`)
 - `GET /v1/projects/{project_id}/assets/{asset_id}`
 - `DELETE /v1/projects/{project_id}/assets/{asset_id}`
+- `GET /v1/projects/{project_id}/assets/{asset_id}/raw` (binary content for browser font/runtime fetch)
+
+Typst package proxy/cache:
+- `GET /v1/typst/packages/{*path}`
+- Fetches from Typst universe base and caches locally on first request.
+- Configured by `TYPST_UNIVERSE_BASE_URL` and `TYPST_PACKAGE_CACHE_DIR`.
 
 Storage configuration:
 - `S3_BUCKET` enables object storage integration.

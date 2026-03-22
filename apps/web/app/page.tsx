@@ -7,9 +7,10 @@ import { EditorPane } from "@/components/EditorPane";
 import { PresenceBar } from "@/components/PresenceBar";
 import { CommentsPanel } from "@/components/CommentsPanel";
 import { HistoryPanel } from "@/components/HistoryPanel";
-import { compileTypstClientSide } from "@/lib/typst";
+import { compileTypstClientSide, renderTypstVectorToCanvas } from "@/lib/typst";
 import { bindRealtimeYDoc } from "@/lib/realtime";
 import {
+  CORE_API_URL,
   createPersonalAccessToken,
   createComment,
   createRevision,
@@ -20,6 +21,7 @@ import {
   listPersonalAccessTokens,
   listComments,
   listDocuments,
+  listProjectAssets,
   listProjectGroupRoles,
   listProjects,
   listRevisions,
@@ -31,6 +33,7 @@ import {
   upsertProjectGroupRole,
   upsertGitConfig,
   upsertDocumentByPath,
+  projectAssetRawUrl,
   type Comment,
   type CreatePatResponse,
   type GitRemoteConfig,
@@ -53,12 +56,13 @@ export default function HomePage() {
   const ydocRef = useRef<Y.Doc | null>(null);
   const ytextRef = useRef<Y.Text | null>(null);
   const lastSavedDocRef = useRef<string>(DEFAULT_DOC);
-  const currentPdfUrlRef = useRef<string | null>(null);
+  const canvasPreviewRef = useRef<HTMLDivElement | null>(null);
   const [document, setDocument] = useState(DEFAULT_DOC);
   const deferredDocument = useDeferredValue(document);
-  const [pdfDataUrl, setPdfDataUrl] = useState<string | null>(null);
+  const [vectorData, setVectorData] = useState<Uint8Array | null>(null);
   const [compileErrors, setCompileErrors] = useState<string[]>([]);
   const [compiledAt, setCompiledAt] = useState<number | null>(null);
+  const [fontUrls, setFontUrls] = useState<string[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProject, setSelectedProject] = useState<string>(DEFAULT_PROJECT_ID);
   const [gitStatus, setGitStatus] = useState<GitSyncState | null>(null);
@@ -172,6 +176,14 @@ export default function HomePage() {
     listProjectGroupRoles(selectedProject)
       .then((res) => setGroupRoles(res))
       .catch(() => setGroupRoles([]));
+    listProjectAssets(selectedProject)
+      .then((res) => {
+        const urls = res.assets
+          .filter((asset) => /\.(ttf|otf|woff|woff2)$/i.test(asset.path))
+          .map((asset) => projectAssetRawUrl(selectedProject, asset.id));
+        setFontUrls(urls);
+      })
+      .catch(() => setFontUrls([]));
 
     listDocuments(selectedProject)
       .then((res) => {
@@ -187,13 +199,12 @@ export default function HomePage() {
   useEffect(() => {
     let cancelled = false;
     startTransition(() => {
-      compileTypstClientSide(deferredDocument).then((output) => {
+      compileTypstClientSide(deferredDocument, {
+        coreApiUrl: CORE_API_URL,
+        fontUrls
+      }).then((output) => {
         if (cancelled) return;
-        if (currentPdfUrlRef.current?.startsWith("blob:")) {
-          URL.revokeObjectURL(currentPdfUrlRef.current);
-        }
-        currentPdfUrlRef.current = output.pdfDataUrl;
-        setPdfDataUrl(output.pdfDataUrl);
+        setVectorData(output.vectorData);
         setCompileErrors(output.errors);
         setCompiledAt(output.compiledAt);
       });
@@ -201,15 +212,13 @@ export default function HomePage() {
     return () => {
       cancelled = true;
     };
-  }, [deferredDocument]);
+  }, [deferredDocument, fontUrls]);
 
   useEffect(() => {
-    return () => {
-      if (currentPdfUrlRef.current?.startsWith("blob:")) {
-        URL.revokeObjectURL(currentPdfUrlRef.current);
-      }
-    };
-  }, []);
+    const el = canvasPreviewRef.current;
+    if (!el || !vectorData) return;
+    renderTypstVectorToCanvas(el, vectorData).catch(() => undefined);
+  }, [vectorData]);
 
   useEffect(() => {
     if (!selectedProject) return;
@@ -450,13 +459,13 @@ export default function HomePage() {
           </div>
         </article>
         <article className="panel">
-          <h2>PDF Preview + Project Signals</h2>
+          <h2>Canvas Preview + Project Signals</h2>
           <div className="panel-content">
-            {pdfDataUrl ? (
-              <iframe src={pdfDataUrl} className="pdf-frame" title="Typst PDF Preview" />
-            ) : (
-              <div className="error">No PDF generated yet.</div>
-            )}
+            <div
+              ref={canvasPreviewRef}
+              className="pdf-frame"
+              style={{ overflow: "auto", background: "#f8fafc", padding: 8 }}
+            />
             <hr />
             <div className="meta">
               <span>Git Branch: {gitStatus?.branch ?? "main"}</span>

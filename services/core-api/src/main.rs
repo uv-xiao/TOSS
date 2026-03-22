@@ -23,6 +23,7 @@ use sqlx::{PgPool, Row};
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::process::Command;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
@@ -114,6 +115,11 @@ async fn main() {
             "/v1/projects/{project_id}/assets/{asset_id}",
             get(get_project_asset).delete(delete_project_asset),
         )
+        .route(
+            "/v1/projects/{project_id}/assets/{asset_id}/raw",
+            get(get_project_asset_raw),
+        )
+        .route("/v1/typst/packages/{*path}", get(typst_package_proxy))
         .route("/v1/git/status/{project_id}", get(git_status))
         .route("/v1/git/repo-link/{project_id}", get(git_repo_link))
         .route("/v1/git/config/{project_id}", get(get_git_config).put(upsert_git_config))
@@ -1614,6 +1620,114 @@ async fn delete_project_asset(
     )
     .await;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn get_project_asset_raw(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, asset_id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse, StatusCode> {
+    ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
+    let Some(storage) = state.storage.clone() else {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    };
+    let row = sqlx::query(
+        "select object_key, content_type from project_assets where project_id = $1 and id = $2",
+    )
+    .bind(project_id)
+    .bind(asset_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let Some(row) = row else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    let object_key: String = row.get("object_key");
+    let content_type: String = row.get("content_type");
+    let bytes = get_object(&storage, &object_key)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut resp = axum::http::Response::new(Body::from(bytes));
+    resp.headers_mut().insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_str(&content_type)
+            .unwrap_or_else(|_| header::HeaderValue::from_static("application/octet-stream")),
+    );
+    Ok(resp)
+}
+
+fn typst_package_cache_root() -> PathBuf {
+    env::var("TYPST_PACKAGE_CACHE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/tmp/typst-packages-cache"))
+}
+
+fn typst_package_base_url() -> String {
+    env::var("TYPST_UNIVERSE_BASE_URL").unwrap_or_else(|_| "https://packages.typst.org".to_string())
+}
+
+fn sanitize_package_cache_path(raw: &str) -> Option<PathBuf> {
+    let rel = std::path::Path::new(raw);
+    if rel.is_absolute() {
+        return None;
+    }
+    if rel.components().any(|c| {
+        matches!(
+            c,
+            std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_)
+        )
+    }) {
+        return None;
+    }
+    Some(typst_package_cache_root().join(rel))
+}
+
+async fn typst_package_proxy(Path(path): Path<String>) -> impl IntoResponse {
+    let Some(cache_path) = sanitize_package_cache_path(&path) else {
+        return (StatusCode::BAD_REQUEST, "invalid package path").into_response();
+    };
+    if cache_path.exists() {
+        match std::fs::read(&cache_path) {
+            Ok(bytes) => {
+                return (
+                    StatusCode::OK,
+                    [(header::CONTENT_TYPE, "application/octet-stream")],
+                    bytes,
+                )
+                    .into_response()
+            }
+            Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "cache read failed").into_response(),
+        }
+    }
+
+    let upstream = format!(
+        "{}/{}",
+        typst_package_base_url().trim_end_matches('/'),
+        path.trim_start_matches('/')
+    );
+    let response = match reqwest::get(upstream).await {
+        Ok(r) => r,
+        Err(_) => return (StatusCode::BAD_GATEWAY, "package upstream unavailable").into_response(),
+    };
+    if !response.status().is_success() {
+        return (StatusCode::NOT_FOUND, "package not found").into_response();
+    }
+    let bytes = match response.bytes().await {
+        Ok(b) => b.to_vec(),
+        Err(_) => return (StatusCode::BAD_GATEWAY, "package upstream read failed").into_response(),
+    };
+    if let Some(parent) = cache_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&cache_path, &bytes);
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/octet-stream")],
+        bytes,
+    )
+        .into_response()
 }
 
 async fn git_status(

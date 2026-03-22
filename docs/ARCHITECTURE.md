@@ -23,8 +23,9 @@
 
 1. Browser editor updates are debounced by React state and sent to a dedicated Typst Web Worker.
 2. Worker holds a long-lived Typst compiler instance and updates `main.typ` in compiler memory.
-3. Worker compiles to PDF bytes and returns deterministic diagnostics.
-4. UI renders PDF blob URL when successful, or inline compile diagnostics otherwise.
+3. Worker compiles to vector artifact and returns deterministic diagnostics.
+4. UI renders vector artifact to canvas with Typst renderer when successful, or inline diagnostics otherwise.
+5. Worker uses server package proxy/cache endpoint for Typst universe dependency fetch.
 
 ## Git sync path
 
