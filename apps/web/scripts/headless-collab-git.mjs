@@ -7,8 +7,8 @@ import { chromium } from "playwright";
 const baseUrl = process.env.WEB_BASE_URL ?? "http://127.0.0.1:18080";
 const coreApi = process.env.CORE_API_URL ?? "http://127.0.0.1:18080";
 const projectId = process.env.PROJECT_ID ?? "00000000-0000-0000-0000-000000000010";
-const teacherId = "00000000-0000-0000-0000-000000000100";
-const studentId = "00000000-0000-0000-0000-000000000101";
+const adminUserId = "00000000-0000-0000-0000-000000000100";
+const memberUserId = "00000000-0000-0000-0000-000000000101";
 const outDir = process.env.SCREENSHOT_DIR ?? "/tmp/typst-collab-git";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -31,12 +31,6 @@ async function api(method, p, userId, body) {
   return res.json();
 }
 
-async function setEditorText(page, text) {
-  await page.locator(".cm-content").click();
-  await page.keyboard.press("Control+A");
-  await page.keyboard.type(text, { delay: 4 });
-}
-
 async function editorText(page) {
   return page.locator(".cm-content").innerText();
 }
@@ -50,6 +44,30 @@ async function waitForEditorContains(page, snippet, timeoutMs = 10000) {
   throw new Error(`editor missing snippet: ${snippet}`);
 }
 
+async function canvasChecksum(page) {
+  return page.evaluate(() => {
+    const canvas = document.querySelector(".pdf-frame canvas");
+    if (!canvas) return 0;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return 0;
+    const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    let sum = 0;
+    for (let i = 0; i < data.length; i += 2048) {
+      sum = (sum * 131 + data[i] + data[i + 1] + data[i + 2]) >>> 0;
+    }
+    return sum;
+  });
+}
+
+async function waitForCanvas(page, timeoutMs = 45000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if ((await page.locator(".pdf-frame canvas").count()) > 0) return;
+    await sleep(300);
+  }
+  throw new Error("canvas preview not rendered");
+}
+
 async function main() {
   await fs.mkdir(outDir, { recursive: true });
   const screenshots = [];
@@ -60,12 +78,12 @@ async function main() {
   await api(
     "PUT",
     `/v1/projects/${projectId}/documents/by-path/${encodeURIComponent("main.typ")}`,
-    teacherId,
+    adminUserId,
     { content: "= Headless Collaboration\n\nInitial content.\n" }
   );
 
-  const teacherPat = await api("POST", "/v1/profile/security/tokens", teacherId, {
-    label: "headless-teacher"
+  const teacherPat = await api("POST", "/v1/profile/security/tokens", adminUserId, {
+    label: "headless-admin"
   });
   const repoUrl = `${coreApi.replace(/\/$/, "")}/v1/git/repo/${projectId}`;
   const authRepoUrl = repoUrl.replace("http://", `http://qa:${teacherPat.token}@`);
@@ -84,24 +102,41 @@ async function main() {
   }
 
   try {
-    await teacher.goto(`${baseUrl}/project/${projectId}?dev_user_id=${teacherId}`, {
-      waitUntil: "networkidle",
+    await teacher.goto(`${baseUrl}/project/${projectId}?dev_user_id=${adminUserId}`, {
+      waitUntil: "domcontentloaded",
       timeout: 60000
     });
-    await student.goto(`${baseUrl}/project/${projectId}?dev_user_id=${studentId}`, {
-      waitUntil: "networkidle",
+    await student.goto(`${baseUrl}/project/${projectId}?dev_user_id=${memberUserId}`, {
+      waitUntil: "domcontentloaded",
       timeout: 60000
     });
     await teacher.getByRole("heading", { name: "Editor" }).waitFor({ timeout: 30000 });
     await student.getByRole("heading", { name: "Editor" }).waitFor({ timeout: 30000 });
-
-    await setEditorText(teacher, "= Headless Collaboration\n\nTeacher live edit.\n");
-    await waitForEditorContains(student, "Teacher live edit.");
-    await student.locator(".cm-content").click();
-    await student.keyboard.press("End");
-    await student.keyboard.type("\nStudent live edit.\n", { delay: 4 });
-    await waitForEditorContains(teacher, "Student live edit.");
+    await teacher.locator(".tree-label", { hasText: "main.typ" }).first().click();
+    await student.locator(".tree-label", { hasText: "main.typ" }).first().click();
+    await teacher.getByText("Workspace: ready").waitFor({ timeout: 30000 });
+    await student.getByText("Workspace: ready").waitFor({ timeout: 30000 });
+    await waitForCanvas(teacher, 45000);
     await sleep(1200);
+    const beforeChecksum = await canvasChecksum(teacher);
+
+    await teacher.locator(".cm-content").click();
+    await teacher.keyboard.press("End");
+    await teacher.keyboard.type("\nAdmin live edit.\n", { delay: 4 });
+    await sleep(1200);
+    await waitForEditorContains(student, "Admin live edit.");
+    let updated = false;
+    for (let i = 0; i < 50; i += 1) {
+      const next = await canvasChecksum(teacher);
+      if (next > 0 && next !== beforeChecksum) {
+        updated = true;
+        break;
+      }
+      await sleep(250);
+    }
+    if (!updated) {
+      throw new Error("preview did not refresh after realtime edit");
+    }
 
     const collabShot = path.join(outDir, "01-collab.png");
     await teacher.screenshot({ path: collabShot, fullPage: true });
@@ -114,7 +149,7 @@ async function main() {
     for (const repo of [offline, stale]) {
       run("git checkout -B main origin/main", repo);
       run("git config user.name 'Offline User'", repo);
-      run("git config user.email 'offline@example.edu'", repo);
+      run("git config user.email 'offline@example.com'", repo);
     }
 
     const stamp = Date.now().toString();

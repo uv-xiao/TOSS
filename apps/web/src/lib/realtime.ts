@@ -17,19 +17,34 @@ function base64ToUint8(value: string): Uint8Array {
   return bytes;
 }
 
+export type PresencePeer = {
+  id: string;
+  name: string;
+  line?: number;
+  column?: number;
+};
+
+type CursorPayload = {
+  line: number;
+  column: number;
+};
+
 export function bindRealtimeYDoc(params: {
   docId: string;
   projectId: string;
   wsBaseUrl: string;
   ydoc: Y.Doc;
   userId?: string;
+  userName?: string;
   sessionToken?: string;
-  onPresenceChange?: (users: string[]) => void;
+  onPresenceChange?: (users: PresencePeer[]) => void;
 }) {
   const userId = params.userId ?? crypto.randomUUID();
+  const userName = params.userName?.trim() || `User-${userId.slice(0, 8)}`;
   const query = new URLSearchParams({
     project_id: params.projectId,
-    user_id: userId
+    user_id: userId,
+    user_name: userName
   });
   if (params.sessionToken?.trim()) {
     query.set("session_token", params.sessionToken.trim());
@@ -38,10 +53,11 @@ export function bindRealtimeYDoc(params: {
   const url = `${params.wsBaseUrl.replace(/^http/, "ws").replace(/\/$/, "")}/v1/realtime/ws/${safeDocId}?${query.toString()}`;
   const ws = new WebSocket(url);
   const origin = `client-${crypto.randomUUID()}`;
-  const presenceUsers = new Set<string>([userId]);
+  const peers = new Map<string, PresencePeer>();
+  peers.set(userId, { id: userId, name: userName });
 
   const notifyPresence = () => {
-    params.onPresenceChange?.(Array.from(presenceUsers));
+    params.onPresenceChange?.(Array.from(peers.values()));
   };
 
   const onLocalUpdate = (update: Uint8Array, updateOrigin: unknown) => {
@@ -63,6 +79,13 @@ export function bindRealtimeYDoc(params: {
     notifyPresence();
     ws.send(
       JSON.stringify({
+        kind: "presence.meta",
+        origin,
+        payload: { user_name: userName }
+      })
+    );
+    ws.send(
+      JSON.stringify({
         kind: "yjs.sync",
         origin,
         payload: uint8ToBase64(snapshot)
@@ -75,9 +98,15 @@ export function bindRealtimeYDoc(params: {
       const parsed = JSON.parse(String(event.data));
       const incoming = parsed?.payload;
       const kind = parsed?.kind;
-      const eventUserId = parsed?.user_id;
-      if (kind === "presence.join" && typeof eventUserId === "string") {
-        presenceUsers.add(eventUserId);
+      const eventUserId = typeof parsed?.user_id === "string" ? parsed.user_id : "";
+      const payloadUserName =
+        typeof incoming?.user_name === "string" ? incoming.user_name : undefined;
+
+      if (kind === "presence.join" && eventUserId) {
+        peers.set(eventUserId, {
+          id: eventUserId,
+          name: payloadUserName || peers.get(eventUserId)?.name || eventUserId
+        });
         notifyPresence();
         if (eventUserId !== userId && ws.readyState === WebSocket.OPEN) {
           const snapshot = Y.encodeStateAsUpdate(params.ydoc);
@@ -90,8 +119,31 @@ export function bindRealtimeYDoc(params: {
           );
         }
       }
-      if (kind === "presence.leave" && typeof eventUserId === "string") {
-        presenceUsers.delete(eventUserId);
+      if (kind === "presence.leave" && eventUserId) {
+        peers.delete(eventUserId);
+        notifyPresence();
+      }
+      if (kind === "presence.meta" && eventUserId) {
+        const previous: PresencePeer = peers.get(eventUserId) ?? { id: eventUserId, name: eventUserId };
+        peers.set(eventUserId, {
+          ...previous,
+          name: payloadUserName || previous.name
+        });
+        notifyPresence();
+      }
+      if (kind === "presence.cursor" && eventUserId) {
+        const previous: PresencePeer = peers.get(eventUserId) ?? { id: eventUserId, name: eventUserId };
+        peers.set(eventUserId, {
+          ...previous,
+          line:
+            typeof incoming?.line === "number" && Number.isFinite(incoming.line)
+              ? Math.max(1, incoming.line)
+              : previous.line,
+          column:
+            typeof incoming?.column === "number" && Number.isFinite(incoming.column)
+              ? Math.max(1, incoming.column)
+              : previous.column
+        });
         notifyPresence();
       }
       if ((kind === "doc.update" || kind === "yjs.update" || kind === "yjs.sync") && incoming) {
@@ -105,12 +157,23 @@ export function bindRealtimeYDoc(params: {
     }
   });
 
+  const sendCursor = (cursor: CursorPayload) => {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    ws.send(
+      JSON.stringify({
+        kind: "presence.cursor",
+        origin,
+        payload: cursor
+      })
+    );
+  };
+
   const close = () => {
     params.ydoc.off("update", onLocalUpdate);
-    presenceUsers.clear();
+    peers.clear();
     notifyPresence();
     ws.close();
   };
 
-  return { close };
+  return { close, sendCursor };
 }

@@ -15,7 +15,10 @@ type WorkerCompileResponse = {
   errors?: string[];
 };
 
-type CompileOptions = {
+export type CompileOptions = {
+  entryFilePath: string;
+  documents: Array<{ path: string; content: string }>;
+  assets: Array<{ path: string; contentBase64: string }>;
   coreApiUrl: string;
   fontData: Uint8Array[];
   appOrigin?: string;
@@ -25,6 +28,20 @@ class TypstWorkerRuntime {
   private worker: Worker | null = null;
   private seq = 1;
   private pending = new Map<number, (response: WorkerCompileResponse) => void>();
+  private fatalError(response: WorkerCompileResponse) {
+    return (
+      !!response.errors &&
+      response.errors.some((message) =>
+        /memory access out of bounds|unreachable|RuntimeError/i.test(message)
+      )
+    );
+  }
+
+  private resetWorker() {
+    if (!this.worker) return;
+    this.worker.terminate();
+    this.worker = null;
+  }
 
   private ensureWorker() {
     if (typeof window === "undefined") return null;
@@ -55,7 +72,7 @@ class TypstWorkerRuntime {
     return this.worker;
   }
 
-  compile(source: string, options: CompileOptions): Promise<WorkerCompileResponse> {
+  compile(options: CompileOptions): Promise<WorkerCompileResponse> {
     const worker = this.ensureWorker();
     if (!worker) {
       return Promise.resolve({
@@ -65,20 +82,32 @@ class TypstWorkerRuntime {
       });
     }
     const id = this.seq++;
-    return new Promise((resolve) => {
+    return new Promise<WorkerCompileResponse>((resolve) => {
       this.pending.set(id, resolve);
       worker.postMessage({
         id,
-        source,
+        entryFilePath: options.entryFilePath,
+        documents: options.documents,
+        assets: options.assets.map((asset) => ({
+          path: asset.path,
+          content_base64: asset.contentBase64
+        })),
         coreApiUrl: options.coreApiUrl,
         fontData: options.fontData,
         appOrigin: options.appOrigin
       });
+    }).then((response) => {
+      if (!response.ok && this.fatalError(response)) {
+        this.resetWorker();
+      }
+      return response;
     });
   }
 }
 
 let rendererPromise: ReturnType<typeof createTypstRenderer> | null = null;
+let renderQueue: Promise<void> = Promise.resolve();
+let renderVersion = 0;
 const RENDERER_WASM_URL =
   typeof window === "undefined"
     ? "/typst-wasm/typst_ts_renderer_bg.wasm"
@@ -97,19 +126,16 @@ async function getRenderer() {
 
 const runtime = new TypstWorkerRuntime();
 
-export async function compileTypstClientSide(
-  source: string,
-  options: CompileOptions
-): Promise<CompileOutput> {
-  if (source.trim().length === 0) {
+export async function compileTypstClientSide(options: CompileOptions): Promise<CompileOutput> {
+  if (!options.documents.length) {
     return {
       vectorData: null,
       pdfData: null,
-      errors: ["Document is empty"],
+      errors: ["Project has no source documents"],
       compiledAt: Date.now()
     };
   }
-  const result = await runtime.compile(source, options);
+  const result = await runtime.compile(options);
   if (result.ok && result.vectorBytes && result.vectorBytes.byteLength > 0) {
     return {
       vectorData: result.vectorBytes,
@@ -130,17 +156,20 @@ export async function compileTypstClientSide(
   };
 }
 
-export async function renderTypstVectorToCanvas(
-  container: HTMLElement,
-  vectorData: Uint8Array
-) {
-  const renderer = await getRenderer();
-  container.replaceChildren();
-  await renderer.renderToCanvas({
-    format: "vector",
-    container,
-    artifactContent: vectorData,
-    backgroundColor: "#ffffff",
-    pixelPerPt: 2
+export async function renderTypstVectorToCanvas(container: HTMLElement, vectorData: Uint8Array) {
+  const version = ++renderVersion;
+  renderQueue = renderQueue.catch(() => undefined).then(async () => {
+    if (version !== renderVersion) return;
+    const renderer = await getRenderer();
+    if (version !== renderVersion) return;
+    container.replaceChildren();
+    await renderer.renderToCanvas({
+      format: "vector",
+      container,
+      artifactContent: vectorData,
+      backgroundColor: "#ffffff",
+      pixelPerPt: 2
+    });
   });
+  await renderQueue;
 }

@@ -23,6 +23,11 @@ function authHeaders(extra?: Record<string, string>) {
   return headers;
 }
 
+async function parseJsonOrThrow<T>(res: Response, message: string): Promise<T> {
+  if (!res.ok) throw new Error(`${message} (${res.status})`);
+  return (await res.json()) as T;
+}
+
 export type ProjectRole = "Owner" | "Teacher" | "Student" | "TA";
 
 export type Project = {
@@ -51,12 +56,29 @@ export type Document = {
   updated_at: string;
 };
 
+export type RevisionAuthor = {
+  user_id: string;
+  display_name: string;
+  email: string;
+};
+
 export type Revision = {
   id: string;
   project_id: string;
   actor_user_id: string | null;
   summary: string;
   created_at: string;
+  authors: RevisionAuthor[];
+};
+
+export type RevisionDocument = {
+  path: string;
+  content: string;
+};
+
+export type RevisionDocumentsResponse = {
+  revision_id: string;
+  documents: RevisionDocument[];
 };
 
 export type ProjectAsset = {
@@ -112,9 +134,42 @@ export type ProjectSettings = {
   updated_at: string;
 };
 
-async function parseJsonOrThrow<T>(res: Response, message: string): Promise<T> {
-  if (!res.ok) throw new Error(`${message} (${res.status})`);
-  return (await res.json()) as T;
+export type AuthConfig = {
+  allow_local_login: boolean;
+  allow_local_registration: boolean;
+  allow_oidc: boolean;
+  issuer: string | null;
+  client_id: string | null;
+  redirect_uri: string | null;
+  groups_claim: string;
+};
+
+export type AuthUser = {
+  user_id: string;
+  email: string;
+  display_name: string;
+  session_expires_at: string;
+};
+
+export type AdminAuthSettings = {
+  allow_local_login: boolean;
+  allow_local_registration: boolean;
+  allow_oidc: boolean;
+  oidc_issuer: string | null;
+  oidc_client_id: string | null;
+  oidc_client_secret: string | null;
+  oidc_redirect_uri: string | null;
+  oidc_groups_claim: string;
+  updated_at: string;
+};
+
+export async function getAuthConfig() {
+  const res = await fetch(apiUrl("/v1/auth/config"), {
+    cache: "no-store",
+    credentials: authCredentials(),
+    headers: authHeaders()
+  });
+  return parseJsonOrThrow<AuthConfig>(res, "Unable to load auth config");
 }
 
 export async function getAuthMe() {
@@ -124,12 +179,31 @@ export async function getAuthMe() {
     headers: authHeaders()
   });
   if (!res.ok) return null;
-  return (await res.json()) as {
-    user_id: string;
-    email: string;
-    display_name: string;
-    session_expires_at: string;
-  };
+  return (await res.json()) as AuthUser;
+}
+
+export async function localLogin(email: string, password: string) {
+  const res = await fetch(apiUrl("/v1/auth/local/login"), {
+    method: "POST",
+    credentials: authCredentials(),
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify({ email, password })
+  });
+  if (!res.ok) throw new Error(`Local login failed (${res.status})`);
+}
+
+export async function localRegister(input: {
+  email: string;
+  password: string;
+  display_name?: string;
+}) {
+  const res = await fetch(apiUrl("/v1/auth/local/register"), {
+    method: "POST",
+    credentials: authCredentials(),
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify(input)
+  });
+  if (!res.ok) throw new Error(`Local register failed (${res.status})`);
 }
 
 export function oidcLoginUrl() {
@@ -151,6 +225,20 @@ export async function listProjects() {
     headers: authHeaders()
   });
   return parseJsonOrThrow<{ projects: Project[] }>(res, "Unable to load projects");
+}
+
+export async function createProject(input: {
+  organization_id: string;
+  name: string;
+  description?: string | null;
+}) {
+  const res = await fetch(apiUrl("/v1/projects"), {
+    method: "POST",
+    credentials: authCredentials(),
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify(input)
+  });
+  return parseJsonOrThrow<Project>(res, "Unable to create project");
 }
 
 export async function getProjectTree(projectId: string) {
@@ -225,14 +313,13 @@ export async function listRevisions(projectId: string) {
   return parseJsonOrThrow<{ revisions: Revision[] }>(res, "Unable to list revisions");
 }
 
-export async function createRevision(projectId: string, summary: string) {
-  const res = await fetch(apiUrl(`/v1/projects/${projectId}/revisions`), {
-    method: "POST",
+export async function getRevisionDocuments(projectId: string, revisionId: string) {
+  const res = await fetch(apiUrl(`/v1/projects/${projectId}/revisions/${revisionId}/documents`), {
+    cache: "no-store",
     credentials: authCredentials(),
-    headers: authHeaders({ "content-type": "application/json" }),
-    body: JSON.stringify({ summary })
+    headers: authHeaders()
   });
-  return parseJsonOrThrow<Revision>(res, "Unable to create revision");
+  return parseJsonOrThrow<RevisionDocumentsResponse>(res, "Unable to load revision documents");
 }
 
 export async function listProjectAssets(projectId: string) {
@@ -298,23 +385,6 @@ export function projectArchiveUrl(projectId: string) {
   return apiUrl(`/v1/projects/${projectId}/archive`);
 }
 
-export function latestProjectPdfUrl(projectId: string) {
-  return apiUrl(`/v1/projects/${projectId}/pdf-artifacts/latest`);
-}
-
-export async function uploadProjectPdfArtifact(
-  projectId: string,
-  input: { entry_file_path: string; content_base64: string; content_type?: string }
-) {
-  const res = await fetch(apiUrl(`/v1/projects/${projectId}/pdf-artifacts`), {
-    method: "POST",
-    credentials: authCredentials(),
-    headers: authHeaders({ "content-type": "application/json" }),
-    body: JSON.stringify(input)
-  });
-  if (!res.ok) throw new Error("Unable to upload PDF artifact");
-}
-
 export async function listPersonalAccessTokens() {
   const res = await fetch(apiUrl("/v1/profile/security/tokens"), {
     cache: "no-store",
@@ -374,3 +444,40 @@ export async function deleteOrgGroupRoleMapping(orgId: string, groupName: string
   });
   if (!res.ok) throw new Error("Unable to delete mapping");
 }
+
+export async function getAdminAuthSettings() {
+  const res = await fetch(apiUrl("/v1/admin/settings/auth"), {
+    cache: "no-store",
+    credentials: authCredentials(),
+    headers: authHeaders()
+  });
+  const parsed = await parseJsonOrThrow<{ settings: AdminAuthSettings }>(
+    res,
+    "Unable to load auth settings"
+  );
+  return parsed.settings;
+}
+
+export async function upsertAdminAuthSettings(input: {
+  allow_local_login: boolean;
+  allow_local_registration: boolean;
+  allow_oidc: boolean;
+  oidc_discovery_url?: string | null;
+  oidc_client_id?: string | null;
+  oidc_client_secret?: string | null;
+  oidc_redirect_uri?: string | null;
+  oidc_groups_claim?: string | null;
+}) {
+  const res = await fetch(apiUrl("/v1/admin/settings/auth"), {
+    method: "PUT",
+    credentials: authCredentials(),
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify(input)
+  });
+  const parsed = await parseJsonOrThrow<{ settings: AdminAuthSettings }>(
+    res,
+    "Unable to save auth settings"
+  );
+  return parsed.settings;
+}
+
