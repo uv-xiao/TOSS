@@ -183,6 +183,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
   const [vectorData, setVectorData] = useState<Uint8Array | null>(null);
   const [pdfData, setPdfData] = useState<Uint8Array | null>(null);
   const [compileErrors, setCompileErrors] = useState<string[]>([]);
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [compiledAt, setCompiledAt] = useState<number | null>(null);
   const deferredDocument = useMemo(() => docText, [docText]);
 
@@ -345,35 +346,50 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
     if (!projectId) return;
     const raw = window.prompt(kind === "file" ? "File path" : "Directory path");
     if (!raw) return;
-    await createProjectFile(projectId, {
-      path: raw.trim(),
-      kind,
-      content: kind === "file" ? "" : undefined
-    });
-    const tree = await getProjectTree(projectId);
-    setTreeNodes(tree.nodes);
-    if (kind === "file") setActivePath(raw.trim());
+    try {
+      setWorkspaceError(null);
+      await createProjectFile(projectId, {
+        path: raw.trim(),
+        kind,
+        content: kind === "file" ? "" : undefined
+      });
+      const tree = await getProjectTree(projectId);
+      setTreeNodes(tree.nodes);
+      if (kind === "file") setActivePath(raw.trim());
+    } catch {
+      setWorkspaceError("Unable to create path");
+    }
   }
 
   async function renamePath(path: string) {
     if (!projectId) return;
     const target = window.prompt("Rename/move to path", path);
     if (!target || target === path) return;
-    await moveProjectFile(projectId, path, target.trim());
-    const tree = await getProjectTree(projectId);
-    setTreeNodes(tree.nodes);
-    if (activePath === path) setActivePath(target.trim());
+    try {
+      setWorkspaceError(null);
+      await moveProjectFile(projectId, path, target.trim());
+      const tree = await getProjectTree(projectId);
+      setTreeNodes(tree.nodes);
+      if (activePath === path) setActivePath(target.trim());
+    } catch {
+      setWorkspaceError("Unable to move/rename path");
+    }
   }
 
   async function removePath(path: string) {
     if (!projectId) return;
     if (!window.confirm(`Delete ${path}?`)) return;
-    await deleteProjectFile(projectId, path);
-    const tree = await getProjectTree(projectId);
-    setTreeNodes(tree.nodes);
-    if (activePath === path) {
-      const nextFile = tree.nodes.find((n) => n.kind === "file")?.path ?? "main.typ";
-      setActivePath(nextFile);
+    try {
+      setWorkspaceError(null);
+      await deleteProjectFile(projectId, path);
+      const tree = await getProjectTree(projectId);
+      setTreeNodes(tree.nodes);
+      if (activePath === path) {
+        const nextFile = tree.nodes.find((n) => n.kind === "file")?.path ?? "main.typ";
+        setActivePath(nextFile);
+      }
+    } catch {
+      setWorkspaceError("Unable to delete path");
     }
   }
 
@@ -419,25 +435,30 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
       if (!file) return;
       const bytes = new Uint8Array(await file.arrayBuffer());
       const binary = Array.from(bytes, (v) => String.fromCharCode(v)).join("");
-      await uploadProjectAsset(projectId, {
-        path: `fonts/${file.name}`,
-        content_base64: btoa(binary),
-        content_type: file.type || "font/ttf"
-      });
-      const tree = await listProjectAssets(projectId);
-      const contents = await Promise.all(
-        tree.assets
-          .filter((asset) => /\.(ttf|otf|woff|woff2)$/i.test(asset.path))
-          .map((asset) => getProjectAssetContent(projectId, asset.id))
-      );
-      setFontData(
-        contents.map((item) => {
-          const bin = atob(item.content_base64);
-          const out = new Uint8Array(bin.length);
-          for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
-          return out;
-        })
-      );
+      try {
+        setWorkspaceError(null);
+        await uploadProjectAsset(projectId, {
+          path: `fonts/${file.name}`,
+          content_base64: btoa(binary),
+          content_type: file.type || "font/ttf"
+        });
+        const tree = await listProjectAssets(projectId);
+        const contents = await Promise.all(
+          tree.assets
+            .filter((asset) => /\.(ttf|otf|woff|woff2)$/i.test(asset.path))
+            .map((asset) => getProjectAssetContent(projectId, asset.id))
+        );
+        setFontData(
+          contents.map((item) => {
+            const bin = atob(item.content_base64);
+            const out = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
+            return out;
+          })
+        );
+      } catch {
+        setWorkspaceError("Unable to upload font asset (object storage unavailable or permission denied)");
+      }
     };
     picker.click();
   }
@@ -512,6 +533,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
           />
           <EditorPane value={docText} onChange={updateDocumentViaYjs} />
           {compileErrors.length > 0 && <div className="error">{compileErrors.join("; ")}</div>}
+          {workspaceError && <div className="error">{workspaceError}</div>}
         </div>
       </article>
       <aside className="panel right">

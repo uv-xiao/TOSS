@@ -34,7 +34,8 @@ export function bindRealtimeYDoc(params: {
   if (params.sessionToken?.trim()) {
     query.set("session_token", params.sessionToken.trim());
   }
-  const url = `${params.wsBaseUrl.replace(/^http/, "ws").replace(/\/$/, "")}/v1/realtime/ws/${params.docId}?${query.toString()}`;
+  const safeDocId = encodeURIComponent(params.docId);
+  const url = `${params.wsBaseUrl.replace(/^http/, "ws").replace(/\/$/, "")}/v1/realtime/ws/${safeDocId}?${query.toString()}`;
   const ws = new WebSocket(url);
   const origin = `client-${crypto.randomUUID()}`;
   const presenceUsers = new Set<string>([userId]);
