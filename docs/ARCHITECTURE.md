@@ -11,12 +11,13 @@
 
 ## Realtime path
 
-1. Browser opens websocket to `/v1/realtime/ws/{doc_id}`.
-2. Editor state emits Yjs update payloads.
-3. Realtime service broadcasts events to all subscribed peers.
-4. Clients apply incoming updates and converge.
-5. Presence join/leave events are surfaced in the editor header.
-6. Latest update payload is checkpointed and replayed to newly connected clients.
+1. Browser opens websocket to `/v1/realtime/ws/{doc_id}?project_id=...`.
+2. Realtime service calls core API `/v1/realtime/auth/{project_id}` to validate RBAC and resolve canonical user id.
+3. Editor state emits Yjs update payloads.
+4. Realtime service broadcasts events to all subscribed peers.
+5. Clients apply incoming updates and converge.
+6. Presence join/leave events are surfaced in the editor header.
+7. Latest update payload is checkpointed and replayed to newly connected clients.
 
 ## Git sync path
 

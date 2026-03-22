@@ -1,6 +1,7 @@
 # API Surface (v1)
 
 Core API base URL: `http://localhost:8080`
+Realtime base URL: `ws://localhost:8090`
 
 Most project-scoped endpoints require `x-user-id` for RBAC context.
 In browser usage, session cookie auth from OIDC login is preferred; `x-user-id` remains a dev override.
@@ -12,6 +13,11 @@ In browser usage, session cookie auth from OIDC login is preferred; `x-user-id` 
 - `GET /v1/auth/oidc/callback?code=...&state=...`: Dev callback that issues a session token and writes an audit event.
 - `GET /v1/auth/me`: Returns current session user profile.
 - `POST /v1/auth/logout`: Revokes current session.
+- `GET /v1/realtime/auth/{project_id}`: Internal auth check used by realtime service (requires read role on project).
+
+Realtime WebSocket:
+- `GET /v1/realtime/ws/{doc_id}?project_id={uuid}[&user_id=...][&session_token=...]`
+- `project_id` is required and must authorize through core API.
 
 ## Projects and RBAC
 

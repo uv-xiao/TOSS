@@ -1,5 +1,6 @@
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
@@ -22,6 +23,7 @@ use uuid::Uuid;
 struct AppState {
     channels: Arc<RwLock<HashMap<String, broadcast::Sender<CollabEvent>>>>,
     checkpoint_dir: PathBuf,
+    core_api_url: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -54,6 +56,7 @@ async fn main() {
         checkpoint_dir: env::var("CHECKPOINT_STORAGE_PREFIX")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("/tmp/typst-checkpoints")),
+        core_api_url: env::var("CORE_API_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".to_string()),
     };
     let _ = std::fs::create_dir_all(&state.checkpoint_dir);
 
@@ -85,13 +88,19 @@ async fn ws_handler(
     ws: WebSocketUpgrade,
     Path(doc_id): Path<String>,
     Query(query): Query<WsQuery>,
+    headers: HeaderMap,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, doc_id, query, state))
+    let Ok(user_id) = authorize_ws_user(&state, &headers, &query).await else {
+        return (StatusCode::UNAUTHORIZED, "Realtime auth failed").into_response();
+    };
+    ws.on_upgrade(move |socket| handle_socket(socket, doc_id, user_id, state))
+        .into_response()
 }
 
 #[derive(Debug, Deserialize)]
 struct WsQuery {
+    project_id: Option<String>,
     user_id: Option<String>,
     session_token: Option<String>,
 }
@@ -112,16 +121,7 @@ async fn get_or_create_sender(
     tx
 }
 
-async fn handle_socket(socket: WebSocket, doc_id: String, query: WsQuery, state: AppState) {
-    let user_id = query
-        .user_id
-        .and_then(|v| Uuid::parse_str(&v).ok().map(|u| u.to_string()))
-        .unwrap_or_else(|| Uuid::new_v4().to_string());
-    let auth_kind = if query.session_token.is_some() {
-        "token"
-    } else {
-        "anonymous"
-    };
+async fn handle_socket(socket: WebSocket, doc_id: String, user_id: String, state: AppState) {
     let sender = get_or_create_sender(&state.channels, &doc_id).await;
     let mut rx = sender.subscribe();
     let (mut ws_tx, mut ws_rx) = socket.split();
@@ -142,7 +142,7 @@ async fn handle_socket(socket: WebSocket, doc_id: String, query: WsQuery, state:
         doc_id: doc_id.clone(),
         user_id: user_id.clone(),
         kind: "presence.join".to_string(),
-        payload: serde_json::json!({"user_id": user_id, "auth_kind": auth_kind}),
+        payload: serde_json::json!({"user_id": user_id, "auth_kind": "project-scoped"}),
         at: Utc::now(),
     };
     let _ = sender.send(joined);
@@ -199,6 +199,58 @@ async fn handle_socket(socket: WebSocket, doc_id: String, query: WsQuery, state:
     };
     let _ = sender.send(left);
     send_task.abort();
+}
+
+#[derive(Deserialize)]
+struct RealtimeAuthResponse {
+    user_id: Uuid,
+}
+
+async fn authorize_ws_user(
+    state: &AppState,
+    headers: &HeaderMap,
+    query: &WsQuery,
+) -> Result<String, String> {
+    let project_id = query
+        .project_id
+        .as_ref()
+        .ok_or_else(|| "missing project_id".to_string())?;
+    let project_id = Uuid::parse_str(project_id)
+        .map_err(|_| "invalid project_id".to_string())?;
+    let url = format!(
+        "{}/v1/realtime/auth/{}",
+        state.core_api_url.trim_end_matches('/'),
+        project_id
+    );
+    let client = reqwest::Client::new();
+    let mut request = client.get(url);
+    if let Some(cookie) = headers.get(header::COOKIE).and_then(|h| h.to_str().ok()) {
+        request = request.header(header::COOKIE.as_str(), cookie);
+    }
+    if let Some(authz) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+    {
+        request = request.header(header::AUTHORIZATION.as_str(), authz);
+    }
+    if let Some(session_token) = &query.session_token {
+        request = request.header(
+            header::AUTHORIZATION.as_str(),
+            format!("Bearer {}", session_token.trim()),
+        );
+    }
+    if let Some(user_id) = &query.user_id {
+        request = request.header("x-user-id", user_id.trim());
+    }
+    let response = request.send().await.map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("auth status {}", response.status()));
+    }
+    let body = response
+        .json::<RealtimeAuthResponse>()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(body.user_id.to_string())
 }
 
 fn checkpoint_path(base: &PathBuf, doc_id: &str) -> PathBuf {

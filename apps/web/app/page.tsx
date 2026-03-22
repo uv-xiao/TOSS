@@ -46,6 +46,7 @@ const DEFAULT_DOC = `= Typst Realtime Demo
 
 This is a collaborative document.
 `;
+const DEFAULT_PROJECT_ID = "00000000-0000-0000-0000-000000000010";
 
 export default function HomePage() {
   const localUserId = "local-user";
@@ -59,7 +60,7 @@ export default function HomePage() {
   const [compileErrors, setCompileErrors] = useState<string[]>([]);
   const [compiledAt, setCompiledAt] = useState<number | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
-  const [selectedProject, setSelectedProject] = useState<string>("");
+  const [selectedProject, setSelectedProject] = useState<string>(DEFAULT_PROJECT_ID);
   const [gitStatus, setGitStatus] = useState<GitSyncState | null>(null);
   const [comments, setComments] = useState<Comment[]>([]);
   const [revisions, setRevisions] = useState<Revision[]>([]);
@@ -104,7 +105,8 @@ export default function HomePage() {
     ytext.observe(unobserve);
 
     const realtime = bindRealtimeYDoc({
-      docId: "demo-main-typ",
+      docId: `${selectedProject || DEFAULT_PROJECT_ID}:main.typ`,
+      projectId: selectedProject || DEFAULT_PROJECT_ID,
       wsBaseUrl: process.env.NEXT_PUBLIC_REALTIME_URL ?? "ws://localhost:8090",
       ydoc,
       userId: authUser?.user_id ?? localUserId,
@@ -120,7 +122,7 @@ export default function HomePage() {
       ydocRef.current = null;
       ytextRef.current = null;
     };
-  }, [authUser?.user_id]);
+  }, [authUser?.user_id, selectedProject]);
 
   useEffect(() => {
     getAuthMe()

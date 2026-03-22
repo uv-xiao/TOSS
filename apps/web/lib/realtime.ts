@@ -19,13 +19,22 @@ function base64ToUint8(value: string): Uint8Array {
 
 export function bindRealtimeYDoc(params: {
   docId: string;
+  projectId: string;
   wsBaseUrl: string;
   ydoc: Y.Doc;
   userId?: string;
+  sessionToken?: string;
   onPresenceChange?: (users: string[]) => void;
 }) {
   const userId = params.userId ?? crypto.randomUUID();
-  const url = `${params.wsBaseUrl.replace(/^http/, "ws").replace(/\/$/, "")}/v1/realtime/ws/${params.docId}?user_id=${encodeURIComponent(userId)}`;
+  const query = new URLSearchParams({
+    project_id: params.projectId,
+    user_id: userId
+  });
+  if (params.sessionToken?.trim()) {
+    query.set("session_token", params.sessionToken.trim());
+  }
+  const url = `${params.wsBaseUrl.replace(/^http/, "ws").replace(/\/$/, "")}/v1/realtime/ws/${params.docId}?${query.toString()}`;
   const ws = new WebSocket(url);
   const origin = `client-${crypto.randomUUID()}`;
   const presenceUsers = new Set<string>([userId]);

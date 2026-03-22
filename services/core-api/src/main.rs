@@ -199,6 +199,11 @@ struct AuthMeResponse {
 }
 
 #[derive(Serialize)]
+struct RealtimeAuthResponse {
+    user_id: Uuid,
+}
+
+#[derive(Serialize)]
 struct PersonalAccessTokenInfo {
     id: Uuid,
     label: String,
@@ -388,6 +393,7 @@ async fn main() {
         .route("/v1/auth/oidc/callback", get(oidc_callback))
         .route("/v1/auth/me", get(auth_me))
         .route("/v1/auth/logout", post(auth_logout))
+        .route("/v1/realtime/auth/{project_id}", get(realtime_auth))
         .route("/v1/security/tokens", get(list_personal_access_tokens).post(create_personal_access_token))
         .route("/v1/security/tokens/{token_id}", delete(revoke_personal_access_token))
         .route("/v1/projects", get(list_projects).post(create_project))
@@ -812,6 +818,15 @@ async fn auth_logout(State(state): State<AppState>, jar: CookieJar) -> impl Into
     }
     let jar = jar.remove(Cookie::from("typst_session"));
     (jar, StatusCode::NO_CONTENT).into_response()
+}
+
+async fn realtime_auth(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+) -> Result<Json<RealtimeAuthResponse>, StatusCode> {
+    let user_id = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
+    Ok(Json(RealtimeAuthResponse { user_id }))
 }
 
 async fn list_personal_access_tokens(
