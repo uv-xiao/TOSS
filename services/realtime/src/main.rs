@@ -1,0 +1,182 @@
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{Path, Query, State};
+use axum::response::IntoResponse;
+use axum::routing::get;
+use axum::{Json, Router};
+use chrono::{DateTime, Utc};
+use futures::{sink::SinkExt, stream::StreamExt};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::env;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use tokio::sync::broadcast;
+use tokio::sync::RwLock;
+use tower_http::cors::{Any, CorsLayer};
+use tower_http::trace::TraceLayer;
+use tracing::info;
+use uuid::Uuid;
+
+#[derive(Clone)]
+struct AppState {
+    channels: Arc<RwLock<HashMap<String, broadcast::Sender<CollabEvent>>>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct CollabEvent {
+    doc_id: String,
+    user_id: String,
+    kind: String,
+    payload: serde_json::Value,
+    at: DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct HealthResponse {
+    status: &'static str,
+    service: &'static str,
+}
+
+#[tokio::main]
+async fn main() {
+    dotenvy::dotenv().ok();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "realtime=info,tower_http=info".into()),
+        )
+        .init();
+
+    let state = AppState {
+        channels: Arc::new(RwLock::new(HashMap::new())),
+    };
+
+    let app = Router::new()
+        .route("/health", get(health))
+        .route("/v1/realtime/ws/{doc_id}", get(ws_handler))
+        .layer(CorsLayer::new().allow_origin(Any).allow_headers(Any).allow_methods(Any))
+        .layer(TraceLayer::new_for_http())
+        .with_state(state);
+
+    let port = env::var("REALTIME_PORT")
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(8090);
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    info!("realtime service listening on {}", addr);
+    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}
+
+async fn health() -> Json<HealthResponse> {
+    Json(HealthResponse {
+        status: "ok",
+        service: "realtime",
+    })
+}
+
+async fn ws_handler(
+    ws: WebSocketUpgrade,
+    Path(doc_id): Path<String>,
+    Query(query): Query<WsQuery>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_socket(socket, doc_id, query, state))
+}
+
+#[derive(Debug, Deserialize)]
+struct WsQuery {
+    user_id: Option<String>,
+    session_token: Option<String>,
+}
+
+async fn get_or_create_sender(
+    channels: &RwLock<HashMap<String, broadcast::Sender<CollabEvent>>>,
+    doc_id: &str,
+) -> broadcast::Sender<CollabEvent> {
+    if let Some(sender) = channels.read().await.get(doc_id).cloned() {
+        return sender;
+    }
+    let mut write = channels.write().await;
+    if let Some(sender) = write.get(doc_id).cloned() {
+        return sender;
+    }
+    let (tx, _rx) = broadcast::channel(512);
+    write.insert(doc_id.to_string(), tx.clone());
+    tx
+}
+
+async fn handle_socket(socket: WebSocket, doc_id: String, query: WsQuery, state: AppState) {
+    let user_id = query
+        .user_id
+        .and_then(|v| Uuid::parse_str(&v).ok().map(|u| u.to_string()))
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let auth_kind = if query.session_token.is_some() {
+        "token"
+    } else {
+        "anonymous"
+    };
+    let sender = get_or_create_sender(&state.channels, &doc_id).await;
+    let mut rx = sender.subscribe();
+    let (mut ws_tx, mut ws_rx) = socket.split();
+
+    let joined = CollabEvent {
+        doc_id: doc_id.clone(),
+        user_id: user_id.clone(),
+        kind: "presence.join".to_string(),
+        payload: serde_json::json!({"user_id": user_id, "auth_kind": auth_kind}),
+        at: Utc::now(),
+    };
+    let _ = sender.send(joined);
+
+    let send_task = tokio::spawn(async move {
+        while let Ok(event) = rx.recv().await {
+            if let Ok(text) = serde_json::to_string(&event) {
+                if ws_tx.send(Message::Text(text.into())).await.is_err() {
+                    break;
+                }
+            }
+        }
+    });
+
+    while let Some(Ok(msg)) = ws_rx.next().await {
+        match msg {
+            Message::Text(text) => {
+                let text_string = text.to_string();
+                let incoming: serde_json::Value =
+                    serde_json::from_str(&text_string)
+                        .unwrap_or_else(|_| serde_json::json!({ "raw": text_string }));
+                let event = CollabEvent {
+                    doc_id: doc_id.clone(),
+                    user_id: user_id.clone(),
+                    kind: "doc.update".to_string(),
+                    payload: incoming,
+                    at: Utc::now(),
+                };
+                let _ = sender.send(event);
+            }
+            Message::Binary(bin) => {
+                let event = CollabEvent {
+                    doc_id: doc_id.clone(),
+                    user_id: user_id.clone(),
+                    kind: "doc.update.binary".to_string(),
+                    payload: serde_json::json!({ "bytes": bin.len() }),
+                    at: Utc::now(),
+                };
+                let _ = sender.send(event);
+            }
+            Message::Close(_) => break,
+            _ => {}
+        }
+    }
+
+    let left = CollabEvent {
+        doc_id,
+        user_id,
+        kind: "presence.leave".to_string(),
+        payload: serde_json::json!({}),
+        at: Utc::now(),
+    };
+    let _ = sender.send(left);
+    send_task.abort();
+}

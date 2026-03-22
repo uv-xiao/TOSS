@@ -1,0 +1,29 @@
+{
+  "name": "@typst-school/web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start -p 3000",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@codemirror/lang-markdown": "^6.3.3",
+    "@codemirror/state": "^6.5.2",
+    "@codemirror/view": "^6.36.7",
+    "@uiw/react-codemirror": "^4.23.12",
+    "next": "^15.3.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "yjs": "^13.6.22",
+    "y-websocket": "^1.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.18",
+    "@types/react": "^19.1.4",
+    "@types/react-dom": "^19.1.4",
+    "typescript": "^5.8.3"
+  }
+}
+

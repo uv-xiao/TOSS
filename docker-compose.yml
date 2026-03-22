@@ -1,0 +1,76 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: typst-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./ops/postgres/data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    container_name: typst-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - ./ops/minio/data:/data
+
+  core-api:
+    build:
+      context: .
+      dockerfile: services/core-api/Dockerfile
+    container_name: typst-core-api
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    ports:
+      - "${CORE_API_PORT:-8080}:8080"
+    volumes:
+      - ./tmp/git:/data/git
+
+  realtime:
+    build:
+      context: .
+      dockerfile: services/realtime/Dockerfile
+    container_name: typst-realtime
+    env_file:
+      - .env
+    ports:
+      - "${REALTIME_PORT:-8090}:8090"
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    container_name: typst-web
+    env_file:
+      - .env
+    environment:
+      NEXT_PUBLIC_CORE_API_URL: http://localhost:${CORE_API_PORT:-8080}
+      NEXT_PUBLIC_REALTIME_URL: ws://localhost:${REALTIME_PORT:-8090}
+    depends_on:
+      - core-api
+      - realtime
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+

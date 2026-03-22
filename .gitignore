@@ -1,0 +1,12 @@
+node_modules
+.next
+dist
+target
+.env
+.DS_Store
+coverage
+tmp
+*.log
+ops/minio/data
+ops/postgres/data
+

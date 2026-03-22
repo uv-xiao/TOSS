@@ -1,0 +1,76 @@
+### Health
+GET http://localhost:8080/health
+
+### Projects
+GET http://localhost:8080/v1/projects
+x-user-id: 00000000-0000-0000-0000-000000000100
+
+### Git status
+GET http://localhost:8080/v1/git/status/00000000-0000-0000-0000-000000000010
+x-user-id: 00000000-0000-0000-0000-000000000100
+
+### Get git config
+GET http://localhost:8080/v1/git/config/00000000-0000-0000-0000-000000000010
+x-user-id: 00000000-0000-0000-0000-000000000100
+
+### Set git config
+PUT http://localhost:8080/v1/git/config/00000000-0000-0000-0000-000000000010
+x-user-id: 00000000-0000-0000-0000-000000000100
+content-type: application/json
+
+{
+  "remote_url": "/tmp/typst-remote.git",
+  "default_branch": "main"
+}
+
+### List project roles
+GET http://localhost:8080/v1/projects/00000000-0000-0000-0000-000000000010/roles
+x-user-id: 00000000-0000-0000-0000-000000000100
+
+### List comments
+GET http://localhost:8080/v1/projects/00000000-0000-0000-0000-000000000010/comments
+x-user-id: 00000000-0000-0000-0000-000000000100
+
+### Create comment
+POST http://localhost:8080/v1/projects/00000000-0000-0000-0000-000000000010/comments
+x-user-id: 00000000-0000-0000-0000-000000000100
+content-type: application/json
+
+{
+  "body": "Please improve section 2 proof."
+}
+
+### List revisions
+GET http://localhost:8080/v1/projects/00000000-0000-0000-0000-000000000010/revisions
+x-user-id: 00000000-0000-0000-0000-000000000100
+
+### Create revision
+POST http://localhost:8080/v1/projects/00000000-0000-0000-0000-000000000010/revisions
+x-user-id: 00000000-0000-0000-0000-000000000100
+content-type: application/json
+
+{
+  "summary": "Updated theorem statement."
+}
+
+### List documents
+GET http://localhost:8080/v1/projects/00000000-0000-0000-0000-000000000010/documents
+x-user-id: 00000000-0000-0000-0000-000000000100
+
+### Upsert document by path
+PUT http://localhost:8080/v1/projects/00000000-0000-0000-0000-000000000010/documents/by-path/main.typ
+x-user-id: 00000000-0000-0000-0000-000000000100
+content-type: application/json
+
+{
+  "content": "= Demo\n\nUpdated content.\n"
+}
+
+### Git pull
+POST http://localhost:8080/v1/git/sync/pull/00000000-0000-0000-0000-000000000010
+x-user-id: 00000000-0000-0000-0000-000000000100
+content-type: application/json
+
+{
+  "actor_user_id": "00000000-0000-0000-0000-000000000100"
+}
