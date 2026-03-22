@@ -18,7 +18,7 @@ function queryParamDevUserId() {
 export function resolveDevUserId() {
   const fromQuery = queryParamDevUserId();
   if (fromQuery) return fromQuery;
-  const fromEnv = process.env.NEXT_PUBLIC_DEV_USER_ID?.trim() ?? "";
+  const fromEnv = (import.meta.env.VITE_DEV_USER_ID as string | undefined)?.trim() ?? "";
   if (fromEnv) return fromEnv;
   if (isLocalDevHost()) {
     return "00000000-0000-0000-0000-000000000100";

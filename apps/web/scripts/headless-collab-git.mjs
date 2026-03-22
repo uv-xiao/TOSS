@@ -4,7 +4,7 @@ import path from "node:path";
 import { execSync } from "node:child_process";
 import { chromium } from "playwright";
 
-const baseUrl = process.env.WEB_BASE_URL ?? "http://localhost:3000";
+const baseUrl = process.env.WEB_BASE_URL ?? "http://127.0.0.1:18080";
 const coreApi = process.env.CORE_API_URL ?? "http://127.0.0.1:18080";
 const projectId = process.env.PROJECT_ID ?? "00000000-0000-0000-0000-000000000010";
 const teacherId = "00000000-0000-0000-0000-000000000100";
@@ -12,6 +12,10 @@ const studentId = "00000000-0000-0000-0000-000000000101";
 const outDir = process.env.SCREENSHOT_DIR ?? "/tmp/typst-collab-git";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function run(cmd, cwd) {
+  return execSync(cmd, { cwd, stdio: "pipe" }).toString("utf8").trim();
+}
 
 async function api(method, p, userId, body) {
   const res = await fetch(`${coreApi}${p}`, {
@@ -22,15 +26,9 @@ async function api(method, p, userId, body) {
     },
     body: body ? JSON.stringify(body) : undefined
   });
-  if (!res.ok) {
-    throw new Error(`${method} ${p} failed (${res.status}): ${await res.text()}`);
-  }
+  if (!res.ok) throw new Error(`${method} ${p} failed (${res.status}): ${await res.text()}`);
   if (res.status === 204) return null;
   return res.json();
-}
-
-function run(cmd, cwd) {
-  return execSync(cmd, { cwd, stdio: "pipe" }).toString("utf8").trim();
 }
 
 async function setEditorText(page, text) {
@@ -39,48 +37,25 @@ async function setEditorText(page, text) {
   await page.keyboard.type(text, { delay: 4 });
 }
 
-async function getEditorText(page) {
-  return page.evaluate(() => {
-    const el = document.querySelector(".cm-content");
-    return el?.textContent ?? "";
-  });
+async function editorText(page) {
+  return page.locator(".cm-content").innerText();
 }
 
-async function waitForEditorContains(page, snippet, timeoutMs) {
+async function waitForEditorContains(page, snippet, timeoutMs = 10000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    const text = await getEditorText(page);
-    if (text.includes(snippet)) return;
+    if ((await editorText(page)).includes(snippet)) return;
     await sleep(150);
   }
-  throw new Error(`editor did not contain snippet: ${snippet}`);
+  throw new Error(`editor missing snippet: ${snippet}`);
 }
 
 async function main() {
   await fs.mkdir(outDir, { recursive: true });
   const screenshots = [];
-
   const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "typst-collab-git-"));
-  const remoteBare = path.join(tmpRoot, "remote.git");
-  const serverMirror = path.join("/tmp/typst-git", projectId);
   const offline = path.join(tmpRoot, "offline");
-
-  try {
-    await fs.access(path.join(serverMirror, ".git"));
-    run(`git clone --bare ${serverMirror} ${remoteBare}`);
-  } catch {
-    const seed = path.join(tmpRoot, "seed");
-    run(`git init --bare ${remoteBare}`);
-    await fs.mkdir(seed, { recursive: true });
-    run("git init -b main", seed);
-    run("git config user.name 'Seed User'", seed);
-    run("git config user.email 'seed@example.edu'", seed);
-    await fs.writeFile(path.join(seed, "main.typ"), "= Headless Git\n\nSeed remote.\n", "utf8");
-    run("git add .", seed);
-    run("git commit -m 'seed remote'", seed);
-    run(`git remote add origin ${remoteBare}`, seed);
-    run("git push origin main", seed);
-  }
+  const stale = path.join(tmpRoot, "stale");
 
   await api(
     "PUT",
@@ -88,10 +63,12 @@ async function main() {
     teacherId,
     { content: "= Headless Collaboration\n\nInitial content.\n" }
   );
-  await api("PUT", `/v1/git/config/${projectId}`, teacherId, {
-    remote_url: remoteBare,
-    default_branch: "main"
+
+  const teacherPat = await api("POST", "/v1/profile/security/tokens", teacherId, {
+    label: "headless-teacher"
   });
+  const repoUrl = `${coreApi.replace(/\/$/, "")}/v1/git/repo/${projectId}`;
+  const authRepoUrl = repoUrl.replace("http://", `http://qa:${teacherPat.token}@`);
 
   const browser = await chromium.launch({ headless: true });
   const teacher = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
@@ -107,59 +84,98 @@ async function main() {
   }
 
   try {
-    await teacher.goto(`${baseUrl}/?dev_user_id=${teacherId}`, { waitUntil: "networkidle" });
-    await student.goto(`${baseUrl}/?dev_user_id=${studentId}`, { waitUntil: "networkidle" });
-    await teacher.getByText("Typst School Collaboration").waitFor({ timeout: 30000 });
-    await student.getByText("Typst School Collaboration").waitFor({ timeout: 30000 });
+    await teacher.goto(`${baseUrl}/project/${projectId}?dev_user_id=${teacherId}`, {
+      waitUntil: "networkidle",
+      timeout: 60000
+    });
+    await student.goto(`${baseUrl}/project/${projectId}?dev_user_id=${studentId}`, {
+      waitUntil: "networkidle",
+      timeout: 60000
+    });
+    await teacher.getByRole("heading", { name: "Editor" }).waitFor({ timeout: 30000 });
+    await student.getByRole("heading", { name: "Editor" }).waitFor({ timeout: 30000 });
 
     await setEditorText(teacher, "= Headless Collaboration\n\nTeacher live edit.\n");
-    await waitForEditorContains(student, "Teacher live edit.", 12000);
+    await waitForEditorContains(student, "Teacher live edit.");
     await student.locator(".cm-content").click();
     await student.keyboard.press("End");
     await student.keyboard.type("\nStudent live edit.\n", { delay: 4 });
-    await waitForEditorContains(teacher, "Student live edit.", 12000);
+    await waitForEditorContains(teacher, "Student live edit.");
+    await sleep(1200);
 
     const collabShot = path.join(outDir, "01-collab.png");
     await teacher.screenshot({ path: collabShot, fullPage: true });
     screenshots.push(collabShot);
 
-    await teacher.getByRole("button", { name: "Pull" }).click();
-    await teacher.getByRole("button", { name: /Pull|Pulling\.\.\./ }).waitFor({ timeout: 8000 });
-    await teacher.getByRole("button", { name: "Pull" }).waitFor({ timeout: 12000 });
-    await teacher.getByRole("button", { name: "Push" }).click();
-    await teacher.getByRole("button", { name: /Push|Pushing\.\.\./ }).waitFor({ timeout: 8000 });
-    await teacher.getByRole("button", { name: "Push" }).waitFor({ timeout: 12000 });
-
     await fs.mkdir(offline, { recursive: true });
-    run(`git clone ${remoteBare} ${offline}`);
-    run("git checkout -B main origin/main", offline);
-    run("git config user.name 'Offline User'", offline);
-    run("git config user.email 'offline@example.edu'", offline);
-    await fs.writeFile(path.join(offline, "notes.typ"), "= Offline Notes\n\nRemote-only change.\n", "utf8");
+    await fs.mkdir(stale, { recursive: true });
+    run(`git clone ${authRepoUrl} ${offline}`);
+    run(`git clone ${authRepoUrl} ${stale}`);
+    for (const repo of [offline, stale]) {
+      run("git checkout -B main origin/main", repo);
+      run("git config user.name 'Offline User'", repo);
+      run("git config user.email 'offline@example.edu'", repo);
+    }
+
+    const stamp = Date.now().toString();
+    await fs.writeFile(path.join(offline, "notes.typ"), `= Offline Notes\n\nRemote update ${stamp}.\n`, "utf8");
     run("git add notes.typ", offline);
     run("git commit -m 'offline remote update'", offline);
-    run("git push origin main", offline);
+    run("git push origin HEAD:main", offline);
 
     await teacher.locator(".cm-content").click();
     await teacher.keyboard.press("End");
     await teacher.keyboard.type("\nServer-side collaborative update.\n", { delay: 4 });
     await sleep(1500);
 
-    await teacher.getByRole("button", { name: "Push" }).click();
-    await teacher.getByText("Git push failed").waitFor({ timeout: 12000 });
-    const failedPushShot = path.join(outDir, "02-push-rejected.png");
-    await teacher.screenshot({ path: failedPushShot, fullPage: true });
-    screenshots.push(failedPushShot);
+    await fs.writeFile(path.join(stale, "main.typ"), "= Stale Push\n\nThis should conflict.\n", "utf8");
+    run("git add main.typ", stale);
+    run("git commit -m 'stale local update'", stale);
+    let staleRejected = false;
+    try {
+      run("git push origin HEAD:main", stale);
+    } catch {
+      staleRejected = true;
+    }
+    if (!staleRejected) {
+      throw new Error("stale push unexpectedly succeeded");
+    }
 
-    await teacher.getByRole("button", { name: "Pull" }).click();
-    await teacher.getByRole("button", { name: /Pull|Pulling\.\.\./ }).waitFor({ timeout: 8000 });
-    await teacher.getByRole("button", { name: "Pull" }).waitFor({ timeout: 12000 });
-    await teacher.getByRole("button", { name: "Push" }).click();
-    await teacher.getByRole("button", { name: /Push|Pushing\.\.\./ }).waitFor({ timeout: 8000 });
-    await teacher.getByRole("button", { name: "Push" }).waitFor({ timeout: 12000 });
-    const pushFailedVisible = await teacher.getByText("Git push failed").isVisible().catch(() => false);
-    if (pushFailedVisible) {
-      throw new Error("push still failing after pull+push retry");
+    const rejectedShot = path.join(outDir, "02-stale-rejected.png");
+    await teacher.screenshot({ path: rejectedShot, fullPage: true });
+    screenshots.push(rejectedShot);
+
+    let recovered = false;
+    try {
+      run("git pull --rebase origin main", stale);
+      recovered = true;
+    } catch {
+      run("git rebase --abort || true", stale);
+      try {
+        run("git pull --no-rebase origin main", stale);
+        recovered = true;
+      } catch {
+        const merged = run("git show origin/main:main.typ", stale);
+        await fs.writeFile(path.join(stale, "main.typ"), `${merged}\nStale merge recovery.\n`, "utf8");
+        run("git add main.typ", stale);
+        run("git commit -m 'Resolve stale merge conflict'", stale);
+        recovered = true;
+      }
+    }
+    if (!recovered) {
+      throw new Error("unable to recover stale branch");
+    }
+    run("git push origin HEAD:main", stale);
+
+    run("git reset --hard HEAD~1", stale);
+    let forceRejected = false;
+    try {
+      run("git push --force origin HEAD:main", stale);
+    } catch {
+      forceRejected = true;
+    }
+    if (!forceRejected) {
+      throw new Error("force push unexpectedly succeeded");
     }
 
     const finalShot = path.join(outDir, "03-after-recovery.png");

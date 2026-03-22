@@ -2,6 +2,7 @@ import { createTypstRenderer } from "@myriaddreamin/typst.ts";
 
 export type CompileOutput = {
   vectorData: Uint8Array | null;
+  pdfData: Uint8Array | null;
   errors: string[];
   compiledAt: number;
 };
@@ -10,6 +11,7 @@ type WorkerCompileResponse = {
   id: number;
   ok: boolean;
   vectorBytes?: Uint8Array;
+  pdfBytes?: Uint8Array;
   errors?: string[];
 };
 
@@ -28,7 +30,9 @@ class TypstWorkerRuntime {
     if (typeof window === "undefined") return null;
     if (this.worker) return this.worker;
     if (typeof Worker === "undefined") return null;
-    this.worker = new Worker(new URL("./typst.worker.ts", import.meta.url));
+    this.worker = new Worker(new URL("./typst.worker.ts", import.meta.url), {
+      type: "module"
+    });
     this.worker.onmessage = (event: MessageEvent<WorkerCompileResponse>) => {
       const response = event.data;
       const resolve = this.pending.get(response.id);
@@ -100,6 +104,7 @@ export async function compileTypstClientSide(
   if (source.trim().length === 0) {
     return {
       vectorData: null,
+      pdfData: null,
       errors: ["Document is empty"],
       compiledAt: Date.now()
     };
@@ -108,12 +113,14 @@ export async function compileTypstClientSide(
   if (result.ok && result.vectorBytes && result.vectorBytes.byteLength > 0) {
     return {
       vectorData: result.vectorBytes,
+      pdfData: result.pdfBytes ?? null,
       errors: [],
       compiledAt: Date.now()
     };
   }
   return {
     vectorData: null,
+    pdfData: null,
     errors: result.errors?.length
       ? result.errors
       : [

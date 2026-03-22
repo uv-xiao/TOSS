@@ -18,6 +18,7 @@ type CompileResponse = {
   id: number;
   ok: boolean;
   vectorBytes?: Uint8Array;
+  pdfBytes?: Uint8Array;
   errors?: string[];
 };
 
@@ -128,10 +129,12 @@ async function handleCompile(eventData: CompileRequest) {
   try {
     const localTypst = await getLocalTypst(fontData, appOrigin);
     const vector = await localTypst.vector({ mainContent: source });
+    const pdf = await localTypst.pdf({ mainContent: source });
     self.postMessage({
       id,
       ok: !!vector,
       vectorBytes: vector,
+      pdfBytes: pdf,
       errors: []
     } satisfies CompileResponse);
     return;
@@ -141,10 +144,12 @@ async function handleCompile(eventData: CompileRequest) {
       try {
         const typst = await getTypst(coreApiUrl, fontData, appOrigin);
         const vector = await typst.vector({ mainContent: source });
+        const pdf = await typst.pdf({ mainContent: source });
         self.postMessage({
           id,
           ok: !!vector,
           vectorBytes: vector,
+          pdfBytes: pdf,
           errors: []
         } satisfies CompileResponse);
         return;

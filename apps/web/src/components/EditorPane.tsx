@@ -1,5 +1,3 @@
-"use client";
-
 import CodeMirror from "@uiw/react-codemirror";
 import { markdown } from "@codemirror/lang-markdown";
 
@@ -23,4 +21,3 @@ export function EditorPane({ value, onChange }: Props) {
     />
   );
 }
-

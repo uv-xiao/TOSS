@@ -2,19 +2,18 @@
 
 ## Components
 
-- `apps/web` (Next.js): Workspace UI, collaborative editor shell, client-side Typst compile loop, PDF preview pane.
-- `services/core-api` (Rust/Axum + PostgreSQL): Auth config/callback, project metadata, RBAC enforcement, comments/revisions/documents APIs, git sync state APIs, audit log writes.
-- `services/realtime` (Rust/Axum WebSocket): Realtime channel for collaboration events and Yjs update payload forwarding.
-- `services/realtime` also persists per-doc checkpoint payloads on update and replays last checkpoint when a client reconnects.
+- `apps/web` (Vite React SPA): Project dashboard, file tree, collaborative editor shell, client-side Typst compile loop, canvas preview pane.
+- `services/core-api` (Rust/Axum + PostgreSQL): Monolith serving static SPA, Auth/OIDC, project metadata, RBAC, file tree APIs, realtime WebSocket channel, Git smart HTTP endpoint, export APIs, audit logs.
+- Realtime checkpoint replay is persisted by core-api under `CHECKPOINT_STORAGE_PREFIX`.
 - `postgres`: Source of truth for metadata and permissions.
 - `minio` (S3-compatible): Store for snapshots/assets/git bundle artifacts.
 
 ## Realtime path
 
-1. Browser opens websocket to `/v1/realtime/ws/{doc_id}?project_id=...`.
-2. Realtime service calls core API `/v1/realtime/auth/{project_id}` to validate RBAC and resolve canonical user id.
+1. Browser opens websocket to `/v1/realtime/ws/{doc_id}?project_id=...` on the same origin as API/static app.
+2. Core API validates RBAC/session directly for websocket upgrades.
 3. Editor state emits Yjs update payloads.
-4. Realtime service broadcasts events to all subscribed peers.
+4. Core API realtime channel broadcasts events to subscribed peers.
 5. Clients apply incoming updates and converge.
 6. Presence join/leave events are surfaced in the editor header.
 7. Latest update payload is checkpointed and replayed to newly connected clients.
@@ -22,9 +21,10 @@
 ## Client compile path
 
 1. Browser editor updates are debounced by React state and sent to a dedicated Typst Web Worker.
-2. Worker holds a long-lived Typst compiler instance and updates `main.typ` in compiler memory.
+2. Worker holds a long-lived Typst compiler instance and compiles the configured entry file (`main.typ` default).
 3. Worker compiles to vector artifact and returns deterministic diagnostics.
 4. UI renders vector artifact to canvas with Typst renderer when successful, or inline diagnostics otherwise.
+5. Worker also compiles PDF bytes; UI can download directly and upload latest PDF artifact to server.
 5. Worker uses server package proxy/cache endpoint for Typst universe dependency fetch.
 
 ## Git sync path
@@ -37,7 +37,7 @@
 5. Before serving Git traffic, pending collaborative changes are wrapped into a system commit `Recent updates on Typst server` with collaborative users captured in `Co-authored-by` trailers.
 6. Non-fast-forward updates (including force push) are rejected so offline users must pull/rebase/merge first.
 
-## Permission model (v1)
+## Permission model (v1.1)
 
 Project-level roles:
 
@@ -46,16 +46,16 @@ Project-level roles:
 - `Student`: project read/write for document + comment activity.
 
 OIDC group-to-role mapping:
-- Each project can define `group_name -> role` bindings.
+- Org admins define `group_name -> role` mappings per organization.
 - During OIDC callback, backend reads configured groups claim and syncs user group membership.
-- Matching group bindings are projected into `project_roles` with strict sync for mapped projects.
+- Mapped roles are projected into `project_roles` across org projects with strict sync semantics.
 
 ## Deployment shape
 
 - Single VM, Docker Compose.
 - Basic structured logging.
 - Backup scripts for PostgreSQL and MinIO.
-- Health endpoints at `/health` for core-api and realtime.
+- Health endpoint at `/health` for the core monolith.
 
 ## Object storage path
 

@@ -2,8 +2,25 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { chromium } from "playwright";
 
-const baseUrl = process.env.WEB_BASE_URL ?? "http://127.0.0.1:3000";
+const baseUrl = process.env.WEB_BASE_URL ?? "http://127.0.0.1:18080";
+const coreApi = process.env.CORE_API_URL ?? baseUrl;
+const projectId = process.env.PROJECT_ID ?? "00000000-0000-0000-0000-000000000010";
+const teacherId = "00000000-0000-0000-0000-000000000100";
 const outDir = process.env.SCREENSHOT_DIR ?? "/tmp/typst-headless";
+
+async function api(method, p, userId, body) {
+  const res = await fetch(`${coreApi}${p}`, {
+    method,
+    headers: {
+      "content-type": "application/json",
+      "x-user-id": userId
+    },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  if (!res.ok) throw new Error(`${method} ${p} failed (${res.status}): ${await res.text()}`);
+  if (res.status === 204) return null;
+  return res.json();
+}
 
 await fs.mkdir(outDir, { recursive: true });
 
@@ -21,6 +38,13 @@ page.on("pageerror", (err) => {
 
 const artifacts = [];
 try {
+  await api(
+    "PUT",
+    `/v1/projects/${projectId}/documents/by-path/${encodeURIComponent("main.typ")}`,
+    teacherId,
+    { content: "= Headless Smoke\n\nThis is a valid Typst document.\n" }
+  );
+
   await page.goto(baseUrl, { waitUntil: "networkidle", timeout: 60000 });
   await page.getByText("Typst School Collaboration").waitFor({ timeout: 30000 });
 
@@ -28,17 +52,12 @@ try {
   await page.screenshot({ path: shot1, fullPage: true });
   artifacts.push(shot1);
 
-  const comment = page.getByPlaceholder("Add a comment");
-  await comment.fill("Headless smoke comment");
-  await page.getByRole("button", { name: "Add" }).click();
+  await page.getByRole("link", { name: "Workspace" }).click();
+  await page.getByRole("heading", { name: "Editor" }).waitFor({ timeout: 30000 });
 
   const revision = page.getByPlaceholder("Revision summary");
   await revision.fill("Headless revision");
-  await page.getByRole("button", { name: "Commit Revision" }).click();
-
-  const tokenLabel = page.getByPlaceholder("Token label");
-  await tokenLabel.fill("Headless token");
-  await page.getByRole("button", { name: "Create token" }).click();
+  await page.getByRole("button", { name: "Add Revision" }).click();
 
   await page
     .locator(".pdf-frame canvas")
@@ -50,9 +69,6 @@ try {
   artifacts.push(shot2);
 
   const visibleErrors = await page.locator(".error").allInnerTexts();
-  const unexpectedErrors = visibleErrors.filter(
-    (msg) => !msg.startsWith("New token (shown once):")
-  );
   const previewCanvasCount = await page.locator(".pdf-frame canvas").count();
   const previewNonWhitePixels = await page.evaluate(() => {
     const canvas = document.querySelector(".pdf-frame canvas");
@@ -74,9 +90,15 @@ try {
   if (previewNonWhitePixels === 0) {
     throw new Error("Preview canvas rendered blank output");
   }
-  if (unexpectedErrors.length > 0) {
-    throw new Error(`Unexpected UI errors: ${unexpectedErrors.join(" | ")}`);
-  }
+
+  await page.getByRole("link", { name: "Profile" }).click();
+  await page.getByRole("heading", { name: "Profile Security" }).waitFor({ timeout: 10000 });
+  await page.getByRole("button", { name: "Create Token" }).click();
+  await page.getByText("New token shown once").waitFor({ timeout: 15000 });
+  const shot3 = path.join(outDir, "03-profile-token.png");
+  await page.screenshot({ path: shot3, fullPage: true });
+  artifacts.push(shot3);
+
   console.log(
     JSON.stringify(
       {

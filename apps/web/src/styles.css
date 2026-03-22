@@ -1,0 +1,257 @@
+:root {
+  --bg: #f6f8fb;
+  --surface: #ffffff;
+  --border: #d9e1ec;
+  --text: #1d2733;
+  --muted: #5f6f82;
+  --accent: #1d6fa5;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
+  background: radial-gradient(circle at 10% 10%, #e7f4ff, transparent 35%),
+    radial-gradient(circle at 90% 90%, #f3fff2, transparent 35%),
+    var(--bg);
+  color: var(--text);
+}
+
+.topbar {
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  padding: 12px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.tabs {
+  display: flex;
+  gap: 8px;
+}
+
+.tab {
+  color: var(--muted);
+  text-decoration: none;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 12px;
+}
+
+.tab.active {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.app-shell {
+  min-height: 100%;
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+}
+
+.error-banner {
+  background: #ffe9ea;
+  color: #8e1f2b;
+  padding: 8px 12px;
+  border-bottom: 1px solid #ffc2c6;
+}
+
+.workspace-grid {
+  display: grid;
+  grid-template-columns: 0.7fr 1.1fr 0.9fr;
+  gap: 12px;
+  padding: 12px;
+}
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  min-height: 70vh;
+}
+
+.left {
+  min-width: 280px;
+}
+
+.panel h2 {
+  margin: 0;
+  border-bottom: 1px solid var(--border);
+  padding: 10px 12px;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.panel-content {
+  padding: 12px;
+}
+
+.page {
+  padding: 12px;
+}
+
+.meta {
+  display: flex;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--muted);
+  flex-wrap: wrap;
+}
+
+.button {
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  background: #fff;
+  padding: 6px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.pdf-frame {
+  width: 100%;
+  height: 45vh;
+  border: 0;
+  border-radius: 8px;
+  background: #f0f2f6;
+  overflow: auto;
+  padding: 8px;
+}
+
+.error {
+  margin-top: 8px;
+  color: #b00020;
+  font-size: 12px;
+}
+
+.loading {
+  padding: 20px;
+}
+
+.toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 10px 0;
+}
+
+.toolbar input,
+.toolbar select {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 8px;
+}
+
+.card-list {
+  display: grid;
+  gap: 10px;
+}
+
+.card {
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--border);
+  background: #fff;
+  border-radius: 10px;
+  padding: 10px;
+  text-decoration: none;
+  color: var(--text);
+}
+
+.project-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.project-pill {
+  border: 1px solid var(--border);
+  background: #fff;
+  border-radius: 999px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+.project-pill.active {
+  background: #e6f2fb;
+  border-color: var(--accent);
+}
+
+.tree {
+  display: grid;
+  gap: 4px;
+  max-height: 50vh;
+  overflow: auto;
+}
+
+.tree-node {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 4px;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+}
+
+.tree-node.active {
+  border-color: var(--accent);
+  background: #eef6fc;
+}
+
+.tree-label {
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  color: var(--text);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.mini {
+  border: 1px solid var(--border);
+  background: #fff;
+  border-radius: 6px;
+  padding: 3px 6px;
+  cursor: pointer;
+}
+
+.git-box {
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  display: grid;
+  gap: 6px;
+  margin: 10px 0;
+}
+
+.git-box code {
+  display: block;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+@media (max-width: 960px) {
+  .workspace-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .topbar {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+}

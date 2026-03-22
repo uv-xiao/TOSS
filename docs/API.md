@@ -1,7 +1,7 @@
 # API Surface (v1)
 
-Core API base URL: `http://localhost:8080`
-Realtime base URL: `ws://localhost:8090`
+Core API + app base URL: `http://localhost:8080`
+Realtime base URL: `ws://localhost:8080`
 
 Most project-scoped endpoints require `x-user-id` for RBAC context.
 In browser usage, session cookie auth from OIDC login is preferred; `x-user-id` remains a dev override.
@@ -16,15 +16,21 @@ In browser usage, session cookie auth from OIDC login is preferred; `x-user-id` 
 - `GET /v1/realtime/auth/{project_id}`: Internal auth check used by realtime service (requires read role on project).
 
 Realtime WebSocket:
-- `GET /v1/realtime/ws/{doc_id}?project_id={uuid}[&user_id=...][&session_token=...]`
-- `project_id` is required and must authorize through core API.
+- `GET /v1/realtime/ws/{doc_id}?project_id={uuid}[&user_id=...]`
+- `project_id` is required and must authorize through project RBAC.
 
 ## Projects and RBAC
 
 - `GET /v1/projects`: List projects visible to current user.
 - `POST /v1/projects`: Create project and grant caller `Owner`.
+- `GET /v1/projects/{project_id}/tree`: List file/directory tree + current entry file path.
+- `POST /v1/projects/{project_id}/files`: Create file/directory (`kind = file | directory`).
+- `PATCH /v1/projects/{project_id}/files/move`: Move/rename file or directory subtree.
+- `DELETE /v1/projects/{project_id}/files/{path}`: Delete file or directory subtree.
 - `GET /v1/projects/{project_id}/roles`: List role bindings.
 - `POST /v1/projects/{project_id}/roles`: Upsert role binding (`Owner | Teacher | Student | TA`), requires `Owner/Teacher`.
+- `GET /v1/projects/{project_id}/settings`: Get project settings (`entry_file_path`).
+- `PUT /v1/projects/{project_id}/settings`: Update project settings, requires manage role.
 - `GET /v1/projects/{project_id}/group-roles`: List OIDC group -> project role mappings.
 - `POST /v1/projects/{project_id}/group-roles`: Upsert OIDC group -> project role mapping, requires `Owner/Teacher`.
 - `DELETE /v1/projects/{project_id}/group-roles/{group_name}`: Remove mapping.
@@ -32,9 +38,9 @@ Realtime WebSocket:
 OIDC group claim mapping:
 - Group claim name comes from `OIDC_GROUPS_CLAIM` (default `groups`).
 - On each successful OIDC login, backend syncs current groups into `user_oidc_groups`.
-- Strict sync policy: for projects that define `project_group_roles`, the user role is set from current matched groups; if no groups match, the role binding is removed for that project.
+- Org-admin managed mappings (`org_oidc_group_role_mappings`) project users into project roles across org projects.
 
-## Documents, comments, revisions
+## Documents and revisions
 
 - `GET /v1/projects/{project_id}/documents`
 - `POST /v1/projects/{project_id}/documents`
@@ -42,10 +48,24 @@ OIDC group claim mapping:
 - `GET /v1/projects/{project_id}/documents/{document_id}`
 - `PUT /v1/projects/{project_id}/documents/{document_id}`
 - `DELETE /v1/projects/{project_id}/documents/{document_id}`
-- `GET /v1/projects/{project_id}/comments`
-- `POST /v1/projects/{project_id}/comments`
 - `GET /v1/projects/{project_id}/revisions`
 - `POST /v1/projects/{project_id}/revisions`
+
+Comments endpoints remain for backward compatibility but are not used by v1.1 UI.
+
+## Admin
+
+- `GET /v1/admin/orgs/{org_id}/oidc-group-role-mappings`
+- `POST /v1/admin/orgs/{org_id}/oidc-group-role-mappings`
+- `DELETE /v1/admin/orgs/{org_id}/oidc-group-role-mappings/{group_name}`
+
+Requires org admin membership.
+
+## Exports
+
+- `GET /v1/projects/{project_id}/archive` (zip)
+- `POST /v1/projects/{project_id}/pdf-artifacts` (upload latest client-compiled PDF)
+- `GET /v1/projects/{project_id}/pdf-artifacts/latest` (download latest PDF artifact)
 
 ## Snapshots and assets (S3-compatible storage)
 
@@ -91,6 +111,9 @@ Successful pull/push/receive-pack also upload git bundle artifacts into object s
 
 ## Security tokens
 
+- `GET /v1/profile/security/tokens`
+- `POST /v1/profile/security/tokens`
+- `DELETE /v1/profile/security/tokens/{token_id}`
 - `GET /v1/security/tokens` list current user tokens (without plaintext secrets)
 - `POST /v1/security/tokens` create token:
   - accepts label and optional `expires_at` (RFC3339 or null)

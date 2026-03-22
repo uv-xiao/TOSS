@@ -1,7 +1,7 @@
 import * as Y from "yjs";
 
 const CORE_API = process.env.CORE_API_URL ?? "http://127.0.0.1:18080";
-const REALTIME_WS = process.env.REALTIME_WS_URL ?? "ws://127.0.0.1:18090";
+const REALTIME_WS = process.env.REALTIME_WS_URL ?? "ws://127.0.0.1:18080";
 const PROJECT_ID = process.env.PROJECT_ID ?? "00000000-0000-0000-0000-000000000010";
 const DOC_PATH = "main.typ";
 const DOC_ID = `${PROJECT_ID}:${DOC_PATH}`;
