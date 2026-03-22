@@ -23,6 +23,9 @@
 1. Project config stores remote URL + default branch and local mirror path.
 2. On push, project documents are materialized into local mirror files, committed, and pushed to remote.
 3. On pull, mirror fetch/rebase runs and pulled files are imported back into project documents.
+4. Server also exposes project repo as smart HTTP Git endpoint for external clients.
+5. Before serving Git traffic, pending collaborative changes are wrapped into a system commit `Recent updates on Typst server` with collaborative users captured in `Co-authored-by` trailers.
+6. Non-fast-forward updates (including force push) are rejected so offline users must pull/rebase/merge first.
 
 ## Permission model (v1)
 

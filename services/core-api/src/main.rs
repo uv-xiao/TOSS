@@ -1,15 +1,26 @@
+use axum::body::{Body, Bytes};
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::IntoResponse;
-use axum::routing::{get, post, put};
+use axum::http::{header, HeaderMap, Method, StatusCode, Uri};
+use axum::response::{IntoResponse, Redirect};
+use axum::routing::{any, get, post, put};
 use axum::{Json, Router};
+use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use chrono::{DateTime, Utc};
+use openidconnect::core::{
+    CoreAuthenticationFlow, CoreClient, CoreIdTokenClaims, CoreProviderMetadata,
+};
+use openidconnect::{
+    AuthorizationCode, ClientId, ClientSecret, CsrfToken, IssuerUrl, Nonce, RedirectUrl, Scope,
+    TokenResponse,
+};
+use rand::distr::{Alphanumeric, SampleString};
+use reqwest::redirect::Policy;
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
 use std::env;
-use std::net::SocketAddr;
 use std::collections::{HashMap, HashSet};
+use std::net::SocketAddr;
 use std::path::{Component, Path as FsPath, PathBuf};
 use std::process::Command;
 use tower_http::cors::{Any, CorsLayer};
@@ -22,6 +33,16 @@ const DEFAULT_USER_ID: &str = "00000000-0000-0000-0000-000000000100";
 #[derive(Clone)]
 struct AppState {
     db: PgPool,
+    oidc: OidcSettings,
+}
+
+#[derive(Clone)]
+struct OidcSettings {
+    issuer: String,
+    client_id: String,
+    client_secret: String,
+    redirect_uri: String,
+    groups_claim: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -108,6 +129,12 @@ struct GitRemoteConfig {
     default_branch: String,
 }
 
+#[derive(Serialize)]
+struct GitRepoLink {
+    project_id: Uuid,
+    repo_url: String,
+}
+
 #[derive(Deserialize)]
 struct UpsertGitRemoteConfigInput {
     remote_url: Option<String>,
@@ -132,6 +159,14 @@ struct OidcCallbackQuery {
 struct SessionResponse {
     session_token: String,
     user_id: Uuid,
+}
+
+#[derive(Serialize)]
+struct AuthMeResponse {
+    user_id: Uuid,
+    email: String,
+    display_name: String,
+    session_expires_at: DateTime<Utc>,
 }
 
 #[derive(Serialize)]
@@ -229,11 +264,22 @@ async fn main() {
     run_migrations(&db).await;
     seed_default_data(&db).await;
 
-    let state = AppState { db };
+    let oidc = OidcSettings {
+        issuer: env::var("OIDC_ISSUER").unwrap_or_else(|_| "".to_string()),
+        client_id: env::var("OIDC_CLIENT_ID").unwrap_or_else(|_| "".to_string()),
+        client_secret: env::var("OIDC_CLIENT_SECRET").unwrap_or_else(|_| "".to_string()),
+        redirect_uri: env::var("OIDC_REDIRECT_URI").unwrap_or_else(|_| "".to_string()),
+        groups_claim: env::var("OIDC_GROUPS_CLAIM").unwrap_or_else(|_| "groups".to_string()),
+    };
+
+    let state = AppState { db, oidc };
     let app = Router::new()
         .route("/health", get(health))
         .route("/v1/auth/config", get(auth_config))
+        .route("/v1/auth/oidc/login", get(oidc_login))
         .route("/v1/auth/oidc/callback", get(oidc_callback))
+        .route("/v1/auth/me", get(auth_me))
+        .route("/v1/auth/logout", post(auth_logout))
         .route("/v1/projects", get(list_projects).post(create_project))
         .route("/v1/projects/{project_id}/roles", get(list_roles).post(upsert_role))
         .route("/v1/projects/{project_id}/comments", get(list_comments).post(create_comment))
@@ -248,9 +294,11 @@ async fn main() {
             get(get_document).put(update_document).delete(delete_document),
         )
         .route("/v1/git/status/{project_id}", get(git_status))
+        .route("/v1/git/repo-link/{project_id}", get(git_repo_link))
         .route("/v1/git/config/{project_id}", get(get_git_config).put(upsert_git_config))
         .route("/v1/git/sync/pull/{project_id}", post(git_pull))
         .route("/v1/git/sync/push/{project_id}", post(git_push))
+        .route("/v1/git/repo/{project_id}/{*rest}", any(git_http_backend))
         .layer(CorsLayer::new().allow_origin(Any).allow_headers(Any).allow_methods(Any))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -372,22 +420,204 @@ async fn health() -> Json<HealthResponse> {
     })
 }
 
-async fn auth_config() -> Json<AuthConfigResponse> {
+async fn auth_config(State(state): State<AppState>) -> Json<AuthConfigResponse> {
     Json(AuthConfigResponse {
-        issuer: env::var("OIDC_ISSUER").unwrap_or_else(|_| "".to_string()),
-        client_id: env::var("OIDC_CLIENT_ID").unwrap_or_else(|_| "".to_string()),
-        redirect_uri: env::var("OIDC_REDIRECT_URI").unwrap_or_else(|_| "".to_string()),
-        groups_claim: env::var("OIDC_GROUPS_CLAIM").unwrap_or_else(|_| "groups".to_string()),
+        issuer: state.oidc.issuer,
+        client_id: state.oidc.client_id,
+        redirect_uri: state.oidc.redirect_uri,
+        groups_claim: state.oidc.groups_claim,
     })
+}
+
+async fn oidc_login(State(state): State<AppState>) -> axum::response::Response {
+    let issuer = match IssuerUrl::new(state.oidc.issuer.clone()) {
+        Ok(i) => i,
+        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid OIDC issuer").into_response(),
+    };
+    let http_client = match reqwest::Client::builder().redirect(Policy::none()).build() {
+        Ok(c) => c,
+        Err(_) => return (StatusCode::BAD_GATEWAY, "OIDC HTTP client failure").into_response(),
+    };
+    let provider_metadata = match CoreProviderMetadata::discover_async(issuer, &http_client).await {
+        Ok(m) => m,
+        Err(_) => return (StatusCode::BAD_GATEWAY, "OIDC discovery failed").into_response(),
+    };
+    let redirect_uri = match RedirectUrl::new(state.oidc.redirect_uri.clone()) {
+        Ok(r) => r,
+        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid redirect URI").into_response(),
+    };
+    let client = CoreClient::from_provider_metadata(
+        provider_metadata,
+        ClientId::new(state.oidc.client_id.clone()),
+        Some(ClientSecret::new(state.oidc.client_secret.clone())),
+    )
+    .set_redirect_uri(redirect_uri);
+
+    if state.oidc.client_id.is_empty() {
+        return (StatusCode::BAD_GATEWAY, "OIDC discovery failed").into_response();
+    }
+    let state_token = random_token(32);
+    let nonce_token = random_token(32);
+    let now = Utc::now();
+    let _ = sqlx::query(
+        "insert into oidc_states (state, nonce, created_at) values ($1, $2, $3)
+         on conflict (state) do update set nonce = excluded.nonce, created_at = excluded.created_at",
+    )
+    .bind(&state_token)
+    .bind(&nonce_token)
+    .bind(now)
+    .execute(&state.db)
+    .await;
+
+    let (authorize_url, csrf, _nonce) = client
+        .authorize_url(
+            CoreAuthenticationFlow::AuthorizationCode,
+            move || CsrfToken::new(state_token.clone()),
+            move || Nonce::new(nonce_token.clone()),
+        )
+        .add_scope(Scope::new("openid".to_string()))
+        .add_scope(Scope::new("profile".to_string()))
+        .add_scope(Scope::new("email".to_string()))
+        .url();
+    let cookie = Cookie::build(("typst_oidc_state", csrf.secret().to_string()))
+        .path("/")
+        .http_only(true)
+        .same_site(SameSite::Lax)
+        .build();
+    let mut jar = CookieJar::new();
+    jar = jar.add(cookie);
+    (jar, Redirect::to(authorize_url.as_ref())).into_response()
 }
 
 async fn oidc_callback(
     State(state): State<AppState>,
     headers: HeaderMap,
+    jar: CookieJar,
     Query(query): Query<OidcCallbackQuery>,
-) -> impl IntoResponse {
-    let user_id = Uuid::parse_str(DEFAULT_USER_ID).unwrap();
-    let token = format!("dev-session-{}", query.code);
+) -> axum::response::Response {
+    let callback_state = query.state.clone().unwrap_or_default();
+    let cookie_state = jar
+        .get("typst_oidc_state")
+        .map(|c| c.value().to_string())
+        .unwrap_or_default();
+    if callback_state.is_empty() || callback_state != cookie_state {
+        return (StatusCode::UNAUTHORIZED, "Invalid OIDC state").into_response();
+    }
+
+    let row = sqlx::query("select nonce from oidc_states where state = $1")
+        .bind(&callback_state)
+        .fetch_optional(&state.db)
+        .await;
+    let nonce = match row {
+        Ok(Some(r)) => r.get::<String, _>("nonce"),
+        _ => return (StatusCode::UNAUTHORIZED, "OIDC state not found").into_response(),
+    };
+
+    let issuer = match IssuerUrl::new(state.oidc.issuer.clone()) {
+        Ok(i) => i,
+        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid OIDC issuer").into_response(),
+    };
+    let http_client = match reqwest::Client::builder().redirect(Policy::none()).build() {
+        Ok(c) => c,
+        Err(_) => return (StatusCode::BAD_GATEWAY, "OIDC HTTP client failure").into_response(),
+    };
+    let provider_metadata = match CoreProviderMetadata::discover_async(issuer, &http_client).await {
+        Ok(m) => m,
+        Err(_) => return (StatusCode::BAD_GATEWAY, "OIDC provider unavailable").into_response(),
+    };
+    let redirect_uri = match RedirectUrl::new(state.oidc.redirect_uri.clone()) {
+        Ok(r) => r,
+        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid redirect URI").into_response(),
+    };
+    let client = CoreClient::from_provider_metadata(
+        provider_metadata,
+        ClientId::new(state.oidc.client_id.clone()),
+        Some(ClientSecret::new(state.oidc.client_secret.clone())),
+    )
+    .set_redirect_uri(redirect_uri);
+    if state.oidc.client_id.is_empty() {
+        return (StatusCode::BAD_GATEWAY, "OIDC provider unavailable").into_response();
+    };
+    let token_result = match client.exchange_code(AuthorizationCode::new(query.code.clone())) {
+        Ok(token_request) => token_request.request_async(&http_client).await,
+        Err(_) => return (StatusCode::UNAUTHORIZED, "Invalid authorization code").into_response(),
+    };
+    let tokens = match token_result {
+        Ok(t) => t,
+        Err(_) => return (StatusCode::UNAUTHORIZED, "OIDC token exchange failed").into_response(),
+    };
+    let id_token = match tokens.id_token() {
+        Some(t) => t,
+        None => return (StatusCode::UNAUTHORIZED, "OIDC id_token missing").into_response(),
+    };
+    let id_token_verifier = client.id_token_verifier();
+    let claims: CoreIdTokenClaims = match id_token.claims(&id_token_verifier, &Nonce::new(nonce)) {
+        Ok(c) => c.clone(),
+        Err(_) => return (StatusCode::UNAUTHORIZED, "OIDC id_token verification failed").into_response(),
+    };
+    let issuer = claims.issuer().url().to_string();
+    let subject = claims.subject().as_str().to_string();
+    let email = if let Some(e) = claims.email() {
+        e.to_string()
+    } else {
+        format!("{}@oidc.local", subject)
+    };
+    let display_name = if let Some(username) = claims.preferred_username() {
+        username.to_string()
+    } else {
+        "OIDC User".to_string()
+    };
+
+    let user_row = sqlx::query(
+        "insert into users (id, email, display_name, created_at, oidc_subject, oidc_issuer)
+         values ($1, $2, $3, $4, $5, $6)
+         on conflict (oidc_subject) do update set email = excluded.email, display_name = excluded.display_name, oidc_issuer = excluded.oidc_issuer
+         returning id",
+    )
+    .bind(Uuid::new_v4())
+    .bind(email.clone())
+    .bind(display_name.clone())
+    .bind(Utc::now())
+    .bind(subject)
+    .bind(issuer)
+    .fetch_one(&state.db)
+    .await;
+    let user_id = match user_row {
+        Ok(r) => r.get::<Uuid, _>("id"),
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to upsert user").into_response(),
+    };
+
+    let token = random_token(48);
+    let issued_at = Utc::now();
+    let expires_at = issued_at + chrono::Duration::hours(12);
+    let _ = sqlx::query(
+        "insert into auth_sessions (session_token, user_id, issued_at, expires_at, user_agent, ip_address)
+         values ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(&token)
+    .bind(user_id)
+    .bind(issued_at)
+    .bind(expires_at)
+    .bind(
+        headers
+            .get(header::USER_AGENT)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("unknown"),
+    )
+    .bind(
+        headers
+            .get("x-forwarded-for")
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("unknown"),
+    )
+    .execute(&state.db)
+    .await;
+
+    let _ = sqlx::query("delete from oidc_states where state = $1")
+        .bind(&callback_state)
+        .execute(&state.db)
+        .await;
+
     let source = headers
         .get("x-forwarded-for")
         .and_then(|h| h.to_str().ok())
@@ -397,17 +627,54 @@ async fn oidc_callback(
         &state.db,
         Some(user_id),
         "auth.oidc.callback",
-        serde_json::json!({"state": query.state, "code_len": query.code.len(), "source": source}),
+        serde_json::json!({"state": query.state, "source": source, "email": email}),
     )
     .await;
 
-    (
-        StatusCode::OK,
-        Json(SessionResponse {
-            session_token: token,
-            user_id,
-        }),
+    let session_cookie = Cookie::build(("typst_session", token.clone()))
+        .path("/")
+        .http_only(true)
+        .same_site(SameSite::Lax)
+        .build();
+    let mut jar = jar.remove(Cookie::from("typst_oidc_state"));
+    jar = jar.add(session_cookie);
+    (jar, Json(SessionResponse { session_token: token, user_id })).into_response()
+}
+
+async fn auth_me(State(state): State<AppState>, jar: CookieJar) -> impl IntoResponse {
+    let Some(token) = jar.get("typst_session").map(|c| c.value().to_string()) else {
+        return (StatusCode::UNAUTHORIZED, "No session").into_response();
+    };
+    let row = sqlx::query(
+        "select u.id, u.email, u.display_name, s.expires_at
+         from auth_sessions s
+         join users u on u.id = s.user_id
+         where s.session_token = $1 and s.expires_at > now()",
     )
+    .bind(token)
+    .fetch_optional(&state.db)
+    .await;
+    let Ok(Some(row)) = row else {
+        return (StatusCode::UNAUTHORIZED, "Session expired").into_response();
+    };
+    Json(AuthMeResponse {
+        user_id: row.get("id"),
+        email: row.get("email"),
+        display_name: row.get("display_name"),
+        session_expires_at: row.get("expires_at"),
+    })
+    .into_response()
+}
+
+async fn auth_logout(State(state): State<AppState>, jar: CookieJar) -> impl IntoResponse {
+    if let Some(token) = jar.get("typst_session").map(|c| c.value().to_string()) {
+        let _ = sqlx::query("delete from auth_sessions where session_token = $1")
+            .bind(token)
+            .execute(&state.db)
+            .await;
+    }
+    let jar = jar.remove(Cookie::from("typst_session"));
+    (jar, StatusCode::NO_CONTENT).into_response()
 }
 
 async fn list_projects(
@@ -621,6 +888,7 @@ async fn create_comment(
         serde_json::json!({"project_id": project_id, "comment_id": id}),
     )
     .await;
+    mark_project_dirty(&state.db, project_id, Some(actor)).await;
 
     Ok(Json(Comment {
         id: row.get("id"),
@@ -691,6 +959,7 @@ async fn create_revision(
         serde_json::json!({"project_id": project_id, "revision_id": id}),
     )
     .await;
+    mark_project_dirty(&state.db, project_id, Some(actor)).await;
 
     Ok(Json(Revision {
         id: row.get("id"),
@@ -773,6 +1042,7 @@ async fn create_document(
         serde_json::json!({"project_id": project_id, "document_id": id}),
     )
     .await;
+    mark_project_dirty(&state.db, project_id, Some(actor)).await;
 
     Ok(Json(Document {
         id: row.get("id"),
@@ -814,6 +1084,7 @@ async fn upsert_document_by_path(
         serde_json::json!({"project_id": project_id, "document_id": row.get::<Uuid, _>("id"), "path": row.get::<String, _>("path")}),
     )
     .await;
+    mark_project_dirty(&state.db, project_id, Some(actor)).await;
 
     Ok(Json(Document {
         id: row.get("id"),
@@ -883,6 +1154,7 @@ async fn update_document(
         serde_json::json!({"project_id": project_id, "document_id": document_id}),
     )
     .await;
+    mark_project_dirty(&state.db, project_id, Some(actor)).await;
 
     Ok(Json(Document {
         id: row.get("id"),
@@ -917,6 +1189,7 @@ async fn delete_document(
         serde_json::json!({"project_id": project_id, "document_id": document_id}),
     )
     .await;
+    mark_project_dirty(&state.db, project_id, Some(actor)).await;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -953,6 +1226,32 @@ async fn get_git_config(
         remote_url: row.get("remote_url"),
         local_path: row.get("local_path"),
         default_branch: row.get("default_branch"),
+    }))
+}
+
+async fn git_repo_link(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+) -> Result<Json<GitRepoLink>, StatusCode> {
+    ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
+    let host = headers
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("127.0.0.1:8080");
+    let scheme = if headers
+        .get("x-forwarded-proto")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("http")
+        == "https"
+    {
+        "https"
+    } else {
+        "http"
+    };
+    Ok(Json(GitRepoLink {
+        project_id,
+        repo_url: format!("{scheme}://{host}/v1/git/repo/{project_id}"),
     }))
 }
 
@@ -1152,6 +1451,111 @@ async fn git_push(
     git_status_by_project(&state.db, project_id).await
 }
 
+async fn git_http_backend(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    method: Method,
+    uri: Uri,
+    Path((project_id, rest)): Path<(Uuid, String)>,
+    body: Bytes,
+) -> impl IntoResponse {
+    let actor = match git_http_user(&state.db, &headers).await {
+        Some(user_id) => user_id,
+        None => return (StatusCode::UNAUTHORIZED, "Git auth required").into_response(),
+    };
+    let can_push = rest.ends_with("git-receive-pack");
+    let need = if can_push { AccessNeed::GitSync } else { AccessNeed::Read };
+    if ensure_project_role(&state.db, &headers, project_id, need)
+        .await
+        .is_err()
+    {
+        return (StatusCode::FORBIDDEN, "Forbidden").into_response();
+    }
+
+    if flush_pending_server_commit(&state.db, project_id, None)
+        .await
+        .is_err()
+    {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to flush server updates").into_response();
+    }
+
+    let Ok(config) = load_git_config(&state.db, project_id).await else {
+        return (StatusCode::NOT_FOUND, "Git repository config missing").into_response();
+    };
+    if ensure_git_repo_initialized(&config.local_path, &config.default_branch).is_err() {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to initialize repo").into_response();
+    }
+
+    let query = uri.query().unwrap_or_default();
+    let path_info = if rest.is_empty() {
+        format!("/{}/.git", project_id)
+    } else {
+        format!("/{}/.git/{}", project_id, rest)
+    };
+    let mut command = Command::new("git");
+    command.arg("http-backend");
+    command.env("GIT_PROJECT_ROOT", git_storage_root().to_string_lossy().to_string());
+    command.env("GIT_HTTP_EXPORT_ALL", "1");
+    command.env("REQUEST_METHOD", method.as_str());
+    command.env("PATH_INFO", path_info);
+    command.env("QUERY_STRING", query);
+    command.env("CONTENT_TYPE", headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or(""));
+    command.env("CONTENT_LENGTH", body.len().to_string());
+    command.env("REMOTE_USER", actor.to_string());
+    command.stdin(std::process::Stdio::piped());
+    command.stdout(std::process::Stdio::piped());
+    command.stderr(std::process::Stdio::piped());
+
+    let Ok(mut child) = command.spawn() else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to spawn git http-backend").into_response();
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        let _ = stdin.write_all(&body);
+    }
+    let Ok(output) = child.wait_with_output() else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "git http-backend failed").into_response();
+    };
+
+    let (status, response_headers, response_body) = parse_cgi_http_backend_output(&output.stdout);
+    if can_push && status.is_success() {
+        if sync_repo_documents_to_project(&state.db, project_id, &config.local_path)
+            .await
+            .is_ok()
+        {
+            let _ = sqlx::query(
+                "update git_repositories set pending_sync = false, last_server_sync_at = $2 where project_id = $1",
+            )
+            .bind(project_id)
+            .bind(Utc::now())
+            .execute(&state.db)
+            .await;
+            let _ = sqlx::query("delete from git_pending_authors where project_id = $1")
+                .bind(project_id)
+                .execute(&state.db)
+                .await;
+            write_audit(
+                &state.db,
+                Some(actor),
+                "git.receive_pack.accepted",
+                serde_json::json!({"project_id": project_id}),
+            )
+            .await;
+        }
+    }
+
+    let mut builder = axum::http::Response::builder().status(status);
+    for (k, v) in response_headers {
+        builder = builder.header(k, v);
+    }
+    builder
+        .body(Body::from(response_body))
+        .unwrap_or_else(|_| axum::http::Response::new(Body::from("backend response error")))
+}
+
 enum AccessNeed {
     Read,
     Write,
@@ -1283,6 +1687,9 @@ fn ensure_git_repo_initialized(repo_path: &str, default_branch: &str) -> Result<
     if !git_dir.exists() {
         run_git(repo_path, &["init", "-b", default_branch])?;
     }
+    run_git(repo_path, &["config", "receive.denyNonFastForwards", "true"])?;
+    run_git(repo_path, &["config", "receive.denyCurrentBranch", "updateInstead"])?;
+    run_git(repo_path, &["config", "http.receivepack", "true"])?;
     Ok(())
 }
 
@@ -1417,4 +1824,193 @@ fn sanitize_repo_relative_path(repo_path: &str, relative: &str) -> Result<PathBu
         return Err("document path contains invalid traversal".to_string());
     }
     Ok(PathBuf::from(repo_path).join(rel_path))
+}
+
+async fn mark_project_dirty(db: &PgPool, project_id: Uuid, actor_user_id: Option<Uuid>) {
+    let _ = sqlx::query(
+        "insert into git_repositories (project_id, remote_url, local_path, default_branch, pending_sync, updated_at)
+         values ($1, $2, $3, 'main', true, $4)
+         on conflict (project_id) do update set pending_sync = true, updated_at = excluded.updated_at",
+    )
+    .bind(project_id)
+    .bind(Option::<String>::None)
+    .bind(project_git_repo_path(project_id).to_string_lossy().to_string())
+    .bind(Utc::now())
+    .execute(db)
+    .await;
+    if let Some(user_id) = actor_user_id {
+        let _ = sqlx::query(
+            "insert into git_pending_authors (project_id, user_id, touched_at)
+             values ($1, $2, $3)
+             on conflict (project_id, user_id) do update set touched_at = excluded.touched_at",
+        )
+        .bind(project_id)
+        .bind(user_id)
+        .bind(Utc::now())
+        .execute(db)
+        .await;
+    }
+}
+
+async fn flush_pending_server_commit(
+    db: &PgPool,
+    project_id: Uuid,
+    force_author: Option<Uuid>,
+) -> Result<(), String> {
+    let row = sqlx::query(
+        "select local_path, default_branch, pending_sync from git_repositories where project_id = $1",
+    )
+    .bind(project_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some(row) = row else {
+        return Ok(());
+    };
+    let pending_sync: bool = row.get("pending_sync");
+    if !pending_sync {
+        return Ok(());
+    }
+    let local_path: String = row.get("local_path");
+    let default_branch: String = row.get("default_branch");
+    ensure_git_repo_initialized(&local_path, &default_branch)?;
+    sync_project_documents_to_repo(db, project_id, &local_path).await?;
+    let _ = run_git(&local_path, &["add", "."]);
+
+    let clean = run_git(&local_path, &["status", "--porcelain"]).unwrap_or_default();
+    if clean.trim().is_empty() {
+        let _ = sqlx::query(
+            "update git_repositories set pending_sync = false, last_server_sync_at = $2 where project_id = $1",
+        )
+        .bind(project_id)
+        .bind(Utc::now())
+        .execute(db)
+        .await;
+        let _ = sqlx::query("delete from git_pending_authors where project_id = $1")
+            .bind(project_id)
+            .execute(db)
+            .await;
+        return Ok(());
+    }
+
+    let author_rows = sqlx::query(
+        "select u.display_name, u.email, u.id
+         from git_pending_authors g
+         join users u on u.id = g.user_id
+         where g.project_id = $1
+         order by g.touched_at asc",
+    )
+    .bind(project_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let mut trailers = Vec::new();
+    for row in author_rows {
+        let name: String = row.get("display_name");
+        let email: String = row.get("email");
+        trailers.push(format!("Co-authored-by: {} <{}>", name, email));
+    }
+    if trailers.is_empty() {
+        if let Some(user_id) = force_author {
+            let u = sqlx::query("select display_name, email from users where id = $1")
+                .bind(user_id)
+                .fetch_optional(db)
+                .await
+                .map_err(|e| e.to_string())?;
+            if let Some(row) = u {
+                trailers.push(format!(
+                    "Co-authored-by: {} <{}>",
+                    row.get::<String, _>("display_name"),
+                    row.get::<String, _>("email")
+                ));
+            }
+        }
+    }
+
+    let message = if trailers.is_empty() {
+        "Recent updates on Typst server".to_string()
+    } else {
+        format!(
+            "Recent updates on Typst server\n\n{}",
+            trailers.join("\n")
+        )
+    };
+    let _ = run_git(
+        &local_path,
+        &[
+            "-c",
+            "user.name=Typst Server",
+            "-c",
+            "user.email=noreply@typst-server.local",
+            "commit",
+            "-m",
+            &message,
+        ],
+    )?;
+    let _ = sqlx::query(
+        "update git_repositories set pending_sync = false, last_server_sync_at = $2 where project_id = $1",
+    )
+    .bind(project_id)
+    .bind(Utc::now())
+    .execute(db)
+    .await;
+    let _ = sqlx::query("delete from git_pending_authors where project_id = $1")
+        .bind(project_id)
+        .execute(db)
+        .await;
+    Ok(())
+}
+
+fn parse_cgi_http_backend_output(raw: &[u8]) -> (StatusCode, Vec<(String, String)>, Vec<u8>) {
+    let split = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .or_else(|| raw.windows(2).position(|w| w == b"\n\n"));
+    let Some(idx) = split else {
+        return (StatusCode::OK, vec![], raw.to_vec());
+    };
+    let (head, body) = if raw.get(idx..idx + 4) == Some(b"\r\n\r\n") {
+        (&raw[..idx], raw[idx + 4..].to_vec())
+    } else {
+        (&raw[..idx], raw[idx + 2..].to_vec())
+    };
+    let mut status = StatusCode::OK;
+    let mut headers = Vec::new();
+    for line in String::from_utf8_lossy(head).lines() {
+        if let Some(rest) = line.strip_prefix("Status:") {
+            let code = rest.trim().split_whitespace().next().unwrap_or("200");
+            if let Ok(c) = code.parse::<u16>() {
+                status = StatusCode::from_u16(c).unwrap_or(StatusCode::OK);
+            }
+            continue;
+        }
+        if let Some((k, v)) = line.split_once(':') {
+            headers.push((k.trim().to_string(), v.trim().to_string()));
+        }
+    }
+    (status, headers, body)
+}
+
+async fn git_http_user(db: &PgPool, headers: &HeaderMap) -> Option<Uuid> {
+    if let Some(uid) = actor_user_id(headers) {
+        return Some(uid);
+    }
+    let auth = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    let basic = auth.strip_prefix("Basic ")?;
+    let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, basic).ok()?;
+    let creds = String::from_utf8(decoded).ok()?;
+    let (_, password) = creds.split_once(':')?;
+    let row = sqlx::query(
+        "select user_id from auth_sessions where session_token = $1 and expires_at > now()",
+    )
+    .bind(password)
+    .fetch_optional(db)
+    .await
+    .ok()??;
+    Some(row.get("user_id"))
+}
+
+fn random_token(length: usize) -> String {
+    Alphanumeric.sample_string(&mut rand::rng(), length)
 }

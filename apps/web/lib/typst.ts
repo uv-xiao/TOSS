@@ -14,13 +14,6 @@ function getTypstModule() {
   return typstPromise;
 }
 
-function fakePdfFromSource(source: string): string {
-  const payload = btoa(
-    unescape(encodeURIComponent(`Typst preview placeholder\n\n${source}`))
-  );
-  return `data:application/pdf;base64,${payload}`;
-}
-
 async function compileWithTypstWasm(source: string): Promise<string | null> {
   try {
     const { $typst } = await getTypstModule();
@@ -61,8 +54,10 @@ export async function compileTypstClientSide(source: string): Promise<CompileOut
   }
 
   return {
-    pdfDataUrl: fakePdfFromSource(source),
-    errors: ["Typst WASM runtime unavailable, using fallback preview"],
+    pdfDataUrl: null,
+    errors: [
+      "This browser cannot run Typst WASM preview. You can continue editing source and sync via Git for offline compilation."
+    ],
     compiledAt: Date.now()
   };
 }

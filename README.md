@@ -45,9 +45,24 @@ This repository implements a working v1 foundation and API surface with:
 - realtime collaboration service with presence and checkpoint replay
 - client-side Typst WASM PDF compile path with fallback preview
 - Git mirror config + pull/push synchronization against a real remote
+- smart HTTP Git server endpoint per project with force-push rejection policy
 
-Remaining advanced work includes production-grade OIDC token validation,
-browser compatibility hardening for Typst WASM, and richer Git conflict UI/flows.
+Remaining advanced work includes deeper OIDC group-to-RBAC automation,
+browser compatibility hardening for Typst WASM, and richer in-app Git conflict UX.
+
+## Git server behavior
+
+- Repo link endpoint: `GET /v1/git/repo-link/{project_id}`
+- Collaborative changes are wrapped into a system commit:
+  - `Recent updates on Typst server`
+  - `Co-authored-by` trailers for collaborative users
+- Force push is rejected by server policy (`receive.denyNonFastForwards=true`)
+- Offline users must `git pull`, rebase/merge, and retry push when server changed.
+
+## Browser fallback policy
+
+If Typst WASM cannot run in browser, users can still edit Typst source in web UI.
+PDF preview is unavailable in that case; users should sync via Git and compile offline.
 
 ## Seed users
 
