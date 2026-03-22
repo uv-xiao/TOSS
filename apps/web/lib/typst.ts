@@ -15,7 +15,7 @@ type WorkerCompileResponse = {
 
 type CompileOptions = {
   coreApiUrl: string;
-  fontUrls: string[];
+  fontData: Uint8Array[];
 };
 
 class TypstWorkerRuntime {
@@ -62,7 +62,7 @@ class TypstWorkerRuntime {
         id,
         source,
         coreApiUrl: options.coreApiUrl,
-        fontUrls: options.fontUrls
+        fontData: options.fontData
       });
     });
   }

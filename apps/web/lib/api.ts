@@ -98,6 +98,11 @@ export type ProjectAsset = {
   created_at: string;
 };
 
+export type ProjectAssetContent = {
+  asset: ProjectAsset;
+  content_base64: string;
+};
+
 export async function getAuthMe() {
   const res = await fetch(`${CORE_API_URL}/v1/auth/me`, {
     cache: "no-store",
@@ -324,6 +329,16 @@ export async function listProjectAssets(projectId: string) {
 
 export function projectAssetRawUrl(projectId: string, assetId: string) {
   return `${CORE_API_URL}/v1/projects/${projectId}/assets/${assetId}/raw`;
+}
+
+export async function getProjectAssetContent(projectId: string, assetId: string) {
+  const res = await fetch(`${CORE_API_URL}/v1/projects/${projectId}/assets/${assetId}`, {
+    cache: "no-store",
+    credentials: "include",
+    headers: authHeaders()
+  });
+  if (!res.ok) throw new Error("Unable to load asset content");
+  return (await res.json()) as ProjectAssetContent;
 }
 
 export async function listProjectGroupRoles(projectId: string) {

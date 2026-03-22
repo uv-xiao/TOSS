@@ -8,7 +8,7 @@ type CompileRequest = {
   id: number;
   source: string;
   coreApiUrl: string;
-  fontUrls: string[];
+  fontData: Uint8Array[];
 };
 
 type CompileResponse = {
@@ -35,10 +35,11 @@ function extractErrors(diagnostics: unknown): string[] {
     .filter((x) => x.trim().length > 0);
 }
 
-async function getCompiler(coreApiUrl: string, fontUrls: string[]) {
+async function getCompiler(coreApiUrl: string, fontData: Uint8Array[]) {
   const nextKey = JSON.stringify({
     coreApiUrl: coreApiUrl.replace(/\/$/, ""),
-    fontUrls: [...fontUrls].sort()
+    fontCount: fontData.length,
+    fontSizes: fontData.map((f) => f.byteLength)
   });
   if (!compilerPromise || configKey !== nextKey) {
     configKey = nextKey;
@@ -51,8 +52,8 @@ async function getCompiler(coreApiUrl: string, fontUrls: string[]) {
         withAccessModel(accessModel),
         withPackageRegistry(new FetchPackageRegistry(accessModel))
       ];
-      if (fontUrls.length > 0) {
-        beforeBuild.push(loadFonts(fontUrls));
+      if (fontData.length > 0) {
+        beforeBuild.push(loadFonts(fontData));
       }
       await compiler.init({ beforeBuild });
       compiler.addSource(MAIN_PATH, "");
@@ -63,9 +64,9 @@ async function getCompiler(coreApiUrl: string, fontUrls: string[]) {
 }
 
 self.onmessage = async (event: MessageEvent<CompileRequest>) => {
-  const { id, source, coreApiUrl, fontUrls } = event.data;
+  const { id, source, coreApiUrl, fontData } = event.data;
   try {
-    const compiler = await getCompiler(coreApiUrl, fontUrls);
+    const compiler = await getCompiler(coreApiUrl, fontData);
     compiler.addSource(MAIN_PATH, source);
     const result = await compiler.compile({
       mainFilePath: MAIN_PATH,

@@ -15,6 +15,7 @@ import {
   createComment,
   createRevision,
   deleteProjectGroupRole,
+  getProjectAssetContent,
   getAuthMe,
   getGitConfig,
   getGitStatus,
@@ -33,7 +34,6 @@ import {
   upsertProjectGroupRole,
   upsertGitConfig,
   upsertDocumentByPath,
-  projectAssetRawUrl,
   type Comment,
   type CreatePatResponse,
   type GitRemoteConfig,
@@ -62,7 +62,7 @@ export default function HomePage() {
   const [vectorData, setVectorData] = useState<Uint8Array | null>(null);
   const [compileErrors, setCompileErrors] = useState<string[]>([]);
   const [compiledAt, setCompiledAt] = useState<number | null>(null);
-  const [fontUrls, setFontUrls] = useState<string[]>([]);
+  const [fontData, setFontData] = useState<Uint8Array[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProject, setSelectedProject] = useState<string>(DEFAULT_PROJECT_ID);
   const [gitStatus, setGitStatus] = useState<GitSyncState | null>(null);
@@ -177,13 +177,24 @@ export default function HomePage() {
       .then((res) => setGroupRoles(res))
       .catch(() => setGroupRoles([]));
     listProjectAssets(selectedProject)
-      .then((res) => {
-        const urls = res.assets
-          .filter((asset) => /\.(ttf|otf|woff|woff2)$/i.test(asset.path))
-          .map((asset) => projectAssetRawUrl(selectedProject, asset.id));
-        setFontUrls(urls);
+      .then(async (res) => {
+        const fontAssets = res.assets.filter((asset) =>
+          /\.(ttf|otf|woff|woff2)$/i.test(asset.path)
+        );
+        const contents = await Promise.all(
+          fontAssets.map((asset) => getProjectAssetContent(selectedProject, asset.id))
+        );
+        const buffers = contents.map((item) => {
+          const binary = atob(item.content_base64);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i += 1) {
+            bytes[i] = binary.charCodeAt(i);
+          }
+          return bytes;
+        });
+        setFontData(buffers);
       })
-      .catch(() => setFontUrls([]));
+      .catch(() => setFontData([]));
 
     listDocuments(selectedProject)
       .then((res) => {
@@ -201,7 +212,7 @@ export default function HomePage() {
     startTransition(() => {
       compileTypstClientSide(deferredDocument, {
         coreApiUrl: CORE_API_URL,
-        fontUrls
+        fontData
       }).then((output) => {
         if (cancelled) return;
         setVectorData(output.vectorData);
@@ -212,7 +223,7 @@ export default function HomePage() {
     return () => {
       cancelled = true;
     };
-  }, [deferredDocument, fontUrls]);
+  }, [deferredDocument, fontData]);
 
   useEffect(() => {
     const el = canvasPreviewRef.current;
