@@ -220,10 +220,10 @@ export async function renderTypstVectorToCanvas(container: HTMLElement, vectorDa
     if (version !== renderVersion) return;
     const renderer = await getRenderer();
     if (version !== renderVersion) return;
-    container.replaceChildren();
+    const staging = document.createElement("div");
     const pages = document.createElement("div");
     pages.className = "pdf-pages";
-    container.appendChild(pages);
+    staging.appendChild(pages);
     await renderer.renderToCanvas({
       format: "vector",
       container: pages,
@@ -284,6 +284,8 @@ export async function renderTypstVectorToCanvas(container: HTMLElement, vectorDa
       canvas.style.height = `${Math.max(1, baseHeight)}px`;
       canvas.style.display = "block";
     }
+    if (version !== renderVersion) return;
+    container.replaceChildren(pages);
   });
   await renderQueue;
 }

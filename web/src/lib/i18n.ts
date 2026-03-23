@@ -2,8 +2,6 @@ export type UiLocale = "en" | "zh-CN";
 
 export const DEFAULT_LOCALE: UiLocale = "en";
 
-const STORAGE_KEY = "ui.locale.v1";
-
 const messages: Record<UiLocale, Record<string, string>> = {
   en: {
     "brand.name": "Typst Collaboration",
@@ -113,13 +111,11 @@ const messages: Record<UiLocale, Record<string, string>> = {
 
 export function readStoredLocale(): UiLocale {
   if (typeof window === "undefined") return DEFAULT_LOCALE;
-  const raw = window.localStorage.getItem(STORAGE_KEY);
-  return raw === "zh-CN" ? "zh-CN" : "en";
-}
-
-export function storeLocale(locale: UiLocale) {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(STORAGE_KEY, locale);
+  const langs = [window.navigator.language, ...(window.navigator.languages || [])]
+    .map((lang) => lang.toLowerCase())
+    .filter(Boolean);
+  if (langs.some((lang) => lang.startsWith("zh"))) return "zh-CN";
+  return "en";
 }
 
 export function translate(locale: UiLocale, key: string) {

@@ -27,6 +27,7 @@ import {
   createProject,
   createProjectShareLink,
   createProjectFile,
+  deleteProjectOrganizationAccess,
   downloadProjectArchive,
   deleteOrgGroupRoleMapping,
   deleteProjectFile,
@@ -39,9 +40,12 @@ import {
   getProjectTree,
   getRevisionDocuments,
   listDocuments,
+  listMyOrganizations,
   listOrgGroupRoleMappings,
   listPersonalAccessTokens,
+  listProjectAccessUsers,
   listProjectAssets,
+  listProjectOrganizationAccess,
   listProjectShareLinks,
   listProjects,
   listRevisions,
@@ -55,10 +59,12 @@ import {
   type AdminAuthSettings,
   type AuthConfig,
   type AuthUser,
-  type CreateProjectShareLinkResponse,
+  type OrganizationMembership,
   type OrgGroupRoleMapping,
   type PersonalAccessTokenInfo,
   type Project,
+  type ProjectAccessUser,
+  type ProjectOrganizationAccess,
   type ProjectRole,
   type ProjectShareLink,
   type Revision,
@@ -66,10 +72,11 @@ import {
   upsertAdminAuthSettings,
   upsertDocumentByPath,
   upsertOrgGroupRoleMapping,
+  upsertProjectOrganizationAccess,
   upsertProjectSettings,
   uploadProjectAsset
 } from "@/lib/api";
-import { DEFAULT_LOCALE, readStoredLocale, storeLocale, translate, type UiLocale } from "@/lib/i18n";
+import { readStoredLocale, translate, type UiLocale } from "@/lib/i18n";
 
 type ProjectTreeNodeView = {
   name: string;
@@ -357,8 +364,9 @@ export function App() {
   const [authLoading, setAuthLoading] = useState(true);
   const [authConfig, setAuthConfig] = useState<AuthConfig | null>(null);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
-  const [locale, setLocale] = useState<UiLocale>(() => readStoredLocale());
+  const locale: UiLocale = useMemo(() => readStoredLocale(), []);
   const [projects, setProjects] = useState<Project[]>([]);
+  const [organizations, setOrganizations] = useState<OrganizationMembership[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [workspaceTopbar, setWorkspaceTopbar] = useState<ReactNode | null>(null);
   const onWorkspaceRoute = location.pathname.startsWith("/project/");
@@ -366,10 +374,6 @@ export function App() {
     ? decodeURIComponent(location.pathname.replace("/share/", ""))
     : null;
   const t = useMemo(() => (key: string) => translate(locale, key), [locale]);
-
-  useEffect(() => {
-    storeLocale(locale);
-  }, [locale]);
 
   useEffect(() => {
     if (!shareTokenFromPath) return;
@@ -392,15 +396,18 @@ export function App() {
   useEffect(() => {
     if (!authUser) {
       setProjects([]);
+      setOrganizations([]);
       return;
     }
-    listProjects()
-      .then((res) => {
+    Promise.all([listProjects(), listMyOrganizations()])
+      .then(([res, orgs]) => {
         setProjects(res.projects);
+        setOrganizations(orgs.organizations);
         setError(null);
       })
       .catch(() => {
         setProjects([]);
+        setOrganizations([]);
         setError("Unable to load projects");
       });
   }, [authUser?.user_id]);
@@ -418,12 +425,14 @@ export function App() {
     await logout();
     setAuthUser(null);
     setProjects([]);
+    setOrganizations([]);
   }
 
   async function refreshProjects() {
     if (!authUser) return;
-    const next = await listProjects();
+    const [next, orgs] = await Promise.all([listProjects(), listMyOrganizations()]);
     setProjects(next.projects);
+    setOrganizations(orgs.organizations);
   }
 
   if (authLoading) return <main className="loading">Loading...</main>;
@@ -464,10 +473,6 @@ export function App() {
         )}
         <div className="topbar-workspace-slot">{onWorkspaceRoute ? workspaceTopbar : null}</div>
         <div className="meta">
-          <select value={locale} onChange={(e) => setLocale(e.target.value === "zh-CN" ? "zh-CN" : "en")}>
-            <option value="en">EN</option>
-            <option value="zh-CN">中文</option>
-          </select>
           <span>{authUser.display_name}</span>
           <button className="button" onClick={handleLogout}>
             {t("nav.logout")}
@@ -481,11 +486,25 @@ export function App() {
             <Route path="/" element={<Navigate to={firstProject ? `/project/${firstProject}` : "/projects"} replace />} />
             <Route
               path="/projects"
-              element={<ProjectsPage projects={projects} refreshProjects={refreshProjects} t={t} />}
+              element={
+                <ProjectsPage
+                  projects={projects}
+                  organizations={organizations}
+                  refreshProjects={refreshProjects}
+                  t={t}
+                />
+              }
             />
             <Route
               path="/project/:projectId"
-              element={<WorkspacePage projects={projects} authUser={authUser} t={t} />}
+              element={
+                <WorkspacePage
+                  projects={projects}
+                  organizations={organizations}
+                  authUser={authUser}
+                  t={t}
+                />
+              }
             />
             <Route
               path="/share/:token"
@@ -581,21 +600,40 @@ function SignInPage({
 
 function ProjectsPage({
   projects,
+  organizations,
   refreshProjects,
   t
 }: {
   projects: Project[];
+  organizations: OrganizationMembership[];
   refreshProjects: () => Promise<void>;
   t: (key: string) => string;
 }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [organizationId, setOrganizationId] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!organizationId && organizations.length > 0) {
+      setOrganizationId(organizations[0].organization_id);
+    }
+  }, [organizationId, organizations]);
   return (
     <section className="page">
       <h2>{t("projects.title")}</h2>
       <div className="card create-card">
         <strong>{t("projects.createTitle")}</strong>
+        <select
+          value={organizationId}
+          onChange={(e) => setOrganizationId(e.target.value)}
+          disabled={organizations.length === 0}
+        >
+          {organizations.map((org) => (
+            <option value={org.organization_id} key={org.organization_id}>
+              {org.organization_name}
+            </option>
+          ))}
+        </select>
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Project name" />
         <input
           value={description}
@@ -609,6 +647,7 @@ function ProjectsPage({
             try {
               setError(null);
               await createProject({
+                organization_id: organizationId || null,
                 name: name.trim(),
                 description: description.trim() || null
               });
@@ -625,6 +664,21 @@ function ProjectsPage({
         </button>
         {error && <div className="error">{error}</div>}
       </div>
+      <div className="card">
+        <strong>Organizations</strong>
+        <div className="card-list">
+          {organizations.length > 0 ? (
+            organizations.map((org) => (
+              <div key={org.organization_id} className="card">
+                <strong>{org.organization_name}</strong>
+                <span>{org.is_admin ? "Admin" : "Member"}</span>
+              </div>
+            ))
+          ) : (
+            <div className="card">No organization memberships.</div>
+          )}
+        </div>
+      </div>
       <div className="card-list">
         {projects.map((project) => (
           <Link key={project.id} to={`/project/${project.id}`} className="card">
@@ -640,10 +694,12 @@ function ProjectsPage({
 
 function WorkspacePage({
   projects,
+  organizations,
   authUser,
   t
 }: {
   projects: Project[];
+  organizations: OrganizationMembership[];
   authUser: AuthUser;
   t: (key: string) => string;
 }) {
@@ -698,7 +754,8 @@ function WorkspacePage({
   const [filesDropActive, setFilesDropActive] = useState(false);
   const [bundledFonts, setBundledFonts] = useState<Uint8Array[]>([]);
   const [shareLinks, setShareLinks] = useState<ProjectShareLink[]>([]);
-  const [newShareLinks, setNewShareLinks] = useState<CreateProjectShareLinkResponse[]>([]);
+  const [projectOrgAccess, setProjectOrgAccess] = useState<ProjectOrganizationAccess[]>([]);
+  const [projectAccessUsers, setProjectAccessUsers] = useState<ProjectAccessUser[]>([]);
   const [typstRuntimeStatus, setTypstRuntimeStatus] = useState<TypstRuntimeStatus>({ stage: "idle" });
   const [apiReachable, setApiReachable] = useState(true);
   const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>("connecting");
@@ -759,6 +816,23 @@ function WorkspacePage({
   const project = projects.find((p) => p.id === projectId);
   const canWrite = project?.my_role !== "Viewer";
   const canManageProject = project?.my_role === "Owner" || project?.my_role === "Teacher";
+  const activeReadShare = shareLinks.find((link) => link.permission === "read" && !link.revoked_at) ?? null;
+  const activeWriteShare = shareLinks.find((link) => link.permission === "write" && !link.revoked_at) ?? null;
+  const myOrganizations = organizations;
+  const formatAccessType = (accessType: string, role: string) => {
+    if (accessType === "manage") return "Manage";
+    if (accessType === "write") return "Read + write";
+    if (accessType === "read") return "Read only";
+    return role;
+  };
+  const formatAccessSource = (source: string) => {
+    if (source === "share_link_invite") return "Accepted share link";
+    if (source === "direct_role") return "Direct assignment";
+    if (source.startsWith("organization:")) {
+      return `Organization (${source.slice("organization:".length)})`;
+    }
+    return source;
+  };
   const previewPercent = Math.round(previewZoom * 100);
   const activeFileName = activePath.split("/").filter(Boolean).at(-1) || activePath;
   const realtimeRequired = isActiveTextDoc && !isRevisionMode;
@@ -768,14 +842,22 @@ function WorkspacePage({
     if (!projectId) return;
     setWorkspaceLoaded(false);
     const sharePromise = canManageProject ? listProjectShareLinks(projectId).catch(() => []) : Promise.resolve([]);
-    let [treeRes, settings, git, docsRes, revisionsRes, assetsRes, shareRes] = await Promise.all([
+    const orgAccessPromise = canManageProject
+      ? listProjectOrganizationAccess(projectId).catch(() => [])
+      : Promise.resolve([]);
+    const accessUsersPromise = canManageProject
+      ? listProjectAccessUsers(projectId).then((res) => res.users).catch(() => [])
+      : Promise.resolve([]);
+    let [treeRes, settings, git, docsRes, revisionsRes, assetsRes, shareRes, orgAccessRes, accessUsersRes] = await Promise.all([
       getProjectTree(projectId),
       getProjectSettings(projectId).catch(() => ({ entry_file_path: "main.typ" })),
       getGitRepoLink(projectId).catch(() => ({ repo_url: "" })),
       listDocuments(projectId),
       listRevisions(projectId).catch(() => ({ revisions: [] })),
       listProjectAssets(projectId).catch(() => ({ assets: [] })),
-      sharePromise
+      sharePromise,
+      orgAccessPromise,
+      accessUsersPromise
     ]);
     if (!treeRes.nodes.some((node) => node.kind === "file")) {
       await createProjectFile(projectId, {
@@ -792,6 +874,8 @@ function WorkspacePage({
     setGitRepoUrl(git.repo_url || "");
     setRevisions(revisionsRes.revisions || []);
     setShareLinks(shareRes);
+    setProjectOrgAccess(orgAccessRes);
+    setProjectAccessUsers(accessUsersRes);
 
     const nextDocs: Record<string, string> = {};
     for (const doc of docsRes.documents) nextDocs[doc.path] = doc.content;
@@ -870,6 +954,21 @@ function WorkspacePage({
       setWorkspaceLoaded(true);
     });
   }, [projectId]);
+
+  useEffect(() => {
+    if (!projectId || !workspaceLoaded || !canManageProject) return;
+    Promise.all([
+      listProjectShareLinks(projectId).catch(() => []),
+      listProjectOrganizationAccess(projectId).catch(() => []),
+      listProjectAccessUsers(projectId).then((res) => res.users).catch(() => [])
+    ])
+      .then(([shares, orgAccess, users]) => {
+        setShareLinks(shares);
+        setProjectOrgAccess(orgAccess);
+        setProjectAccessUsers(users);
+      })
+      .catch(() => undefined);
+  }, [canManageProject, projectId, workspaceLoaded]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1105,12 +1204,10 @@ function WorkspacePage({
     const frame = canvasPreviewRef.current;
     if (!frame) return;
     if (!vectorData) {
-      frame.replaceChildren();
       setPreviewRenderTick((value) => value + 1);
       return;
     }
     let cancelled = false;
-    frame.classList.add("rendering");
     renderTypstVectorToCanvas(frame, vectorData)
       .then(() => {
         if (cancelled) return;
@@ -1122,19 +1219,15 @@ function WorkspacePage({
             setPreviewZoom(zoom);
           }
         }
-        frame.classList.remove("rendering");
         setPreviewRenderTick((value) => value + 1);
       })
       .catch((err) => {
         const message = err instanceof Error ? err.message : "Preview render failed";
         setCompileErrors([message]);
         setCompileDiagnostics([]);
-        frame.replaceChildren();
-        frame.classList.remove("rendering");
       });
     return () => {
       cancelled = true;
-      frame.classList.remove("rendering");
     };
   }, [showPreviewPanel, vectorData]);
 
@@ -1172,6 +1265,22 @@ function WorkspacePage({
     });
     observer.observe(frame);
     return () => observer.disconnect();
+  }, [previewFitMode, showPreviewPanel]);
+
+  useEffect(() => {
+    if (!showPreviewPanel) return;
+    if (previewFitMode === "manual") return;
+    const onResize = () => {
+      const frame = canvasPreviewRef.current;
+      if (!frame) return;
+      const pages = frame.querySelector(".pdf-pages") as HTMLElement | null;
+      if (!pages) return;
+      const zoom = deriveFitZoom(frame, pages, previewFitMode);
+      applyPreviewZoom(frame, zoom);
+      setPreviewZoom(zoom);
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
   }, [previewFitMode, showPreviewPanel]);
 
   useEffect(() => {
@@ -1408,8 +1517,7 @@ function WorkspacePage({
   async function createShare(permission: "read" | "write") {
     if (!projectId) return;
     try {
-      const created = await createProjectShareLink(projectId, { permission });
-      setNewShareLinks((prev) => [created, ...prev].slice(0, 6));
+      await createProjectShareLink(projectId, { permission });
       const latest = await listProjectShareLinks(projectId);
       setShareLinks(latest);
       setWorkspaceError(null);
@@ -1428,6 +1536,40 @@ function WorkspacePage({
       setWorkspaceError(null);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unable to revoke share link";
+      setWorkspaceError(message);
+    }
+  }
+
+  async function upsertOrgAccessGrant(organizationId: string, permission: "read" | "write") {
+    if (!projectId) return;
+    try {
+      await upsertProjectOrganizationAccess(projectId, organizationId, permission);
+      const [grants, users] = await Promise.all([
+        listProjectOrganizationAccess(projectId).catch(() => []),
+        listProjectAccessUsers(projectId).then((res) => res.users).catch(() => [])
+      ]);
+      setProjectOrgAccess(grants);
+      setProjectAccessUsers(users);
+      setWorkspaceError(null);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to update organization access";
+      setWorkspaceError(message);
+    }
+  }
+
+  async function removeOrgAccessGrant(organizationId: string) {
+    if (!projectId) return;
+    try {
+      await deleteProjectOrganizationAccess(projectId, organizationId);
+      const [grants, users] = await Promise.all([
+        listProjectOrganizationAccess(projectId).catch(() => []),
+        listProjectAccessUsers(projectId).then((res) => res.users).catch(() => [])
+      ]);
+      setProjectOrgAccess(grants);
+      setProjectAccessUsers(users);
+      setWorkspaceError(null);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to remove organization access";
       setWorkspaceError(message);
     }
   }
@@ -1890,23 +2032,24 @@ function WorkspacePage({
                 <div className="git-box">
                   <label>
                     Entry file
-                    <select
+                    <input
+                      list="entry-file-options"
                       value={entryFilePath}
                       onChange={async (e) => {
-                        const next = e.target.value;
+                        const next = e.target.value.trim();
+                        if (!next) return;
                         const updated = await upsertProjectSettings(projectId, next);
                         setEntryFilePath(updated.entry_file_path);
                       }}
                       disabled={!canManageProject}
-                    >
+                    />
+                    <datalist id="entry-file-options">
                       {Object.keys(docs)
                         .filter((path) => path.endsWith(".typ"))
                         .map((path) => (
-                          <option value={path} key={path}>
-                            {path}
-                          </option>
+                          <option value={path} key={path} />
                         ))}
-                    </select>
+                    </datalist>
                   </label>
                   <div>
                     <strong>Git Access URL</strong>
@@ -1916,58 +2059,128 @@ function WorkspacePage({
                 </div>
                 <div className="git-box">
                   <strong>{t("share.title")}</strong>
-                  <div className="toolbar compact-left">
-                    <button className="button" onClick={() => createShare("read")} disabled={!canManageProject}>
-                      {t("share.createRead")}
-                    </button>
-                    <button className="button" onClick={() => createShare("write")} disabled={!canManageProject}>
-                      {t("share.createWrite")}
-                    </button>
+                  <div className="settings-share-grid">
+                    <div className="card">
+                      <strong>Read link</strong>
+                      <div className="toolbar compact-left">
+                        {activeReadShare ? (
+                          <button
+                            className="button"
+                            onClick={() => revokeShare(activeReadShare.id)}
+                            disabled={!canManageProject}
+                          >
+                            Disable
+                          </button>
+                        ) : (
+                          <button className="button" onClick={() => createShare("read")} disabled={!canManageProject}>
+                            Enable
+                          </button>
+                        )}
+                      </div>
+                      {activeReadShare?.token_value ? (
+                        <>
+                          <code>{`${window.location.origin}/share/${activeReadShare.token_value}`}</code>
+                          <button
+                            className="button"
+                            onClick={async () => {
+                              await navigator.clipboard.writeText(
+                                `${window.location.origin}/share/${activeReadShare.token_value}`
+                              );
+                            }}
+                          >
+                            {t("share.copy")}
+                          </button>
+                        </>
+                      ) : (
+                        <small>{t("share.none")}</small>
+                      )}
+                    </div>
+                    <div className="card">
+                      <strong>Write link</strong>
+                      <div className="toolbar compact-left">
+                        {activeWriteShare ? (
+                          <button
+                            className="button"
+                            onClick={() => revokeShare(activeWriteShare.id)}
+                            disabled={!canManageProject}
+                          >
+                            Disable
+                          </button>
+                        ) : (
+                          <button className="button" onClick={() => createShare("write")} disabled={!canManageProject}>
+                            Enable
+                          </button>
+                        )}
+                      </div>
+                      {activeWriteShare?.token_value ? (
+                        <>
+                          <code>{`${window.location.origin}/share/${activeWriteShare.token_value}`}</code>
+                          <button
+                            className="button"
+                            onClick={async () => {
+                              await navigator.clipboard.writeText(
+                                `${window.location.origin}/share/${activeWriteShare.token_value}`
+                              );
+                            }}
+                          >
+                            {t("share.copy")}
+                          </button>
+                        </>
+                      ) : (
+                        <small>{t("share.none")}</small>
+                      )}
+                    </div>
                   </div>
-                  {newShareLinks.length > 0 && (
+                </div>
+                <div className="git-box">
+                  <strong>Organization access</strong>
+                  {myOrganizations.length > 0 ? (
                     <div className="card-list">
-                      {newShareLinks.map((created) => {
-                        const url = `${window.location.origin}/share/${created.token}`;
+                      {myOrganizations.map((org) => {
+                        const existing = projectOrgAccess.find((item) => item.organization_id === org.organization_id);
                         return (
-                          <div className="card" key={created.link.id}>
-                            <strong>{created.link.permission === "write" ? "Write" : "Read"} Link</strong>
-                            <code>{url}</code>
-                            <button
-                              className="button"
-                              onClick={async () => {
-                                await navigator.clipboard.writeText(url);
+                          <div className="card" key={org.organization_id}>
+                            <strong>{org.organization_name}</strong>
+                            <select
+                              value={existing?.permission ?? ""}
+                              onChange={(e) => {
+                                const value = e.target.value;
+                                if (value === "read" || value === "write") {
+                                  upsertOrgAccessGrant(org.organization_id, value);
+                                } else {
+                                  removeOrgAccessGrant(org.organization_id);
+                                }
                               }}
+                              disabled={!canManageProject}
                             >
-                              {t("share.copy")}
-                            </button>
+                              <option value="">No access</option>
+                              <option value="read">Read only</option>
+                              <option value="write">Read + write</option>
+                            </select>
                           </div>
                         );
                       })}
                     </div>
+                  ) : (
+                    <small>No organization memberships available for this account.</small>
                   )}
-                  {shareLinks.length > 0 ? (
+                </div>
+                <div className="git-box">
+                  <strong>Project access users</strong>
+                  {projectAccessUsers.length > 0 ? (
                     <div className="card-list">
-                      {shareLinks.map((link) => (
-                        <div className="card" key={link.id}>
-                          <strong>{link.permission === "write" ? "Write" : "Read"} link</strong>
-                          <span>{`Prefix: ${link.token_prefix}`}</span>
-                          <span>{new Date(link.created_at).toLocaleString()}</span>
-                          {!link.revoked_at ? (
-                            <button
-                              className="button"
-                              onClick={() => revokeShare(link.id)}
-                              disabled={!canManageProject}
-                            >
-                              {t("share.revoke")}
-                            </button>
-                          ) : (
-                            <span>Revoked</span>
-                          )}
+                      {projectAccessUsers.map((user) => (
+                        <div className="card" key={user.user_id}>
+                          <strong>{user.display_name || user.email}</strong>
+                          <span>{user.email}</span>
+                          <span>{`Access type: ${formatAccessType(user.access_type, user.role)}`}</span>
+                          <span>{`Role: ${user.role}`}</span>
+                          <span>{`Source: ${user.sources.map((source) => formatAccessSource(source)).join(", ")}`}</span>
                         </div>
                       ))}
                     </div>
                   ) : (
-                    <small>{t("share.none")}</small>
+                    <small>No users currently have access.</small>
                   )}
                 </div>
               </div>

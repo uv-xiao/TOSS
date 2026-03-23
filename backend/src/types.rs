@@ -97,6 +97,19 @@ pub struct ProjectListResponse {
     pub projects: Vec<Project>,
 }
 
+#[derive(Serialize)]
+pub struct OrganizationMembership {
+    pub organization_id: Uuid,
+    pub organization_name: String,
+    pub is_admin: bool,
+    pub joined_at: DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+pub struct OrganizationMembershipListResponse {
+    pub organizations: Vec<OrganizationMembership>,
+}
+
 #[derive(Deserialize)]
 pub struct CreateProjectInput {
     pub organization_id: Option<Uuid>,
@@ -461,6 +474,8 @@ pub struct ProjectShareLink {
     pub id: Uuid,
     pub project_id: Uuid,
     pub token_prefix: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_value: Option<String>,
     pub permission: String,
     pub created_by: Option<Uuid>,
     pub created_at: DateTime<Utc>,
@@ -484,4 +499,34 @@ pub struct CreateProjectShareLinkResponse {
 pub struct JoinProjectShareLinkResponse {
     pub project_id: Uuid,
     pub role: String,
+}
+
+#[derive(Serialize)]
+pub struct ProjectOrganizationAccess {
+    pub project_id: Uuid,
+    pub organization_id: Uuid,
+    pub organization_name: String,
+    pub permission: String,
+    pub granted_by: Option<Uuid>,
+    pub granted_at: DateTime<Utc>,
+}
+
+#[derive(Deserialize)]
+pub struct UpsertProjectOrganizationAccessInput {
+    pub permission: String,
+}
+
+#[derive(Serialize)]
+pub struct ProjectAccessUser {
+    pub user_id: Uuid,
+    pub email: String,
+    pub display_name: String,
+    pub role: String,
+    pub access_type: String,
+    pub sources: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct ProjectAccessUserListResponse {
+    pub users: Vec<ProjectAccessUser>,
 }

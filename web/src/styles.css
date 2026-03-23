@@ -652,10 +652,6 @@ body {
   display: none !important;
 }
 
-.pdf-frame.rendering .pdf-pages {
-  visibility: hidden;
-}
-
 .git-box {
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -663,12 +659,35 @@ body {
   padding: 10px;
   display: grid;
   gap: 8px;
+  min-width: 0;
 }
 
 .git-box code {
   display: block;
+  max-width: 100%;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
   font-size: 12px;
+}
+
+.panel-settings .git-box select,
+.panel-settings .git-box input {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.panel-settings .card {
+  min-width: 0;
+}
+
+.panel-settings .card span {
+  overflow-wrap: anywhere;
+}
+
+.settings-share-grid {
+  display: grid;
+  gap: 8px;
 }
 
 .history-list {

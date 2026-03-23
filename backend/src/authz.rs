@@ -97,27 +97,55 @@ pub async fn ensure_project_role_for_user(
         .fetch_optional(db)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let Some(row) = row else {
-        return Err(StatusCode::FORBIDDEN);
-    };
-    let role_str: String = row.get("role");
-    let Some(role) = ProjectRole::from_db(&role_str) else {
-        return Err(StatusCode::FORBIDDEN);
-    };
-    let allowed = match need {
-        AccessNeed::Read => true,
-        AccessNeed::Write => matches!(
-            role,
-            ProjectRole::Owner | ProjectRole::Teacher | ProjectRole::TA | ProjectRole::Student
-        ),
-        AccessNeed::Manage => matches!(role, ProjectRole::Owner | ProjectRole::Teacher),
-        AccessNeed::GitSync => matches!(role, ProjectRole::Owner | ProjectRole::Teacher | ProjectRole::TA),
-    };
-    if allowed {
-        Ok(())
-    } else {
-        Err(StatusCode::FORBIDDEN)
+    if let Some(row) = row {
+        let role_str: String = row.get("role");
+        let Some(role) = ProjectRole::from_db(&role_str) else {
+            return Err(StatusCode::FORBIDDEN);
+        };
+        let allowed = match need {
+            AccessNeed::Read => true,
+            AccessNeed::Write => matches!(
+                role,
+                ProjectRole::Owner | ProjectRole::Teacher | ProjectRole::TA | ProjectRole::Student
+            ),
+            AccessNeed::Manage => matches!(role, ProjectRole::Owner | ProjectRole::Teacher),
+            AccessNeed::GitSync => matches!(role, ProjectRole::Owner | ProjectRole::Teacher | ProjectRole::TA),
+        };
+        return if allowed {
+            Ok(())
+        } else {
+            Err(StatusCode::FORBIDDEN)
+        };
     }
+
+    let org_permission_row = sqlx::query(
+        "select poa.permission
+         from project_organization_access poa
+         join (
+            select organization_id from organization_memberships where user_id = $1
+            union
+            select organization_id from org_admins where user_id = $1
+         ) uo on uo.organization_id = poa.organization_id
+         where poa.project_id = $2
+         order by case poa.permission when 'write' then 2 when 'read' then 1 else 0 end desc
+         limit 1",
+    )
+    .bind(actor)
+    .bind(project_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let Some(permission_row) = org_permission_row else {
+        return Err(StatusCode::FORBIDDEN);
+    };
+    let permission: String = permission_row.get("permission");
+    let allowed = match need {
+        AccessNeed::Read => permission == "read" || permission == "write",
+        AccessNeed::Write => permission == "write",
+        AccessNeed::Manage => false,
+        AccessNeed::GitSync => false,
+    };
+    if allowed { Ok(()) } else { Err(StatusCode::FORBIDDEN) }
 }
 
 pub async fn authenticated_user_id(

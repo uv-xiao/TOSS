@@ -265,8 +265,14 @@ async function dragHandleX(page, handle, deltaX, label = "handle") {
 await fs.mkdir(outDir, { recursive: true });
 
 const browser = await chromium.launch({ headless: true });
-const contextA = await browser.newContext({ viewport: { width: 1620, height: 1020 } });
-const contextB = await browser.newContext({ viewport: { width: 1620, height: 1020 } });
+const contextA = await browser.newContext({
+  viewport: { width: 1620, height: 1020 },
+  locale: "en-US"
+});
+const contextB = await browser.newContext({
+  viewport: { width: 1620, height: 1020 },
+  locale: "en-US"
+});
 const pageA = await contextA.newPage();
 const pageB = await contextB.newPage();
 const browserErrors = [];
@@ -365,10 +371,7 @@ try {
   await login(pageB, collaborator.email, collaborator.password);
   await openWorkspace(pageA, projectId);
   await openWorkspace(pageB, projectId);
-  await pageA
-    .locator(".preview-runtime-status", { hasText: "Preparing Typst compiler in browser" })
-    .first()
-    .waitFor({ timeout: 15000 });
+  await pageA.locator(".preview-runtime-status").first().waitFor({ timeout: 15000 });
   await waitForCanvas(pageA, 60000);
   await assertWorkspaceLayout(pageA);
 

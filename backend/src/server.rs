@@ -96,13 +96,23 @@ pub async fn run() {
         .route("/v1/profile/security/tokens/{token_id}", delete(revoke_personal_access_token))
         .route("/v1/security/tokens", get(list_personal_access_tokens).post(create_personal_access_token))
         .route("/v1/security/tokens/{token_id}", delete(revoke_personal_access_token))
+        .route("/v1/organizations/mine", get(list_my_organizations))
         .route("/v1/projects", get(list_projects).post(create_project))
         .route("/v1/projects/{project_id}/tree", get(get_project_tree))
         .route("/v1/projects/{project_id}/files", post(create_project_file))
         .route("/v1/projects/{project_id}/files/move", patch(move_project_file))
         .route("/v1/projects/{project_id}/files/{*path}", delete(delete_project_file))
         .route("/v1/projects/{project_id}/roles", get(list_roles).post(upsert_role))
+        .route("/v1/projects/{project_id}/access-users", get(list_project_access_users))
         .route("/v1/projects/{project_id}/settings", get(get_project_settings).put(upsert_project_settings))
+        .route(
+            "/v1/projects/{project_id}/organization-access",
+            get(list_project_organization_access),
+        )
+        .route(
+            "/v1/projects/{project_id}/organization-access/{org_id}",
+            put(upsert_project_organization_access).delete(delete_project_organization_access),
+        )
         .route(
             "/v1/projects/{project_id}/share-links",
             get(list_project_share_links).post(create_project_share_link),
@@ -251,6 +261,17 @@ async fn seed_default_data(pool: &PgPool) {
     .await;
 
     let _ = sqlx::query(
+        "insert into organization_memberships (organization_id, user_id, joined_at)
+         values ($1, $2, $3)
+         on conflict (organization_id, user_id) do nothing",
+    )
+    .bind(org_id)
+    .bind(admin_id)
+    .bind(now)
+    .execute(pool)
+    .await;
+
+    let _ = sqlx::query(
         "insert into project_settings (project_id, entry_file_path, updated_at) values ($1, $2, $3)
          on conflict (project_id) do nothing",
     )
@@ -331,6 +352,10 @@ async fn seed_default_data(pool: &PgPool) {
         .execute(pool)
         .await;
     let _ = sqlx::query("delete from org_admins where user_id = $1")
+        .bind(legacy_member_id)
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("delete from organization_memberships where user_id = $1")
         .bind(legacy_member_id)
         .execute(pool)
         .await;
@@ -472,6 +497,16 @@ async fn local_register(
     {
         if let Some(org) = org_row {
             let org_id: Uuid = org.get("id");
+            let _ = sqlx::query(
+                "insert into organization_memberships (organization_id, user_id, joined_at)
+                 values ($1, $2, $3)
+                 on conflict (organization_id, user_id) do nothing",
+            )
+            .bind(org_id)
+            .bind(user_id)
+            .bind(now)
+            .execute(&state.db)
+            .await;
             let _ = sqlx::query(
                 "insert into org_admins (organization_id, user_id, granted_at)
                  select $1, $2, $3
@@ -688,6 +723,24 @@ async fn oidc_callback(
         Ok(r) => r.get::<Uuid, _>("id"),
         Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to upsert user").into_response(),
     };
+    if let Ok(org_row) = sqlx::query("select id from organizations order by created_at asc limit 1")
+        .fetch_optional(&state.db)
+        .await
+    {
+        if let Some(org) = org_row {
+            let org_id: Uuid = org.get("id");
+            let _ = sqlx::query(
+                "insert into organization_memberships (organization_id, user_id, joined_at)
+                 values ($1, $2, $3)
+                 on conflict (organization_id, user_id) do nothing",
+            )
+            .bind(org_id)
+            .bind(user_id)
+            .bind(Utc::now())
+            .execute(&state.db)
+            .await;
+        }
+    }
     let _ = sync_user_oidc_groups(&state.db, user_id, &oidc_groups).await;
     let _ = apply_project_group_roles(&state.db, user_id, &oidc_groups).await;
 
@@ -1050,31 +1103,146 @@ async fn list_projects(
     let Some(actor) = request_user_id(&state.db, &headers).await else {
         return Err(StatusCode::UNAUTHORIZED);
     };
-    let rows = sqlx::query(
+    let direct_rows = sqlx::query(
         "select p.id, p.organization_id, p.name, p.description, p.created_at, pr.role as my_role
          from projects p
          join project_roles pr on pr.project_id = p.id
-         where pr.user_id = $1
-         order by p.created_at desc",
+         where pr.user_id = $1",
     )
     .bind(actor)
     .fetch_all(&state.db)
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    let projects = rows
-        .into_iter()
-        .map(|r| Project {
-            id: r.get("id"),
-            organization_id: r.get("organization_id"),
-            name: r.get("name"),
-            description: r.get("description"),
-            my_role: r.get("my_role"),
-            created_at: r.get("created_at"),
-        })
-        .collect();
+    let org_ids = user_organization_ids(&state.db, actor).await?;
+    let org_rows = if org_ids.is_empty() {
+        Vec::new()
+    } else {
+        sqlx::query(
+            "select p.id, p.organization_id, p.name, p.description, p.created_at, poa.permission
+             from projects p
+             join project_organization_access poa on poa.project_id = p.id
+             where poa.organization_id = any($1::uuid[])",
+        )
+        .bind(&org_ids)
+        .fetch_all(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    };
+    let mut projects_by_id: HashMap<Uuid, Project> = HashMap::new();
+    for row in direct_rows {
+        let project_id: Uuid = row.get("id");
+        projects_by_id.insert(
+            project_id,
+            Project {
+                id: project_id,
+                organization_id: row.get("organization_id"),
+                name: row.get("name"),
+                description: row.get("description"),
+                my_role: row.get("my_role"),
+                created_at: row.get("created_at"),
+            },
+        );
+    }
+    for row in org_rows {
+        let project_id: Uuid = row.get("id");
+        let permission: String = row.get("permission");
+        let derived_role = if permission == "write" {
+            "Student".to_string()
+        } else {
+            "Viewer".to_string()
+        };
+        if let Some(existing) = projects_by_id.get_mut(&project_id) {
+            if role_rank(&derived_role) > role_rank(&existing.my_role) {
+                existing.my_role = derived_role;
+            }
+            continue;
+        }
+        projects_by_id.insert(
+            project_id,
+            Project {
+                id: project_id,
+                organization_id: row.get("organization_id"),
+                name: row.get("name"),
+                description: row.get("description"),
+                my_role: derived_role,
+                created_at: row.get("created_at"),
+            },
+        );
+    }
+    let mut projects = projects_by_id.into_values().collect::<Vec<_>>();
+    projects.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
     Ok(Json(ProjectListResponse { projects }))
+}
+
+async fn list_my_organizations(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<OrganizationMembershipListResponse>, StatusCode> {
+    let Some(actor) = request_user_id(&state.db, &headers).await else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+    let rows = sqlx::query(
+        "select o.id as organization_id, o.name as organization_name,
+                (oa.user_id is not null) as is_admin,
+                coalesce(om.joined_at, oa.granted_at, o.created_at) as joined_at
+         from organizations o
+         left join organization_memberships om
+           on om.organization_id = o.id and om.user_id = $1
+         left join org_admins oa
+           on oa.organization_id = o.id and oa.user_id = $1
+         where om.user_id is not null or oa.user_id is not null
+         order by o.name asc",
+    )
+    .bind(actor)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let organizations = rows
+        .into_iter()
+        .map(|row| OrganizationMembership {
+            organization_id: row.get("organization_id"),
+            organization_name: row.get("organization_name"),
+            is_admin: row.get("is_admin"),
+            joined_at: row.get("joined_at"),
+        })
+        .collect();
+    Ok(Json(OrganizationMembershipListResponse { organizations }))
+}
+
+async fn user_organization_ids(db: &PgPool, user_id: Uuid) -> Result<Vec<Uuid>, StatusCode> {
+    let rows = sqlx::query(
+        "select organization_id from organization_memberships where user_id = $1
+         union
+         select organization_id from org_admins where user_id = $1",
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(rows
+        .into_iter()
+        .map(|row| row.get::<Uuid, _>("organization_id"))
+        .collect())
+}
+
+async fn user_is_org_member(db: &PgPool, user_id: Uuid, org_id: Uuid) -> Result<bool, StatusCode> {
+    let row = sqlx::query(
+        "select 1
+         from (
+           select organization_id from organization_memberships where user_id = $1
+           union
+           select organization_id from org_admins where user_id = $1
+         ) orgs
+         where organization_id = $2
+         limit 1",
+    )
+    .bind(user_id)
+    .bind(org_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(row.is_some())
 }
 
 async fn default_organization_id(db: &PgPool) -> Result<Uuid, StatusCode> {
@@ -1110,6 +1278,16 @@ async fn create_project(
     } else {
         default_organization_id(&state.db).await?
     };
+    let _ = sqlx::query(
+        "insert into organization_memberships (organization_id, user_id, joined_at)
+         values ($1, $2, $3)
+         on conflict (organization_id, user_id) do nothing",
+    )
+    .bind(org_id)
+    .bind(actor)
+    .bind(created_at)
+    .execute(&state.db)
+    .await;
     let row = sqlx::query(
         "insert into projects (id, organization_id, name, description, created_at) values ($1, $2, $3, $4, $5)
          returning id, organization_id, name, description, created_at",
@@ -1204,10 +1382,10 @@ async fn list_project_share_links(
 ) -> Result<Json<Vec<ProjectShareLink>>, StatusCode> {
     ensure_project_role(&state.db, &headers, project_id, AccessNeed::Manage).await?;
     let rows = sqlx::query(
-        "select id, project_id, token_prefix, permission, created_by, created_at, expires_at, revoked_at
+        "select id, project_id, token_prefix, token_value, permission, created_by, created_at, expires_at, revoked_at
          from project_share_links
-         where project_id = $1
-         order by created_at desc",
+         where project_id = $1 and revoked_at is null
+         order by permission asc",
     )
     .bind(project_id)
     .fetch_all(&state.db)
@@ -1219,6 +1397,7 @@ async fn list_project_share_links(
             id: row.get("id"),
             project_id: row.get("project_id"),
             token_prefix: row.get("token_prefix"),
+            token_value: row.get("token_value"),
             permission: row.get("permission"),
             created_by: row.get("created_by"),
             created_at: row.get("created_at"),
@@ -1252,23 +1431,89 @@ async fn create_project_share_link(
             return Err(StatusCode::BAD_REQUEST);
         }
     }
+    let now = Utc::now();
+    let existing = sqlx::query(
+        "select id, token_value
+         from project_share_links
+         where project_id = $1 and permission = $2 and revoked_at is null
+         limit 1",
+    )
+    .bind(project_id)
+    .bind(permission)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if let Some(existing) = existing {
+        let existing_id: Uuid = existing.get("id");
+        let existing_token: Option<String> = existing.get("token_value");
+        let token = existing_token.unwrap_or_else(|| format!("psh_{}", random_token(36)));
+        let token_prefix = token.chars().take(12).collect::<String>();
+        let row = sqlx::query(
+            "update project_share_links
+             set token_prefix = $3,
+                 token_hash = $4,
+                 token_value = $5,
+                 created_by = $6,
+                 created_at = $7,
+                 expires_at = $8
+             where id = $1 and project_id = $2
+             returning id, project_id, token_prefix, token_value, permission, created_by, created_at, expires_at, revoked_at",
+        )
+        .bind(existing_id)
+        .bind(project_id)
+        .bind(&token_prefix)
+        .bind(token_sha256(&token))
+        .bind(&token)
+        .bind(actor)
+        .bind(now)
+        .bind(expires_at)
+        .fetch_one(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        write_audit(
+            &state.db,
+            Some(actor),
+            "project.share_link.enable",
+            serde_json::json!({
+                "project_id": project_id,
+                "share_link_id": existing_id,
+                "permission": permission,
+                "expires_at": expires_at
+            }),
+        )
+        .await;
+        return Ok(Json(CreateProjectShareLinkResponse {
+            link: ProjectShareLink {
+                id: row.get("id"),
+                project_id: row.get("project_id"),
+                token_prefix: row.get("token_prefix"),
+                token_value: row.get("token_value"),
+                permission: row.get("permission"),
+                created_by: row.get("created_by"),
+                created_at: row.get("created_at"),
+                expires_at: row.get("expires_at"),
+                revoked_at: row.get("revoked_at"),
+            },
+            token,
+        }));
+    }
     let token = format!("psh_{}", random_token(36));
     let token_prefix = token.chars().take(12).collect::<String>();
     let id = Uuid::new_v4();
-    let created_at = Utc::now();
     let row = sqlx::query(
         "insert into project_share_links
-         (id, project_id, token_prefix, token_hash, permission, created_by, created_at, expires_at, revoked_at)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, null)
-         returning id, project_id, token_prefix, permission, created_by, created_at, expires_at, revoked_at",
+         (id, project_id, token_prefix, token_hash, token_value, permission, created_by, created_at, expires_at, revoked_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, null)
+         returning id, project_id, token_prefix, token_value, permission, created_by, created_at, expires_at, revoked_at",
     )
     .bind(id)
     .bind(project_id)
     .bind(&token_prefix)
     .bind(token_sha256(&token))
+    .bind(&token)
     .bind(permission)
     .bind(actor)
-    .bind(created_at)
+    .bind(now)
     .bind(expires_at)
     .fetch_one(&state.db)
     .await
@@ -1292,6 +1537,7 @@ async fn create_project_share_link(
             id: row.get("id"),
             project_id: row.get("project_id"),
             token_prefix: row.get("token_prefix"),
+            token_value: row.get("token_value"),
             permission: row.get("permission"),
             created_by: row.get("created_by"),
             created_at: row.get("created_at"),
@@ -1347,10 +1593,11 @@ async fn join_project_share_link(
     let row = sqlx::query(
         "select id, project_id, permission, created_by
          from project_share_links
-         where token_hash = $1
+         where (token_value = $1 or token_hash = $2)
            and revoked_at is null
            and (expires_at is null or expires_at > now())",
     )
+    .bind(token)
     .bind(token_sha256(token))
     .fetch_optional(&state.db)
     .await
@@ -1824,6 +2071,251 @@ async fn upsert_project_settings(
         entry_file_path: row.get("entry_file_path"),
         updated_at: row.get("updated_at"),
     }))
+}
+
+fn normalized_org_permission(raw: &str) -> Option<&'static str> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "read" | "readonly" | "viewer" => Some("read"),
+        "write" | "writable" | "edit" | "editor" => Some("write"),
+        _ => None,
+    }
+}
+
+fn role_from_org_permission(permission: &str) -> &'static str {
+    if permission == "write" {
+        "Student"
+    } else {
+        "Viewer"
+    }
+}
+
+async fn list_project_organization_access(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+) -> Result<Json<Vec<ProjectOrganizationAccess>>, StatusCode> {
+    ensure_project_role(&state.db, &headers, project_id, AccessNeed::Manage).await?;
+    let rows = sqlx::query(
+        "select poa.project_id, poa.organization_id, o.name as organization_name,
+                poa.permission, poa.granted_by, poa.granted_at
+         from project_organization_access poa
+         join organizations o on o.id = poa.organization_id
+         where poa.project_id = $1
+         order by o.name asc",
+    )
+    .bind(project_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let items = rows
+        .into_iter()
+        .map(|row| ProjectOrganizationAccess {
+            project_id: row.get("project_id"),
+            organization_id: row.get("organization_id"),
+            organization_name: row.get("organization_name"),
+            permission: row.get("permission"),
+            granted_by: row.get("granted_by"),
+            granted_at: row.get("granted_at"),
+        })
+        .collect();
+    Ok(Json(items))
+}
+
+async fn upsert_project_organization_access(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, org_id)): Path<(Uuid, Uuid)>,
+    Json(input): Json<UpsertProjectOrganizationAccessInput>,
+) -> Result<Json<ProjectOrganizationAccess>, StatusCode> {
+    let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Manage).await?;
+    let permission = normalized_org_permission(&input.permission).ok_or(StatusCode::BAD_REQUEST)?;
+    if !user_is_org_member(&state.db, actor, org_id).await? {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let row = sqlx::query(
+        "insert into project_organization_access
+         (project_id, organization_id, permission, granted_by, granted_at)
+         values ($1, $2, $3, $4, $5)
+         on conflict (project_id, organization_id) do update
+         set permission = excluded.permission, granted_by = excluded.granted_by, granted_at = excluded.granted_at
+         returning project_id, organization_id, permission, granted_by, granted_at",
+    )
+    .bind(project_id)
+    .bind(org_id)
+    .bind(permission)
+    .bind(actor)
+    .bind(Utc::now())
+    .fetch_one(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let org_name_row = sqlx::query("select name from organizations where id = $1")
+        .bind(org_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let organization_name = org_name_row
+        .map(|r| r.get::<String, _>("name"))
+        .unwrap_or_else(|| org_id.to_string());
+    write_audit(
+        &state.db,
+        Some(actor),
+        "project.organization_access.upsert",
+        serde_json::json!({
+            "project_id": project_id,
+            "organization_id": org_id,
+            "permission": permission
+        }),
+    )
+    .await;
+    Ok(Json(ProjectOrganizationAccess {
+        project_id: row.get("project_id"),
+        organization_id: row.get("organization_id"),
+        organization_name,
+        permission: row.get("permission"),
+        granted_by: row.get("granted_by"),
+        granted_at: row.get("granted_at"),
+    }))
+}
+
+async fn delete_project_organization_access(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, org_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, StatusCode> {
+    let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Manage).await?;
+    let result = sqlx::query(
+        "delete from project_organization_access where project_id = $1 and organization_id = $2",
+    )
+    .bind(project_id)
+    .bind(org_id)
+    .execute(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if result.rows_affected() == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    write_audit(
+        &state.db,
+        Some(actor),
+        "project.organization_access.delete",
+        serde_json::json!({ "project_id": project_id, "organization_id": org_id }),
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn list_project_access_users(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+) -> Result<Json<ProjectAccessUserListResponse>, StatusCode> {
+    ensure_project_role(&state.db, &headers, project_id, AccessNeed::Manage).await?;
+    let share_rows = sqlx::query(
+        "select actor_user_id
+         from audit_events
+         where event_type = 'project.share_link.join'
+           and payload->>'project_id' = $1
+           and actor_user_id is not null",
+    )
+    .bind(project_id.to_string())
+    .fetch_all(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let share_user_ids: HashSet<Uuid> = share_rows
+        .into_iter()
+        .filter_map(|row| row.get::<Option<Uuid>, _>("actor_user_id"))
+        .collect();
+    let direct_rows = sqlx::query(
+        "select u.id as user_id, u.email, u.display_name, pr.role
+         from project_roles pr
+         join users u on u.id = pr.user_id
+         where pr.project_id = $1",
+    )
+    .bind(project_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let org_rows = sqlx::query(
+        "select distinct u.id as user_id, u.email, u.display_name,
+                poa.permission, o.name as organization_name
+         from project_organization_access poa
+         join organizations o on o.id = poa.organization_id
+         join (
+           select organization_id, user_id from organization_memberships
+           union
+           select organization_id, user_id from org_admins
+         ) members on members.organization_id = poa.organization_id
+         join users u on u.id = members.user_id
+         where poa.project_id = $1",
+    )
+    .bind(project_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut users: HashMap<Uuid, ProjectAccessUser> = HashMap::new();
+    for row in direct_rows {
+        let user_id: Uuid = row.get("user_id");
+        let role: String = row.get("role");
+        let access_type = access_type_from_role(&role).to_string();
+        let source = if share_user_ids.contains(&user_id) {
+            "share_link_invite".to_string()
+        } else {
+            "direct_role".to_string()
+        };
+        users
+            .entry(user_id)
+            .and_modify(|entry| {
+                if role_rank(&role) > role_rank(&entry.role) {
+                    entry.role = role.clone();
+                    entry.access_type = access_type.clone();
+                }
+                if !entry.sources.contains(&source) {
+                    entry.sources.push(source.clone());
+                }
+            })
+            .or_insert_with(|| ProjectAccessUser {
+                user_id,
+                email: row.get("email"),
+                display_name: row.get("display_name"),
+                role,
+                access_type,
+                sources: vec![source],
+            });
+    }
+    for row in org_rows {
+        let user_id: Uuid = row.get("user_id");
+        let permission: String = row.get("permission");
+        let organization_name: String = row.get("organization_name");
+        let role = role_from_org_permission(&permission).to_string();
+        let access_type = access_type_from_role(&role).to_string();
+        let source = format!("organization:{organization_name}");
+        users
+            .entry(user_id)
+            .and_modify(|entry| {
+                if role_rank(&role) > role_rank(&entry.role) {
+                    entry.role = role.clone();
+                    entry.access_type = access_type.clone();
+                }
+                if !entry.sources.contains(&source) {
+                    entry.sources.push(source.clone());
+                }
+            })
+            .or_insert_with(|| ProjectAccessUser {
+                user_id,
+                email: row.get("email"),
+                display_name: row.get("display_name"),
+                role,
+                access_type,
+                sources: vec![source],
+            });
+    }
+    let mut output = users.into_values().collect::<Vec<_>>();
+    for user in &mut output {
+        user.sources.sort();
+    }
+    output.sort_by(|a, b| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()));
+    Ok(Json(ProjectAccessUserListResponse { users: output }))
 }
 
 async fn list_group_roles(
@@ -3563,6 +4055,15 @@ fn role_rank(role: &str) -> i32 {
         "Student" => 2,
         "Viewer" => 1,
         _ => 0,
+    }
+}
+
+fn access_type_from_role(role: &str) -> &'static str {
+    match role {
+        "Viewer" => "read",
+        "Student" | "TA" | "Teacher" => "write",
+        "Owner" => "manage",
+        _ => "read",
     }
 }
 

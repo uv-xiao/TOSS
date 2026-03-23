@@ -232,8 +232,14 @@ async function main() {
   const authRepoUrl = repoUrl.replace("http://", `http://qa:${ownerPat.token}@`);
 
   const browser = await chromium.launch({ headless: true });
-  const contextA = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
-  const contextB = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const contextA = await browser.newContext({
+    viewport: { width: 1600, height: 1000 },
+    locale: "en-US"
+  });
+  const contextB = await browser.newContext({
+    viewport: { width: 1600, height: 1000 },
+    locale: "en-US"
+  });
   const pageA = await contextA.newPage();
   const pageB = await contextB.newPage();
   const browserErrors = [];

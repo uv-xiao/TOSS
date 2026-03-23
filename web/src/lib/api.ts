@@ -28,6 +28,13 @@ async function parseJsonOrThrow<T>(res: Response, message: string): Promise<T> {
 export type ProjectRole = "Owner" | "Teacher" | "Student" | "TA" | "Viewer";
 export type SharePermission = "read" | "write";
 
+export type OrganizationMembership = {
+  organization_id: string;
+  organization_name: string;
+  is_admin: boolean;
+  joined_at: string;
+};
+
 export type Project = {
   id: string;
   organization_id: string;
@@ -168,6 +175,7 @@ export type ProjectShareLink = {
   id: string;
   project_id: string;
   token_prefix: string;
+  token_value?: string | null;
   permission: SharePermission;
   created_by: string | null;
   created_at: string;
@@ -183,6 +191,24 @@ export type CreateProjectShareLinkResponse = {
 export type JoinProjectShareLinkResponse = {
   project_id: string;
   role: ProjectRole | "Viewer";
+};
+
+export type ProjectOrganizationAccess = {
+  project_id: string;
+  organization_id: string;
+  organization_name: string;
+  permission: SharePermission;
+  granted_by: string | null;
+  granted_at: string;
+};
+
+export type ProjectAccessUser = {
+  user_id: string;
+  email: string;
+  display_name: string;
+  role: ProjectRole | "Viewer";
+  access_type: "read" | "write" | "manage" | string;
+  sources: string[];
 };
 
 export async function getAuthConfig() {
@@ -250,6 +276,7 @@ export async function listProjects() {
 }
 
 export async function createProject(input: {
+  organization_id?: string | null;
   name: string;
   description?: string | null;
 }) {
@@ -260,6 +287,18 @@ export async function createProject(input: {
     body: JSON.stringify(input)
   });
   return parseJsonOrThrow<Project>(res, "Unable to create project");
+}
+
+export async function listMyOrganizations() {
+  const res = await fetch(apiUrl("/v1/organizations/mine"), {
+    cache: "no-store",
+    credentials: authCredentials(),
+    headers: authHeaders()
+  });
+  return parseJsonOrThrow<{ organizations: OrganizationMembership[] }>(
+    res,
+    "Unable to list organizations"
+  );
 }
 
 export async function getProjectTree(projectId: string) {
@@ -541,6 +580,53 @@ export async function revokeProjectShareLink(projectId: string, shareLinkId: str
     headers: authHeaders()
   });
   if (!res.ok) throw new Error("Unable to revoke share link");
+}
+
+export async function listProjectOrganizationAccess(projectId: string) {
+  const res = await fetch(apiUrl(`/v1/projects/${projectId}/organization-access`), {
+    cache: "no-store",
+    credentials: authCredentials(),
+    headers: authHeaders()
+  });
+  return parseJsonOrThrow<ProjectOrganizationAccess[]>(
+    res,
+    "Unable to list organization access"
+  );
+}
+
+export async function upsertProjectOrganizationAccess(
+  projectId: string,
+  organizationId: string,
+  permission: SharePermission
+) {
+  const res = await fetch(apiUrl(`/v1/projects/${projectId}/organization-access/${organizationId}`), {
+    method: "PUT",
+    credentials: authCredentials(),
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify({ permission })
+  });
+  return parseJsonOrThrow<ProjectOrganizationAccess>(
+    res,
+    "Unable to save organization access"
+  );
+}
+
+export async function deleteProjectOrganizationAccess(projectId: string, organizationId: string) {
+  const res = await fetch(apiUrl(`/v1/projects/${projectId}/organization-access/${organizationId}`), {
+    method: "DELETE",
+    credentials: authCredentials(),
+    headers: authHeaders()
+  });
+  if (!res.ok) throw new Error("Unable to remove organization access");
+}
+
+export async function listProjectAccessUsers(projectId: string) {
+  const res = await fetch(apiUrl(`/v1/projects/${projectId}/access-users`), {
+    cache: "no-store",
+    credentials: authCredentials(),
+    headers: authHeaders()
+  });
+  return parseJsonOrThrow<{ users: ProjectAccessUser[] }>(res, "Unable to list access users");
 }
 
 export async function joinProjectShareLink(token: string) {
