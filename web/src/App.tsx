@@ -897,6 +897,7 @@ function WorkspacePage({
   const isActiveTextDoc = isRevisionMode
     ? Object.prototype.hasOwnProperty.call(revisionDocs, activePath)
     : hasActiveDoc;
+  const currentEditorLanguage = editorLanguageForPath(activePath);
   const sourceDocs = isRevisionMode ? revisionDocs : docs;
   const compileDocuments = useMemo(() => {
     const baseDocs = { ...sourceDocs };
@@ -2160,12 +2161,13 @@ function WorkspacePage({
               {isActiveTextDoc ? (
                 <div className="editor-surface">
                   <EditorPane
+                    editorInstanceKey={`${activePath}:${activeRevisionId ?? "live"}:${currentEditorLanguage}`}
                     value={docText}
                     onDelta={applyDocumentDeltas}
                     onCursorChange={(cursor) => realtimeRef.current?.sendCursor(cursor)}
                     readOnly={isRevisionMode || !canWrite}
                     lineWrap={lineWrapEnabled}
-                    language={editorLanguageForPath(activePath)}
+                    language={currentEditorLanguage}
                     remoteCursors={remoteCursors}
                     jumpTo={jumpTarget}
                     onJumpHandled={() => setJumpTarget(null)}

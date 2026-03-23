@@ -1,11 +1,12 @@
 import CodeMirror from "@uiw/react-codemirror";
-import { StateEffect, Transaction } from "@codemirror/state";
+import { StateEffect, StateField, Transaction } from "@codemirror/state";
 import { markdown } from "@codemirror/lang-markdown";
 import {
   HighlightStyle,
   Language,
   LanguageSupport,
   defineLanguageFacet,
+  language as languageFacet,
   syntaxHighlighting
 } from "@codemirror/language";
 import {
@@ -141,8 +142,23 @@ const typstLanguageData = defineLanguageFacet({
 
 function buildTypstLanguageSupport() {
   const parser = new (TypstParser as unknown as new (highlighting: unknown) => TypstParser)(typstNodeHighlight);
-  const updateListener = parser.updateListener();
-  const language = new Language(typstLanguageData, parser, [updateListener], "typst");
+  const safeParserSync = StateField.define<null>({
+    create() {
+      return null;
+    },
+    update(value, transaction) {
+      if (transaction.startState.facet(languageFacet) !== transaction.state.facet(languageFacet)) {
+        parser.clearParser();
+        return null;
+      }
+      if (transaction.docChanged) {
+        // Avoid wasm incremental-edit panics by reparsing from the latest source.
+        parser.clearParser();
+      }
+      return value;
+    }
+  });
+  const language = new Language(typstLanguageData, parser, [safeParserSync], "typst");
   return new LanguageSupport(language, [syntaxHighlighting(typstEditorHighlight)]);
 }
 
@@ -158,6 +174,7 @@ type Props = {
   remoteCursors?: RemoteCursor[];
   jumpTo?: { line: number; column: number; token: number } | null;
   onJumpHandled?: () => void;
+  editorInstanceKey?: string;
 };
 
 export function EditorPane({
@@ -170,9 +187,20 @@ export function EditorPane({
   language = "plain",
   remoteCursors = [],
   jumpTo,
-  onJumpHandled
+  onJumpHandled,
+  editorInstanceKey
 }: Props) {
   const editorRef = useRef<EditorView | null>(null);
+  const onDeltaRef = useRef<Props["onDelta"]>(onDelta);
+  const onChangeRef = useRef<Props["onChange"]>(onChange);
+  const onCursorChangeRef = useRef<Props["onCursorChange"]>(onCursorChange);
+  const typstLanguageSupport = useMemo(() => buildTypstLanguageSupport(), []);
+
+  useEffect(() => {
+    onDeltaRef.current = onDelta;
+    onChangeRef.current = onChange;
+    onCursorChangeRef.current = onCursorChange;
+  }, [onChange, onCursorChange, onDelta]);
 
   const cursorListener = useMemo(
     () =>
@@ -180,12 +208,12 @@ export function EditorPane({
         if (!update.selectionSet) return;
         const head = update.state.selection.main.head;
         const line = update.state.doc.lineAt(head);
-        onCursorChange?.({
+        onCursorChangeRef.current?.({
           line: line.number,
           column: head - line.from + 1
         });
       }),
-    [onCursorChange]
+    []
   );
 
   const changeListener = useMemo(
@@ -197,7 +225,7 @@ export function EditorPane({
           return typeof event === "string";
         });
         if (!hasUserInput) return;
-        if (onDelta) {
+        if (onDeltaRef.current) {
           const changes: EditorChange[] = [];
           update.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
             changes.push({
@@ -206,25 +234,25 @@ export function EditorPane({
               insert: inserted.toString()
             });
           });
-          if (changes.length > 0) onDelta(changes);
-        } else if (onChange) {
-          onChange(update.state.doc.toString());
+          if (changes.length > 0) onDeltaRef.current(changes);
+        } else if (onChangeRef.current) {
+          onChangeRef.current(update.state.doc.toString());
         }
       }),
-    [onChange, onDelta]
+    []
   );
 
   const extensions = useMemo(() => {
     const languageExtensions =
       language === "typst"
-        ? [buildTypstLanguageSupport()]
+        ? [typstLanguageSupport]
         : language === "markdown"
           ? [markdown()]
           : [];
     const base = [...languageExtensions, cursorListener, changeListener, remoteCursorPlugin];
     if (lineWrap) base.push(EditorView.lineWrapping);
     return base;
-  }, [changeListener, cursorListener, language, lineWrap]);
+  }, [changeListener, cursorListener, language, lineWrap, typstLanguageSupport]);
 
   useEffect(() => {
     const view = editorRef.current;
@@ -252,6 +280,7 @@ export function EditorPane({
 
   return (
     <CodeMirror
+      key={editorInstanceKey}
       value={value}
       height="100%"
       extensions={extensions}
