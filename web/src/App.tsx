@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 import * as Y from "yjs";
 import { EditorPane, type EditorChange } from "@/components/EditorPane";
@@ -67,6 +67,58 @@ type ContextMenuState = {
   x: number;
   y: number;
 };
+
+type WorkspaceLayoutPrefs = {
+  filesWidth: number;
+  settingsWidth: number;
+  revisionsWidth: number;
+  editorRatio: number;
+};
+
+const WORKSPACE_LAYOUT_KEY = "workspace.layout.v2";
+const DEFAULT_LAYOUT_PREFS: WorkspaceLayoutPrefs = {
+  filesWidth: 300,
+  settingsWidth: 320,
+  revisionsWidth: 300,
+  editorRatio: 0.56
+};
+const MIN_SIDE_PANEL_WIDTH = 220;
+const MAX_SIDE_PANEL_WIDTH = 520;
+const MIN_EDITOR_RATIO = 0.28;
+const MAX_EDITOR_RATIO = 0.72;
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function readWorkspaceLayoutPrefs(): WorkspaceLayoutPrefs {
+  if (typeof window === "undefined") return DEFAULT_LAYOUT_PREFS;
+  try {
+    const raw = window.localStorage.getItem(WORKSPACE_LAYOUT_KEY);
+    if (!raw) return DEFAULT_LAYOUT_PREFS;
+    const parsed = JSON.parse(raw) as Partial<WorkspaceLayoutPrefs>;
+    return {
+      filesWidth: clampNumber(parsed.filesWidth ?? DEFAULT_LAYOUT_PREFS.filesWidth, MIN_SIDE_PANEL_WIDTH, MAX_SIDE_PANEL_WIDTH),
+      settingsWidth: clampNumber(
+        parsed.settingsWidth ?? DEFAULT_LAYOUT_PREFS.settingsWidth,
+        MIN_SIDE_PANEL_WIDTH,
+        MAX_SIDE_PANEL_WIDTH
+      ),
+      revisionsWidth: clampNumber(
+        parsed.revisionsWidth ?? DEFAULT_LAYOUT_PREFS.revisionsWidth,
+        MIN_SIDE_PANEL_WIDTH,
+        MAX_SIDE_PANEL_WIDTH
+      ),
+      editorRatio: clampNumber(parsed.editorRatio ?? DEFAULT_LAYOUT_PREFS.editorRatio, MIN_EDITOR_RATIO, MAX_EDITOR_RATIO)
+    };
+  } catch {
+    return DEFAULT_LAYOUT_PREFS;
+  }
+}
+
+function looksLikeUuid(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
 
 function normalizePath(path: string) {
   return path.trim().replace(/^\/+/, "");
@@ -283,16 +335,18 @@ export function App() {
         </div>
       </header>
       {error && <div className="error-banner">{error}</div>}
-      <Routes>
-        <Route path="/" element={<Navigate to={firstProject ? `/project/${firstProject}` : "/projects"} replace />} />
-        <Route
-          path="/projects"
-          element={<ProjectsPage projects={projects} refreshProjects={refreshProjects} />}
-        />
-        <Route path="/project/:projectId" element={<WorkspacePage projects={projects} authUser={authUser} />} />
-        <Route path="/admin" element={<AdminPage />} />
-        <Route path="/profile" element={<ProfilePage />} />
-      </Routes>
+      <section className="app-content">
+        <Routes>
+          <Route path="/" element={<Navigate to={firstProject ? `/project/${firstProject}` : "/projects"} replace />} />
+          <Route
+            path="/projects"
+            element={<ProjectsPage projects={projects} refreshProjects={refreshProjects} />}
+          />
+          <Route path="/project/:projectId" element={<WorkspacePage projects={projects} authUser={authUser} />} />
+          <Route path="/admin" element={<AdminPage />} />
+          <Route path="/profile" element={<ProfilePage />} />
+        </Routes>
+      </section>
     </main>
   );
 }
@@ -441,6 +495,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
   const ytextRef = useRef<Y.Text | null>(null);
   const realtimeRef = useRef<{ close: () => void; sendCursor: (cursor: { line: number; column: number }) => void } | null>(null);
   const canvasPreviewRef = useRef<HTMLDivElement | null>(null);
+  const centerSplitRef = useRef<HTMLDivElement | null>(null);
   const lastSavedDocRef = useRef<string>("");
 
   const [nodes, setNodes] = useState<{ path: string; kind: "file" | "directory" }[]>([]);
@@ -465,6 +520,14 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
   const [showFilesPanel, setShowFilesPanel] = useState(true);
   const [showRevisionPanel, setShowRevisionPanel] = useState(false);
   const [showProjectSettingsPanel, setShowProjectSettingsPanel] = useState(false);
+  const [showPreviewPanel, setShowPreviewPanel] = useState(true);
+  const [filesPanelWidth, setFilesPanelWidth] = useState(DEFAULT_LAYOUT_PREFS.filesWidth);
+  const [settingsPanelWidth, setSettingsPanelWidth] = useState(DEFAULT_LAYOUT_PREFS.settingsWidth);
+  const [revisionsPanelWidth, setRevisionsPanelWidth] = useState(DEFAULT_LAYOUT_PREFS.revisionsWidth);
+  const [editorRatio, setEditorRatio] = useState(DEFAULT_LAYOUT_PREFS.editorRatio);
+  const [previewZoom, setPreviewZoom] = useState(1);
+  const [previewFitLocked, setPreviewFitLocked] = useState(true);
+  const [previewRenderTick, setPreviewRenderTick] = useState(0);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set([""]));
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [bundledFonts, setBundledFonts] = useState<Uint8Array[]>([]);
@@ -506,7 +569,12 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
         .filter((peer) => peer.id !== effectiveUserId)
         .map((peer) => ({
           id: peer.id,
-          name: peer.name,
+          name:
+            peer.name && !looksLikeUuid(peer.name)
+              ? peer.name
+              : looksLikeUuid(peer.id)
+                ? "Collaborator"
+                : peer.id,
           color: presenceColor(peer.id),
           line: peer.line,
           column: peer.column
@@ -518,15 +586,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
   const activeAssetType = inferContentType(activePath, activeAsset?.contentType);
   const assetDataUrl = activeAssetBase64 ? `data:${activeAssetType};base64,${activeAssetBase64}` : "";
   const project = projects.find((p) => p.id === projectId);
-  const workspaceColumns = useMemo(() => {
-    const cols: string[] = [];
-    if (showFilesPanel) cols.push("minmax(270px, 0.95fr)");
-    cols.push("minmax(440px, 1.4fr)");
-    cols.push("minmax(320px, 1fr)");
-    if (showProjectSettingsPanel) cols.push("minmax(260px, 0.75fr)");
-    if (showRevisionPanel) cols.push("minmax(260px, 0.75fr)");
-    return cols.join(" ");
-  }, [showFilesPanel, showProjectSettingsPanel, showRevisionPanel]);
+  const previewPercent = Math.round(previewZoom * 100);
 
   const refreshProjectData = async () => {
     if (!projectId) return;
@@ -589,6 +649,25 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
   };
 
   useEffect(() => {
+    const stored = readWorkspaceLayoutPrefs();
+    setFilesPanelWidth(stored.filesWidth);
+    setSettingsPanelWidth(stored.settingsWidth);
+    setRevisionsPanelWidth(stored.revisionsWidth);
+    setEditorRatio(stored.editorRatio);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const payload: WorkspaceLayoutPrefs = {
+      filesWidth: clampNumber(filesPanelWidth, MIN_SIDE_PANEL_WIDTH, MAX_SIDE_PANEL_WIDTH),
+      settingsWidth: clampNumber(settingsPanelWidth, MIN_SIDE_PANEL_WIDTH, MAX_SIDE_PANEL_WIDTH),
+      revisionsWidth: clampNumber(revisionsPanelWidth, MIN_SIDE_PANEL_WIDTH, MAX_SIDE_PANEL_WIDTH),
+      editorRatio: clampNumber(editorRatio, MIN_EDITOR_RATIO, MAX_EDITOR_RATIO)
+    };
+    window.localStorage.setItem(WORKSPACE_LAYOUT_KEY, JSON.stringify(payload));
+  }, [editorRatio, filesPanelWidth, revisionsPanelWidth, settingsPanelWidth]);
+
+  useEffect(() => {
     setWorkspaceLoaded(false);
     setWorkspaceError(null);
     setCompileErrors([]);
@@ -604,6 +683,13 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
       setWorkspaceLoaded(true);
     });
   }, [projectId]);
+
+  useEffect(() => {
+    if (showRevisionPanel) return;
+    if (!activeRevisionId) return;
+    setActiveRevisionId(null);
+    setRevisionDocs({});
+  }, [activeRevisionId, showRevisionPanel]);
 
   useEffect(() => {
     setExpandedDirs((prev) => expandAncestors(activePath, prev));
@@ -782,18 +868,74 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
   }, [compileAssets, compileDocuments, entryFilePath, fontData, projectId, workspaceLoaded]);
 
   useEffect(() => {
-    const el = canvasPreviewRef.current;
-    if (!el) return;
+    const frame = canvasPreviewRef.current;
+    if (!frame) return;
     if (!vectorData) {
-      el.replaceChildren();
+      frame.replaceChildren();
+      setPreviewRenderTick((value) => value + 1);
       return;
     }
-    renderTypstVectorToCanvas(el, vectorData).catch((err) => {
-      const message = err instanceof Error ? err.message : "Preview render failed";
-      setCompileErrors([message]);
-      el.replaceChildren();
-    });
+    renderTypstVectorToCanvas(frame, vectorData)
+      .then(() => {
+        setPreviewRenderTick((value) => value + 1);
+      })
+      .catch((err) => {
+        const message = err instanceof Error ? err.message : "Preview render failed";
+        setCompileErrors([message]);
+        frame.replaceChildren();
+      });
   }, [vectorData]);
+
+  useEffect(() => {
+    const frame = canvasPreviewRef.current;
+    if (!frame) return;
+    const pages = frame.querySelector(".pdf-pages") as HTMLElement | null;
+    const firstCanvas = pages?.querySelector("canvas") as HTMLCanvasElement | null;
+    if (!pages || !firstCanvas) return;
+
+    const measuredWidth = firstCanvas.width > 0 ? firstCanvas.width / 2 : firstCanvas.offsetWidth;
+    const measuredHeight = firstCanvas.height > 0 ? firstCanvas.height / 2 : firstCanvas.offsetHeight;
+    const baseWidth = Number(pages.dataset.baseWidth) || measuredWidth || 1;
+    const baseHeight = Number(pages.dataset.baseHeight) || measuredHeight || 1;
+    pages.dataset.baseWidth = `${baseWidth}`;
+    pages.dataset.baseHeight = `${baseHeight}`;
+
+    const zoom = previewFitLocked
+      ? clampNumber(
+          Math.min((frame.clientWidth - 20) / baseWidth, (frame.clientHeight - 20) / baseHeight),
+          0.1,
+          5
+        )
+      : previewZoom;
+    pages.style.setProperty("--preview-zoom", `${zoom}`);
+    if (previewFitLocked && Math.abs(zoom - previewZoom) > 0.01) {
+      setPreviewZoom(zoom);
+    }
+  }, [previewFitLocked, previewZoom, previewRenderTick, showPreviewPanel, editorRatio, showFilesPanel, showProjectSettingsPanel, showRevisionPanel]);
+
+  useEffect(() => {
+    if (!showPreviewPanel) return;
+    const frame = canvasPreviewRef.current;
+    if (!frame) return;
+    const observer = new ResizeObserver(() => {
+      const pages = frame.querySelector(".pdf-pages") as HTMLElement | null;
+      const firstCanvas = pages?.querySelector("canvas") as HTMLCanvasElement | null;
+      if (!pages || !firstCanvas || !previewFitLocked) return;
+      const measuredWidth = firstCanvas.width > 0 ? firstCanvas.width / 2 : firstCanvas.offsetWidth;
+      const measuredHeight = firstCanvas.height > 0 ? firstCanvas.height / 2 : firstCanvas.offsetHeight;
+      const baseWidth = Number(pages.dataset.baseWidth) || measuredWidth || 1;
+      const baseHeight = Number(pages.dataset.baseHeight) || measuredHeight || 1;
+      const zoom = clampNumber(
+        Math.min((frame.clientWidth - 20) / baseWidth, (frame.clientHeight - 20) / baseHeight),
+        0.1,
+        5
+      );
+      pages.style.setProperty("--preview-zoom", `${zoom}`);
+      setPreviewZoom(zoom);
+    });
+    observer.observe(frame);
+    return () => observer.disconnect();
+  }, [previewFitLocked, showPreviewPanel]);
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -996,6 +1138,46 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
     setContextMenu(next);
   }
 
+  function beginHorizontalResize(onDelta: (deltaX: number) => void) {
+    return (event: ReactMouseEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      const startX = event.clientX;
+      const onMove = (moveEvent: MouseEvent) => {
+        onDelta(moveEvent.clientX - startX);
+      };
+      const onUp = () => {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+      };
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    };
+  }
+
+  function increasePreviewZoom() {
+    setPreviewFitLocked(false);
+    setPreviewZoom((value) => clampNumber(value + 0.1, 0.2, 3));
+  }
+
+  function decreasePreviewZoom() {
+    setPreviewFitLocked(false);
+    setPreviewZoom((value) => clampNumber(value - 0.1, 0.2, 3));
+  }
+
+  function toggleRevisionPanel() {
+    setShowRevisionPanel((shown) => {
+      if (shown) {
+        setActiveRevisionId(null);
+        setRevisionDocs({});
+      }
+      return !shown;
+    });
+  }
+
+  function togglePreviewFit() {
+    setPreviewFitLocked((locked) => !locked);
+  }
+
   if (!projectId) return <Navigate to="/projects" replace />;
   if (!project && projects.length > 0) {
     return <Navigate to={`/project/${projects[0].id}`} replace />;
@@ -1003,210 +1185,308 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
 
   return (
     <section className="workspace-shell">
-      <div className="workspace-toolbar">
-        <button
-          className={`button ${showFilesPanel ? "filled" : ""}`}
-          onClick={() => setShowFilesPanel((v) => !v)}
-        >
-          Files
-        </button>
-        <button
-          className={`button ${showProjectSettingsPanel ? "filled" : ""}`}
-          onClick={() => setShowProjectSettingsPanel((v) => !v)}
-        >
-          Project Settings
-        </button>
-        <button
-          className={`button ${showRevisionPanel ? "filled" : ""}`}
-          onClick={() => setShowRevisionPanel((v) => !v)}
-        >
-          Revisions
-        </button>
+      <div className="workspace-headbar">
+        <label className="workspace-project-picker">
+          <span>Project</span>
+          <select value={projectId} onChange={(e) => navigate(`/project/${e.target.value}`)}>
+            {projects.map((item) => (
+              <option value={item.id} key={item.id}>
+                {item.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="workspace-icon-toggles">
+          <button
+            className={`icon-toggle ${showFilesPanel ? "active" : ""}`}
+            aria-label="Toggle Files Panel"
+            title="Toggle Files Panel"
+            onClick={() => setShowFilesPanel((v) => !v)}
+          >
+            ☰
+          </button>
+          <button
+            className={`icon-toggle ${showPreviewPanel ? "active" : ""}`}
+            aria-label="Toggle Preview Panel"
+            title="Toggle Preview Panel"
+            onClick={() => setShowPreviewPanel((v) => !v)}
+          >
+            ▭
+          </button>
+          <button
+            className={`icon-toggle ${showProjectSettingsPanel ? "active" : ""}`}
+            aria-label="Toggle Project Settings Panel"
+            title="Toggle Project Settings Panel"
+            onClick={() => setShowProjectSettingsPanel((v) => !v)}
+          >
+            ⚙
+          </button>
+          <button
+            className={`icon-toggle ${showRevisionPanel ? "active" : ""}`}
+            aria-label="Toggle Revision Panel"
+            title="Toggle Revision Panel"
+            onClick={toggleRevisionPanel}
+          >
+            ↺
+          </button>
+        </div>
       </div>
 
-      <section className="workspace-grid" style={{ gridTemplateColumns: workspaceColumns }}>
+      <section className="workspace-stage">
         {showFilesPanel && (
-          <aside className="panel left">
-            <div className="panel-header">
-              <h2>Projects & Files</h2>
-            </div>
-            <div className="panel-content">
-              <label>
-                Project
-                <select
-                  value={projectId}
-                  onChange={(e) => navigate(`/project/${e.target.value}`)}
-                >
-                  {projects.map((item) => (
-                    <option value={item.id} key={item.id}>
-                      {item.name}
-                    </option>
+          <>
+            <aside className="panel panel-files" style={{ width: filesPanelWidth }}>
+              <div className="panel-header">
+                <h2>Files</h2>
+              </div>
+              <div className="panel-content">
+                <div className="toolbar compact-left">
+                  <button className="button" onClick={() => addPath("file")}>
+                    New File
+                  </button>
+                  <button className="button" onClick={() => addPath("directory")}>
+                    New Folder
+                  </button>
+                  <button className="button" onClick={() => uploadFiles()}>
+                    Upload Files
+                  </button>
+                  <button className="button" onClick={() => uploadFiles("", { directory: true })}>
+                    Upload Folder
+                  </button>
+                </div>
+                <div className="tree">
+                  {tree.map((node) => (
+                    <TreeNodeRow
+                      key={node.path}
+                      node={node}
+                      activePath={activePath}
+                      expanded={expandedDirs}
+                      setExpanded={setExpandedDirs}
+                      onOpen={openTreePath}
+                      onRequestContextMenu={requestContextMenu}
+                    />
                   ))}
-                </select>
-              </label>
-              <div className="toolbar">
-                <button className="button" onClick={() => addPath("file")}>
-                  New File
-                </button>
-                <button className="button" onClick={() => addPath("directory")}>
-                  New Folder
-                </button>
-                <button className="button" onClick={() => uploadFiles()}>
-                  Upload Files
-                </button>
-                <button className="button" onClick={() => uploadFiles("", { directory: true })}>
-                  Upload Folder
-                </button>
-              </div>
-              <div className="tree">
-                {tree.map((node) => (
-                  <TreeNodeRow
-                    key={node.path}
-                    node={node}
-                    activePath={activePath}
-                    expanded={expandedDirs}
-                    setExpanded={setExpandedDirs}
-                    onOpen={openTreePath}
-                    onRequestContextMenu={requestContextMenu}
-                  />
-                ))}
-              </div>
-            </div>
-          </aside>
-        )}
-
-        <article className="panel middle">
-          <div className="panel-header">
-            <h2>Editor</h2>
-            <div className="panel-status">
-              <span>File: {activePath}</span>
-              <span>Mode: {isRevisionMode ? "Revision" : "Live"}</span>
-              <span>Save: {saveState}</span>
-              <span>Compiled: {compiledAt ? new Date(compiledAt).toLocaleTimeString() : "n/a"}</span>
-              <span>
-                Collaborators:{" "}
-                {remoteCursors.length > 0 ? remoteCursors.map((user) => user.name).join(", ") : "none"}
-              </span>
-            </div>
-          </div>
-          <div className="panel-content editor-panel-content">
-            {isActiveTextDoc ? (
-              <div className="editor-surface">
-                <EditorPane
-                  value={docText}
-                  onDelta={applyDocumentDeltas}
-                  onCursorChange={(cursor) => realtimeRef.current?.sendCursor(cursor)}
-                  readOnly={isRevisionMode}
-                  remoteCursors={remoteCursors}
-                />
-              </div>
-            ) : (
-              <UnsupportedFilePane
-                path={activePath}
-                hasData={!!activeAssetBase64}
-                isImage={isImageAsset(activePath, activeAssetType)}
-                isPdf={isPdfAsset(activePath, activeAssetType)}
-                dataUrl={assetDataUrl}
-              />
-            )}
-            {!isActiveTextDoc && (
-              <div className="error">
-                This file is not editable in the web editor. Use Git/offline tools for changes.
-              </div>
-            )}
-            {isRevisionMode && !Object.prototype.hasOwnProperty.call(revisionDocs, activePath) && (
-              <div className="error">This file did not exist in the selected revision snapshot.</div>
-            )}
-            {workspaceError && <div className="error">{workspaceError}</div>}
-          </div>
-        </article>
-
-        <aside className="panel right">
-          <div className="panel-header">
-            <h2>Preview</h2>
-            <div className="toolbar compact">
-              <button
-                className="icon-button"
-                title="Download PDF (Client)"
-                aria-label="Download PDF (Client)"
-                onClick={downloadCompiledPdf}
-                disabled={!pdfData}
-              >
-                ↓ PDF
-              </button>
-              <button
-                className="icon-button"
-                title="Download Archive"
-                aria-label="Download Archive"
-                onClick={downloadArchive}
-              >
-                ↓ ZIP
-              </button>
-            </div>
-          </div>
-          <div className="panel-content">
-            <div ref={canvasPreviewRef} className="pdf-frame" />
-            {compileErrors.length > 0 && <div className="error">{compileErrors.join("; ")}</div>}
-          </div>
-        </aside>
-
-        {showProjectSettingsPanel && (
-          <aside className="panel">
-            <div className="panel-header">
-              <h2>Project Settings</h2>
-            </div>
-            <div className="panel-content">
-              <div className="git-box">
-                <label>
-                  Entry file
-                  <select
-                    value={entryFilePath}
-                    onChange={async (e) => {
-                      const next = e.target.value;
-                      const updated = await upsertProjectSettings(projectId, next);
-                      setEntryFilePath(updated.entry_file_path);
-                    }}
-                  >
-                    {Object.keys(docs)
-                      .filter((path) => path.endsWith(".typ"))
-                      .map((path) => (
-                        <option value={path} key={path}>
-                          {path}
-                        </option>
-                      ))}
-                  </select>
-                </label>
-                <div>
-                  <strong>Git Access URL</strong>
-                  <code>{gitRepoUrl || "Loading..."}</code>
-                  <small>Use PAT as HTTP password. Force push is rejected.</small>
                 </div>
               </div>
+            </aside>
+            <div
+              className="panel-resizer"
+              onMouseDown={beginHorizontalResize((dx) =>
+                setFilesPanelWidth(clampNumber(filesPanelWidth + dx, MIN_SIDE_PANEL_WIDTH, MAX_SIDE_PANEL_WIDTH))
+              )}
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize files panel"
+            />
+          </>
+        )}
+
+        <div className="center-split" ref={centerSplitRef}>
+          <article
+            className="panel panel-editor"
+            style={
+              showPreviewPanel
+                ? { flex: `${editorRatio} 1 0`, minWidth: 320 }
+                : { flex: "1 1 auto", minWidth: 320 }
+            }
+          >
+            <div className="panel-header">
+              <h2>Editor</h2>
+              <div className="panel-status">
+                <span>File: {activePath}</span>
+                <span>Mode: {isRevisionMode ? "Revision" : "Live"}</span>
+                <span>Save: {saveState}</span>
+                <span>Compiled: {compiledAt ? new Date(compiledAt).toLocaleTimeString() : "n/a"}</span>
+                <span>
+                  Collaborators:{" "}
+                  {remoteCursors.length > 0 ? remoteCursors.map((user) => user.name).join(", ") : "none"}
+                </span>
+              </div>
             </div>
-          </aside>
+            <div className="panel-content flush editor-panel-content">
+              {isActiveTextDoc ? (
+                <div className="editor-surface">
+                  <EditorPane
+                    value={docText}
+                    onDelta={applyDocumentDeltas}
+                    onCursorChange={(cursor) => realtimeRef.current?.sendCursor(cursor)}
+                    readOnly={isRevisionMode}
+                    remoteCursors={remoteCursors}
+                  />
+                </div>
+              ) : (
+                <UnsupportedFilePane
+                  path={activePath}
+                  hasData={!!activeAssetBase64}
+                  isImage={isImageAsset(activePath, activeAssetType)}
+                  isPdf={isPdfAsset(activePath, activeAssetType)}
+                  dataUrl={assetDataUrl}
+                />
+              )}
+              {!isActiveTextDoc && (
+                <div className="error panel-inline-error">
+                  This file is not editable in web editor. Edit offline and sync with Git.
+                </div>
+              )}
+              {isRevisionMode && !Object.prototype.hasOwnProperty.call(revisionDocs, activePath) && (
+                <div className="error panel-inline-error">This file did not exist in this revision snapshot.</div>
+              )}
+              {workspaceError && <div className="error panel-inline-error">{workspaceError}</div>}
+            </div>
+          </article>
+
+          {showPreviewPanel && (
+            <div
+              className="panel-resizer"
+              onMouseDown={beginHorizontalResize((dx) => {
+                const totalWidth = centerSplitRef.current?.getBoundingClientRect().width ?? 1;
+                const ratio = clampNumber(editorRatio + dx / Math.max(totalWidth, 1), MIN_EDITOR_RATIO, MAX_EDITOR_RATIO);
+                setEditorRatio(ratio);
+              })}
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize editor and preview"
+            />
+          )}
+
+          {showPreviewPanel && (
+            <aside className="panel panel-preview" style={{ flex: `${1 - editorRatio} 1 0`, minWidth: 280 }}>
+              <div className="panel-header">
+                <h2>Preview</h2>
+                <div className="toolbar compact">
+                  <button
+                    className={`icon-button ${previewFitLocked ? "filled" : ""}`}
+                    title="Toggle Fit To View"
+                    aria-label="Toggle Fit To View"
+                    onClick={togglePreviewFit}
+                  >
+                    ⤢
+                  </button>
+                  <button
+                    className="icon-button"
+                    title="Zoom Out"
+                    aria-label="Zoom Out"
+                    onClick={decreasePreviewZoom}
+                  >
+                    －
+                  </button>
+                  <span className="zoom-indicator">{previewPercent}%</span>
+                  <button
+                    className="icon-button"
+                    title="Zoom In"
+                    aria-label="Zoom In"
+                    onClick={increasePreviewZoom}
+                  >
+                    ＋
+                  </button>
+                  <button
+                    className="icon-button"
+                    title="Download PDF (Client)"
+                    aria-label="Download PDF (Client)"
+                    onClick={downloadCompiledPdf}
+                    disabled={!pdfData}
+                  >
+                    ↓PDF
+                  </button>
+                  <button
+                    className="icon-button"
+                    title="Download Archive"
+                    aria-label="Download Archive"
+                    onClick={downloadArchive}
+                  >
+                    ↓ZIP
+                  </button>
+                </div>
+              </div>
+              <div className="panel-content flush">
+                <div ref={canvasPreviewRef} className="pdf-frame" />
+                {compileErrors.length > 0 && <div className="error panel-inline-error">{compileErrors.join("; ")}</div>}
+              </div>
+            </aside>
+          )}
+        </div>
+
+        {showProjectSettingsPanel && (
+          <>
+            <div
+              className="panel-resizer"
+              onMouseDown={beginHorizontalResize((dx) =>
+                setSettingsPanelWidth(clampNumber(settingsPanelWidth - dx, MIN_SIDE_PANEL_WIDTH, MAX_SIDE_PANEL_WIDTH))
+              )}
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize project settings panel"
+            />
+            <aside className="panel panel-settings" style={{ width: settingsPanelWidth }}>
+              <div className="panel-header">
+                <h2>Project Settings</h2>
+              </div>
+              <div className="panel-content">
+                <div className="git-box">
+                  <label>
+                    Entry file
+                    <select
+                      value={entryFilePath}
+                      onChange={async (e) => {
+                        const next = e.target.value;
+                        const updated = await upsertProjectSettings(projectId, next);
+                        setEntryFilePath(updated.entry_file_path);
+                      }}
+                    >
+                      {Object.keys(docs)
+                        .filter((path) => path.endsWith(".typ"))
+                        .map((path) => (
+                          <option value={path} key={path}>
+                            {path}
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                  <div>
+                    <strong>Git Access URL</strong>
+                    <code>{gitRepoUrl || "Loading..."}</code>
+                    <small>Use PAT as HTTP password. Force push is rejected.</small>
+                  </div>
+                </div>
+              </div>
+            </aside>
+          </>
         )}
 
         {showRevisionPanel && (
-          <aside className="panel">
-            <div className="panel-header">
-              <h2>Revisions</h2>
-            </div>
-            <div className="panel-content">
-              <HistoryPanel
-                revisions={revisions.map((revision) => ({
-                  id: revision.id,
-                  summary: revision.summary,
-                  createdAt: revision.created_at,
-                  author:
-                    revision.authors.length > 0
-                      ? revision.authors.map((author) => author.display_name).join(", ")
-                      : revision.actor_user_id || "Unknown"
-                }))}
-                selectedId={activeRevisionId}
-                onSelect={openRevision}
-              />
-            </div>
-          </aside>
+          <>
+            <div
+              className="panel-resizer"
+              onMouseDown={beginHorizontalResize((dx) =>
+                setRevisionsPanelWidth(
+                  clampNumber(revisionsPanelWidth - dx, MIN_SIDE_PANEL_WIDTH, MAX_SIDE_PANEL_WIDTH)
+                )
+              )}
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize revisions panel"
+            />
+            <aside className="panel panel-revisions" style={{ width: revisionsPanelWidth }}>
+              <div className="panel-header">
+                <h2>Revisions</h2>
+              </div>
+              <div className="panel-content">
+                <HistoryPanel
+                  revisions={revisions.map((revision) => ({
+                    id: revision.id,
+                    summary: revision.summary,
+                    createdAt: revision.created_at,
+                    author:
+                      revision.authors.length > 0
+                        ? revision.authors.map((author) => author.display_name).join(", ")
+                        : revision.actor_user_id || "Unknown"
+                  }))}
+                  selectedId={activeRevisionId}
+                  onSelect={openRevision}
+                />
+              </div>
+            </aside>
+          </>
         )}
       </section>
 
@@ -1263,7 +1543,7 @@ function UnsupportedFilePane({
   if (!hasData) {
     return (
       <div className="file-preview empty">
-        <div className="file-icon">[FILE]</div>
+        <div className="file-icon" aria-hidden />
         <div>{path}</div>
         <small>File content is loading.</small>
       </div>
@@ -1285,7 +1565,7 @@ function UnsupportedFilePane({
   }
   return (
     <div className="file-preview empty">
-      <div className="file-icon">[FILE]</div>
+      <div className="file-icon" aria-hidden />
       <div>{path}</div>
     </div>
   );

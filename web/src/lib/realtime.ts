@@ -135,6 +135,7 @@ export function bindRealtimeYDoc(params: {
         const previous: PresencePeer = peers.get(eventUserId) ?? { id: eventUserId, name: eventUserId };
         peers.set(eventUserId, {
           ...previous,
+          name: payloadUserName || previous.name,
           line:
             typeof incoming?.line === "number" && Number.isFinite(incoming.line)
               ? Math.max(1, incoming.line)
@@ -163,7 +164,10 @@ export function bindRealtimeYDoc(params: {
       JSON.stringify({
         kind: "presence.cursor",
         origin,
-        payload: cursor
+        payload: {
+          ...cursor,
+          user_name: userName
+        }
       })
     );
   };

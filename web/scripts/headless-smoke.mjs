@@ -133,6 +133,44 @@ async function waitForCanvas(page, timeoutMs = 60000) {
   throw new Error(`Canvas not rendered. Errors: ${errors.join(" | ")}`);
 }
 
+async function assertWorkspaceLayout(page) {
+  const metrics = await page.evaluate(() => {
+    const stage = document.querySelector(".workspace-stage")?.getBoundingClientRect();
+    const shell = document.querySelector(".workspace-shell")?.getBoundingClientRect();
+    const app = document.querySelector(".app-shell")?.getBoundingClientRect();
+    const topbar = document.querySelector(".topbar")?.getBoundingClientRect();
+    const editorContent = document.querySelector(".panel-editor .panel-content");
+    const previewContent = document.querySelector(".panel-preview .panel-content")?.getBoundingClientRect();
+    const previewFrame = document.querySelector(".pdf-frame")?.getBoundingClientRect();
+    const toggles = document.querySelectorAll(".workspace-icon-toggles .icon-toggle").length;
+    const rootHeight = document.documentElement.clientHeight;
+    return {
+      stageBottomGap: stage ? Math.max(0, rootHeight - stage.bottom) : 999,
+      stageTop: stage?.top ?? -1,
+      stageHeight: stage?.height ?? -1,
+      shellBottomGap: shell ? Math.max(0, rootHeight - shell.bottom) : 999,
+      shellHeight: shell?.height ?? -1,
+      appHeight: app?.height ?? -1,
+      appBottomGap: app ? Math.max(0, rootHeight - app.bottom) : 999,
+      topbarHeight: topbar?.height ?? -1,
+      editorPadding: editorContent ? getComputedStyle(editorContent).padding : "missing",
+      previewHeightDelta:
+        previewContent && previewFrame ? Math.abs(previewContent.height - previewFrame.height) : 999,
+      toggles
+    };
+  });
+  if (metrics.toggles < 4) throw new Error("panel icon toggles are missing");
+  if (metrics.editorPadding !== "0px") throw new Error(`editor panel has unexpected padding: ${metrics.editorPadding}`);
+  if (metrics.previewHeightDelta > 4) {
+    throw new Error(`preview frame does not fill panel content (delta=${metrics.previewHeightDelta})`);
+  }
+  if (metrics.stageBottomGap > 20) {
+    throw new Error(
+      `workspace leaves large bottom gap (${metrics.stageBottomGap}px, stageTop=${metrics.stageTop}, stageHeight=${metrics.stageHeight}, shellHeight=${metrics.shellHeight}, shellGap=${metrics.shellBottomGap}, appHeight=${metrics.appHeight}, appGap=${metrics.appBottomGap}, topbar=${metrics.topbarHeight})`
+    );
+  }
+}
+
 async function acceptPrompt(page, trigger, value) {
   let seenPrompt = false;
   page.once("dialog", async (dialog) => {
@@ -189,6 +227,17 @@ async function openContextMenu(page, name, method = "button") {
   await page.locator(".context-menu-floating").first().waitFor({ timeout: 10000 });
 }
 
+async function dragHandleX(page, handle, deltaX, label = "handle") {
+  const box = await handle.boundingBox();
+  if (!box) throw new Error(`missing draggable handle: ${label}`);
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + deltaX, y, { steps: 10 });
+  await page.mouse.up();
+}
+
 await fs.mkdir(outDir, { recursive: true });
 
 const browser = await chromium.launch({ headless: true });
@@ -229,6 +278,7 @@ try {
   const simpleSvg = new TextEncoder().encode(
     '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="#2f7d4a"/></svg>'
   );
+  const rawBinary = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 255, 254, 253, 252]);
   const tempUploadFile = path.join(await fs.mkdtemp(path.join(os.tmpdir(), "typst-upload-")), "upload.typ");
   await fs.writeFile(tempUploadFile, "= Uploaded From UI\n\nThis file came from file chooser.\n", "utf8");
 
@@ -281,16 +331,63 @@ try {
     content_base64: Buffer.from(fontBytes).toString("base64"),
     content_type: "font/ttf"
   });
+  await bearerApi("POST", `/v1/projects/${projectId}/assets`, owner.sessionToken, {
+    path: "blob.bin",
+    content_base64: Buffer.from(rawBinary).toString("base64"),
+    content_type: "application/octet-stream"
+  });
 
   await login(pageA, owner.email, owner.password);
   await login(pageB, collaborator.email, collaborator.password);
   await openWorkspace(pageA, projectId);
   await openWorkspace(pageB, projectId);
   await waitForCanvas(pageA, 60000);
+  await assertWorkspaceLayout(pageA);
 
   const shot1 = path.join(outDir, "01-workspace-load.png");
   await pageA.screenshot({ path: shot1, fullPage: true });
   artifacts.push(shot1);
+
+  const widthsBefore = await pageA.evaluate(() => {
+    const files = document.querySelector(".panel-files")?.getBoundingClientRect().width ?? 0;
+    const editor = document.querySelector(".panel-editor")?.getBoundingClientRect().width ?? 0;
+    const preview = document.querySelector(".panel-preview")?.getBoundingClientRect().width ?? 0;
+    return { files, editor, preview };
+  });
+  if ((await pageA.locator(".panel-preview").count()) === 0) {
+    await pageA.getByRole("button", { name: "Toggle Preview Panel" }).click();
+  }
+  if ((await pageA.locator(".panel-files").count()) === 0) {
+    await pageA.getByRole("button", { name: "Toggle Files Panel" }).click();
+  }
+  const filesHandle = pageA.locator(".workspace-stage > .panel-resizer").first();
+  const splitHandle = pageA.locator(".center-split > .panel-resizer").first();
+  await dragHandleX(pageA, filesHandle, 64, "files resizer");
+  await dragHandleX(pageA, splitHandle, -96, "editor-preview resizer");
+  await wait(220);
+  const widthsAfterDrag = await pageA.evaluate(() => {
+    const files = document.querySelector(".panel-files")?.getBoundingClientRect().width ?? 0;
+    const editor = document.querySelector(".panel-editor")?.getBoundingClientRect().width ?? 0;
+    const preview = document.querySelector(".panel-preview")?.getBoundingClientRect().width ?? 0;
+    return { files, editor, preview };
+  });
+  if (widthsAfterDrag.files < widthsBefore.files + 28) {
+    throw new Error("files panel resize did not apply");
+  }
+  if (widthsAfterDrag.editor > widthsBefore.editor - 40) {
+    throw new Error("editor/preview split resize did not apply");
+  }
+
+  await pageA.reload({ waitUntil: "domcontentloaded", timeout: 60000 });
+  await pageA.getByRole("heading", { name: "Editor" }).waitFor({ timeout: 30000 });
+  const widthsAfterReload = await pageA.evaluate(() => {
+    const files = document.querySelector(".panel-files")?.getBoundingClientRect().width ?? 0;
+    const editor = document.querySelector(".panel-editor")?.getBoundingClientRect().width ?? 0;
+    return { files, editor };
+  });
+  if (Math.abs(widthsAfterReload.files - widthsAfterDrag.files) > 6) {
+    throw new Error("files panel width was not persisted");
+  }
 
   const beforeChecksum = await canvasChecksum(pageA);
   await pageA.locator(".cm-content").click();
@@ -361,6 +458,14 @@ try {
     .first()
     .waitFor({ state: "hidden", timeout: 10000 });
 
+  await pageA.locator(".tree-label", { hasText: "blob.bin" }).first().click();
+  await pageA.getByText("This file is not editable in web editor. Edit offline and sync with Git.").waitFor({
+    timeout: 10000
+  });
+  if ((await pageA.locator(".file-icon").count()) < 1) {
+    throw new Error("unknown file icon is not visible for unsupported file types");
+  }
+
   const archiveDownloadPromise = pageA.waitForEvent("download");
   await pageA.getByRole("button", { name: "Download Archive" }).click();
   const archiveDownload = await archiveDownloadPromise;
@@ -371,11 +476,23 @@ try {
     throw new Error("Archive download is unexpectedly small");
   }
 
-  await pageA.getByRole("button", { name: "Project Settings" }).click();
+  await pageA.getByRole("button", { name: "Toggle Project Settings Panel" }).click();
   await pageA.getByText("Git Access URL").waitFor({ timeout: 10000 });
-  await pageA.getByRole("button", { name: "Revisions" }).click();
+  await pageA.getByRole("button", { name: "Toggle Revision Panel" }).click();
   const historyCount = await pageA.locator(".history-item").count();
   if (historyCount < 1) throw new Error("No revisions available");
+  await pageA.locator(".history-item").first().click();
+  await pageA.waitForFunction(
+    () => (document.querySelector(".panel-status")?.textContent || "").includes("Mode: Revision"),
+    undefined,
+    { timeout: 10000 }
+  );
+  await pageA.getByRole("button", { name: "Toggle Revision Panel" }).click();
+  await pageA.waitForFunction(
+    () => (document.querySelector(".panel-status")?.textContent || "").includes("Mode: Live"),
+    undefined,
+    { timeout: 10000 }
+  );
 
   const shot2 = path.join(outDir, "02-realtime-and-fileops.png");
   await pageA.screenshot({ path: shot2, fullPage: true });

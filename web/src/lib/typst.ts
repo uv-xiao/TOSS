@@ -163,9 +163,12 @@ export async function renderTypstVectorToCanvas(container: HTMLElement, vectorDa
     const renderer = await getRenderer();
     if (version !== renderVersion) return;
     container.replaceChildren();
+    const pages = document.createElement("div");
+    pages.className = "pdf-pages";
+    container.appendChild(pages);
     await renderer.renderToCanvas({
       format: "vector",
-      container,
+      container: pages,
       artifactContent: vectorData,
       backgroundColor: "#ffffff",
       pixelPerPt: 2

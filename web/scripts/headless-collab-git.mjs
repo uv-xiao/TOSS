@@ -142,6 +142,22 @@ async function waitForEditorContains(page, snippet, timeoutMs = 10000) {
   throw new Error(`editor missing snippet: ${snippet}`);
 }
 
+async function waitForCollaboratorName(page, expected, timeoutMs = 10000) {
+  const start = Date.now();
+  const uuidPattern = /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i;
+  while (Date.now() - start < timeoutMs) {
+    const status = await page.locator(".panel-status").first().innerText();
+    if (status.includes(expected)) {
+      if (uuidPattern.test(status)) {
+        throw new Error(`collaborator status still shows UUID: ${status}`);
+      }
+      return;
+    }
+    await sleep(150);
+  }
+  throw new Error(`collaborator name did not appear in status: ${expected}`);
+}
+
 async function canvasChecksum(page) {
   return page.evaluate(() => {
     const canvas = document.querySelector(".pdf-frame canvas");
@@ -224,6 +240,7 @@ async function main() {
     await openWorkspace(pageB, projectId);
     await pageA.getByText("Mode: Live").first().waitFor({ timeout: 30000 });
     await pageB.getByText("Mode: Live").first().waitFor({ timeout: 30000 });
+    await waitForCollaboratorName(pageA, "Git Collaborator", 15000);
     await waitForCanvas(pageA, 45000);
     await sleep(1200);
     const beforeChecksum = await canvasChecksum(pageA);
