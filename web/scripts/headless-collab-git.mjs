@@ -161,25 +161,34 @@ async function waitForCollaboratorName(page, expected, timeoutMs = 10000) {
 async function canvasChecksum(page) {
   return page.evaluate(() => {
     const canvas = document.querySelector(".pdf-frame canvas");
-    if (!canvas) return 0;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return 0;
-    const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-    let sum = 0;
-    for (let i = 0; i < data.length; i += 2048) {
-      sum = (sum * 131 + data[i] + data[i + 1] + data[i + 2]) >>> 0;
+    if (canvas) {
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return 0;
+      const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      let sum = 0;
+      for (let i = 0; i < data.length; i += 2048) {
+        sum = (sum * 131 + data[i] + data[i + 1] + data[i + 2]) >>> 0;
+      }
+      return sum;
     }
-    return sum;
+    const pageNode = document.querySelector(".pdf-frame .typst-page");
+    if (!pageNode) return 0;
+    const raw = pageNode.outerHTML;
+    let hash = 0;
+    for (let i = 0; i < raw.length; i += 1) {
+      hash = (hash * 37 + raw.charCodeAt(i)) >>> 0;
+    }
+    return hash;
   });
 }
 
 async function waitForCanvas(page, timeoutMs = 45000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    if ((await page.locator(".pdf-frame canvas").count()) > 0) return;
+    if ((await page.locator(".pdf-frame canvas, .pdf-frame .typst-page").count()) > 0) return;
     await sleep(300);
   }
-  throw new Error("canvas preview not rendered");
+  throw new Error("preview page not rendered");
 }
 
 async function main() {

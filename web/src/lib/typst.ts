@@ -187,6 +187,20 @@ export async function renderTypstVectorToCanvas(container: HTMLElement, vectorDa
       backgroundColor: "#ffffff",
       pixelPerPt: 2
     });
+    for (const semanticLayer of Array.from(pages.querySelectorAll(".typst-html-semantics"))) {
+      semanticLayer.remove();
+    }
+    for (const page of Array.from(pages.querySelectorAll(".typst-page"))) {
+      const pageElement = page as HTMLElement;
+      pageElement.style.overflow = "hidden";
+      const styleWidth = Number.parseFloat(pageElement.style.width || "");
+      const styleHeight = Number.parseFloat(pageElement.style.height || "");
+      const rect = pageElement.getBoundingClientRect();
+      const baseWidth = Math.max(1, styleWidth || rect.width || pageElement.clientWidth || 1);
+      const baseHeight = Math.max(1, styleHeight || rect.height || pageElement.clientHeight || 1);
+      pageElement.dataset.baseWidth = `${baseWidth}`;
+      pageElement.dataset.baseHeight = `${baseHeight}`;
+    }
     for (const canvas of Array.from(pages.querySelectorAll("canvas"))) {
       const baseWidth = canvas.width > 0 ? canvas.width / 2 : canvas.clientWidth;
       const baseHeight = canvas.height > 0 ? canvas.height / 2 : canvas.clientHeight;

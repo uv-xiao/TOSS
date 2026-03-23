@@ -1,5 +1,16 @@
-import { startTransition, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
-import { Link, Navigate, Route, Routes, useNavigate, useParams } from "react-router-dom";
+import {
+  createContext,
+  startTransition,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent as ReactDragEvent,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode
+} from "react";
+import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 import * as Y from "yjs";
 import { EditorPane, type EditorChange } from "@/components/EditorPane";
 import { HistoryPanel } from "@/components/HistoryPanel";
@@ -89,6 +100,10 @@ const MAX_EDITOR_RATIO = 0.72;
 const PREVIEW_MIN_ZOOM = 0.2;
 const PREVIEW_MAX_ZOOM = 5;
 
+type PreviewFitMode = "manual" | "page" | "width";
+
+const WorkspaceTopbarContext = createContext<(content: ReactNode | null) => void>(() => undefined);
+
 function clampNumber(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
@@ -168,30 +183,57 @@ function inferContentType(path: string, contentType?: string) {
   return "application/octet-stream";
 }
 
-function deriveFitZoom(frame: HTMLElement, pages: HTMLElement) {
-  const firstCanvas = pages.querySelector("canvas") as HTMLCanvasElement | null;
-  if (!firstCanvas) return 1;
-  const baseWidth = Number(firstCanvas.dataset.baseWidth) || firstCanvas.width / 2 || firstCanvas.clientWidth || 1;
-  const baseHeight = Number(firstCanvas.dataset.baseHeight) || firstCanvas.height / 2 || firstCanvas.clientHeight || 1;
-  return clampNumber(
-    Math.min((frame.clientWidth - 20) / baseWidth, (frame.clientHeight - 20) / baseHeight),
-    PREVIEW_MIN_ZOOM,
-    PREVIEW_MAX_ZOOM
-  );
+function previewSurfaces(pages: HTMLElement): HTMLElement[] {
+  const canvases = Array.from(pages.querySelectorAll("canvas")) as HTMLElement[];
+  if (canvases.length > 0) return canvases;
+  return Array.from(pages.querySelectorAll(".typst-page")) as HTMLElement[];
+}
+
+function previewSurfaceBaseSize(node: HTMLElement) {
+  const storedWidth = Number(node.dataset.baseWidth);
+  const storedHeight = Number(node.dataset.baseHeight);
+  if (storedWidth > 0 && storedHeight > 0) return { width: storedWidth, height: storedHeight };
+  if (node instanceof HTMLCanvasElement) {
+    return {
+      width: Math.max(1, node.width / 2 || node.clientWidth || 1),
+      height: Math.max(1, node.height / 2 || node.clientHeight || 1)
+    };
+  }
+  const styleWidth = Number.parseFloat(node.style.width || "");
+  const styleHeight = Number.parseFloat(node.style.height || "");
+  const rect = node.getBoundingClientRect();
+  return {
+    width: Math.max(1, styleWidth || rect.width || node.clientWidth || 1),
+    height: Math.max(1, styleHeight || rect.height || node.clientHeight || 1)
+  };
+}
+
+function deriveFitZoom(frame: HTMLElement, pages: HTMLElement, mode: Exclude<PreviewFitMode, "manual">) {
+  const surfaces = previewSurfaces(pages);
+  if (surfaces.length === 0) return 1;
+  const firstSurface = surfaces[0];
+  const size = previewSurfaceBaseSize(firstSurface);
+  const baseWidth = size.width;
+  const baseHeight = size.height;
+  const widthZoom = (frame.clientWidth - 20) / baseWidth;
+  const fullPageZoom = Math.min(widthZoom, (frame.clientHeight - 20) / baseHeight);
+  return clampNumber(mode === "width" ? widthZoom : fullPageZoom, PREVIEW_MIN_ZOOM, PREVIEW_MAX_ZOOM);
 }
 
 function applyPreviewZoom(frame: HTMLElement, zoom: number) {
   const pages = frame.querySelector(".pdf-pages") as HTMLElement | null;
   if (!pages) return;
-  const canvases = Array.from(pages.querySelectorAll("canvas"));
+  const surfaces = previewSurfaces(pages);
+  if (surfaces.length === 0) return;
   let widest = 0;
-  for (const canvas of canvases) {
-    const baseWidth = Number(canvas.dataset.baseWidth) || canvas.width / 2 || canvas.clientWidth || 1;
-    const baseHeight = Number(canvas.dataset.baseHeight) || canvas.height / 2 || canvas.clientHeight || 1;
+  for (const surface of surfaces) {
+    const size = previewSurfaceBaseSize(surface);
+    const baseWidth = size.width;
+    const baseHeight = size.height;
     const nextWidth = Math.max(1, Math.round(baseWidth * zoom));
     const nextHeight = Math.max(1, Math.round(baseHeight * zoom));
-    canvas.style.width = `${nextWidth}px`;
-    canvas.style.height = `${nextHeight}px`;
+    surface.style.width = `${nextWidth}px`;
+    surface.style.height = `${nextHeight}px`;
     widest = Math.max(widest, nextWidth);
   }
   pages.style.width = `${Math.max(widest, 1)}px`;
@@ -270,11 +312,14 @@ function projectTreeFromFlat(nodes: { path: string; kind: "file" | "directory" }
 }
 
 export function App() {
+  const location = useLocation();
   const [authLoading, setAuthLoading] = useState(true);
   const [authConfig, setAuthConfig] = useState<AuthConfig | null>(null);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [workspaceTopbar, setWorkspaceTopbar] = useState<ReactNode | null>(null);
+  const onWorkspaceRoute = location.pathname.startsWith("/project/");
 
   useEffect(() => {
     Promise.all([getAuthConfig(), getAuthMe()])
@@ -304,6 +349,12 @@ export function App() {
         setError("Unable to load projects");
       });
   }, [authUser?.user_id]);
+
+  useEffect(() => {
+    if (!onWorkspaceRoute && workspaceTopbar) {
+      setWorkspaceTopbar(null);
+    }
+  }, [onWorkspaceRoute, workspaceTopbar]);
 
   const firstProject = projects[0]?.id;
 
@@ -336,11 +387,15 @@ export function App() {
 
   return (
     <main className="app-shell">
-      <header className="topbar">
-        <strong>Typst Collaboration</strong>
-        <Link className="tab" to="/projects">
-          Back to projects
-        </Link>
+      <header className={`topbar ${onWorkspaceRoute ? "workspace" : ""}`}>
+        {onWorkspaceRoute ? (
+          <Link className="tab" to="/projects">
+            Back to projects
+          </Link>
+        ) : (
+          <strong className="topbar-brand">Typst Collaboration</strong>
+        )}
+        <div className="topbar-workspace-slot">{onWorkspaceRoute ? workspaceTopbar : null}</div>
         <div className="meta">
           <span>{authUser.display_name}</span>
           <button className="button" onClick={handleLogout}>
@@ -350,16 +405,18 @@ export function App() {
       </header>
       {error && <div className="error-banner">{error}</div>}
       <section className="app-content">
-        <Routes>
-          <Route path="/" element={<Navigate to={firstProject ? `/project/${firstProject}` : "/projects"} replace />} />
-          <Route
-            path="/projects"
-            element={<ProjectsPage projects={projects} refreshProjects={refreshProjects} />}
-          />
-          <Route path="/project/:projectId" element={<WorkspacePage projects={projects} authUser={authUser} />} />
-          <Route path="/admin" element={<AdminPage />} />
-          <Route path="/profile" element={<ProfilePage />} />
-        </Routes>
+        <WorkspaceTopbarContext.Provider value={setWorkspaceTopbar}>
+          <Routes>
+            <Route path="/" element={<Navigate to={firstProject ? `/project/${firstProject}` : "/projects"} replace />} />
+            <Route
+              path="/projects"
+              element={<ProjectsPage projects={projects} refreshProjects={refreshProjects} />}
+            />
+            <Route path="/project/:projectId" element={<WorkspacePage projects={projects} authUser={authUser} />} />
+            <Route path="/admin" element={<AdminPage />} />
+            <Route path="/profile" element={<ProfilePage />} />
+          </Routes>
+        </WorkspaceTopbarContext.Provider>
       </section>
     </main>
   );
@@ -501,6 +558,7 @@ function ProjectsPage({
 }
 
 function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: AuthUser }) {
+  const setWorkspaceTopbar = useContext(WorkspaceTopbarContext);
   const { projectId = "" } = useParams();
   const navigate = useNavigate();
   const effectiveUserId = authUser.user_id;
@@ -541,13 +599,14 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
   const [revisionsPanelWidth, setRevisionsPanelWidth] = useState(DEFAULT_LAYOUT_PREFS.revisionsWidth);
   const [editorRatio, setEditorRatio] = useState(DEFAULT_LAYOUT_PREFS.editorRatio);
   const [previewZoom, setPreviewZoom] = useState(1);
-  const [previewFitLocked, setPreviewFitLocked] = useState(true);
+  const [previewFitMode, setPreviewFitMode] = useState<PreviewFitMode>("page");
   const [previewRenderTick, setPreviewRenderTick] = useState(0);
   const [lineWrapEnabled, setLineWrapEnabled] = useState(true);
   const [jumpTarget, setJumpTarget] = useState<{ line: number; column: number; token: number } | null>(null);
   const [queuedJump, setQueuedJump] = useState<{ path: string; line: number; column: number } | null>(null);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set([""]));
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [filesDropActive, setFilesDropActive] = useState(false);
   const [bundledFonts, setBundledFonts] = useState<Uint8Array[]>([]);
 
   const tree = useMemo(() => projectTreeFromFlat(nodes), [nodes]);
@@ -915,9 +974,9 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
         if (cancelled) return;
         const pages = frame.querySelector(".pdf-pages") as HTMLElement | null;
         if (pages) {
-          const zoom = previewFitLocked ? deriveFitZoom(frame, pages) : previewZoom;
+          const zoom = previewFitMode === "manual" ? previewZoom : deriveFitZoom(frame, pages, previewFitMode);
           applyPreviewZoom(frame, zoom);
-          if (previewFitLocked && Math.abs(zoom - previewZoom) > 0.01) {
+          if (previewFitMode !== "manual" && Math.abs(zoom - previewZoom) > 0.01) {
             setPreviewZoom(zoom);
           }
         }
@@ -942,14 +1001,14 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
     if (!frame) return;
     const pages = frame.querySelector(".pdf-pages") as HTMLElement | null;
     if (!pages) return;
-    const zoom = previewFitLocked ? deriveFitZoom(frame, pages) : previewZoom;
+    const zoom = previewFitMode === "manual" ? previewZoom : deriveFitZoom(frame, pages, previewFitMode);
     applyPreviewZoom(frame, zoom);
-    if (previewFitLocked && Math.abs(zoom - previewZoom) > 0.01) {
+    if (previewFitMode !== "manual" && Math.abs(zoom - previewZoom) > 0.01) {
       setPreviewZoom(zoom);
     }
   }, [
     editorRatio,
-    previewFitLocked,
+    previewFitMode,
     previewRenderTick,
     previewZoom,
     showFilesPanel,
@@ -964,14 +1023,14 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
     if (!frame) return;
     const observer = new ResizeObserver(() => {
       const pages = frame.querySelector(".pdf-pages") as HTMLElement | null;
-      if (!pages || !previewFitLocked) return;
-      const zoom = deriveFitZoom(frame, pages);
+      if (!pages || previewFitMode === "manual") return;
+      const zoom = deriveFitZoom(frame, pages, previewFitMode);
       applyPreviewZoom(frame, zoom);
       setPreviewZoom(zoom);
     });
     observer.observe(frame);
     return () => observer.disconnect();
-  }, [previewFitLocked, showPreviewPanel]);
+  }, [previewFitMode, showPreviewPanel]);
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -1071,55 +1130,118 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
     }
   }
 
-  async function uploadFiles(parentPath = "", options?: { directory?: boolean }) {
-    if (!projectId) return;
-    const directoryMode = !!options?.directory;
+  type UploadCandidate = {
+    relativePath: string;
+    file: File;
+  };
+
+  async function commitUploads(items: UploadCandidate[], parentPath = "") {
+    if (!projectId || items.length === 0) return;
+    try {
+      setContextMenu(null);
+      for (const item of items) {
+        const path = normalizePath(joinProjectPath(parentPath, item.relativePath || item.file.name));
+        const bytes = new Uint8Array(await item.file.arrayBuffer());
+        if (isTextFile(path) || item.file.type.startsWith("text/")) {
+          const text = new TextDecoder().decode(bytes);
+          await upsertDocumentByPath(projectId, path, text);
+          setDocs((prev) => ({ ...prev, [path]: text }));
+        } else {
+          const binary = Array.from(bytes, (value) => String.fromCharCode(value)).join("");
+          await uploadProjectAsset(projectId, {
+            path,
+            content_base64: btoa(binary),
+            content_type: item.file.type || "application/octet-stream"
+          });
+        }
+      }
+      await refreshProjectData();
+      setWorkspaceError(null);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to upload";
+      setWorkspaceError(message);
+    }
+  }
+
+  function uploadFromPicker(parentPath = "") {
     const picker = document.createElement("input");
     picker.type = "file";
     picker.multiple = true;
-    if (directoryMode) {
-      const input = picker as HTMLInputElement & { webkitdirectory?: boolean };
-      input.webkitdirectory = true;
-    }
     picker.onchange = async () => {
-      const files = Array.from(picker.files || []);
-      try {
-        setContextMenu(null);
-        for (const file of files) {
-          const relative = directoryMode
-            ? (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name
-            : file.name;
-          const defaultPath = joinProjectPath(parentPath, relative);
-          const target = directoryMode
-            ? defaultPath
-            : window.prompt(`Target path for ${file.name}`, defaultPath);
-          if (!target) continue;
-          let path = normalizePath(target);
-          if (parentPath && !path.includes("/")) {
-            path = joinProjectPath(parentPath, path);
-          }
-          const bytes = new Uint8Array(await file.arrayBuffer());
-          if (isTextFile(path) || file.type.startsWith("text/")) {
-            const text = new TextDecoder().decode(bytes);
-            await upsertDocumentByPath(projectId, path, text);
-            setDocs((prev) => ({ ...prev, [path]: text }));
-          } else {
-            const binary = Array.from(bytes, (value) => String.fromCharCode(value)).join("");
-            await uploadProjectAsset(projectId, {
-              path,
-              content_base64: btoa(binary),
-              content_type: file.type || "application/octet-stream"
-            });
-          }
-        }
-        await refreshProjectData();
-        setWorkspaceError(null);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : "Unable to upload files";
-        setWorkspaceError(message);
-      }
+      const files = Array.from(picker.files || []).map((file) => ({
+        relativePath: file.name,
+        file
+      }));
+      await commitUploads(files, parentPath);
     };
     picker.click();
+  }
+
+  async function collectDragFiles(dataTransfer: DataTransfer): Promise<UploadCandidate[]> {
+    const output: UploadCandidate[] = [];
+    const pending: Array<Promise<void>> = [];
+    const itemList = Array.from(dataTransfer.items || []);
+
+    const walkEntry = async (entry: any, prefix: string) => {
+      if (!entry) return;
+      if (entry.isFile) {
+        await new Promise<void>((resolve) => {
+          entry.file(
+            (file: File) => {
+              const relativePath = prefix ? `${prefix}/${file.name}` : file.name;
+              output.push({ relativePath, file });
+              resolve();
+            },
+            () => resolve()
+          );
+        });
+        return;
+      }
+      if (!entry.isDirectory) return;
+      const currentPrefix = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const reader = entry.createReader();
+      const readAll = async (): Promise<any[]> => {
+        const all: any[] = [];
+        while (true) {
+          const batch = await new Promise<any[]>((resolve) => reader.readEntries(resolve, () => resolve([])));
+          if (!batch.length) break;
+          all.push(...batch);
+        }
+        return all;
+      };
+      const entries = await readAll();
+      for (const child of entries) {
+        await walkEntry(child, currentPrefix);
+      }
+    };
+
+    for (const item of itemList) {
+      const entry = (item as any).webkitGetAsEntry?.();
+      if (entry) {
+        pending.push(walkEntry(entry, ""));
+      } else {
+        const file = item.getAsFile();
+        if (!file) continue;
+        const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+        output.push({ relativePath, file });
+      }
+    }
+    if (pending.length > 0) {
+      await Promise.all(pending);
+      return output;
+    }
+    for (const file of Array.from(dataTransfer.files || [])) {
+      const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+      output.push({ relativePath, file });
+    }
+    return output;
+  }
+
+  async function onTreeDrop(event: ReactDragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    setFilesDropActive(false);
+    const items = await collectDragFiles(event.dataTransfer);
+    await commitUploads(items, "");
   }
 
   async function downloadArchive() {
@@ -1216,12 +1338,12 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
   }
 
   function increasePreviewZoom() {
-    setPreviewFitLocked(false);
+    setPreviewFitMode("manual");
     setPreviewZoom((value) => clampNumber(value + 0.1, PREVIEW_MIN_ZOOM, PREVIEW_MAX_ZOOM));
   }
 
   function decreasePreviewZoom() {
-    setPreviewFitLocked(false);
+    setPreviewFitMode("manual");
     setPreviewZoom((value) => clampNumber(value - 0.1, PREVIEW_MIN_ZOOM, PREVIEW_MAX_ZOOM));
   }
 
@@ -1235,20 +1357,18 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
     });
   }
 
-  function togglePreviewFit() {
-    setPreviewFitLocked((locked) => !locked);
+  function setPreviewFitWholePage() {
+    setPreviewFitMode("page");
   }
 
-  if (!projectId) return <Navigate to="/projects" replace />;
-  if (!project && projects.length > 0) {
-    return <Navigate to={`/project/${projects[0].id}`} replace />;
+  function setPreviewFitPageWidth() {
+    setPreviewFitMode("width");
   }
 
-  return (
-    <section className="workspace-shell">
-      <div className="workspace-headbar">
-        <label className="workspace-project-picker">
-          <span>Project</span>
+  const workspaceTopbarControls = useMemo(
+    () => (
+      <div className="workspace-topbar-controls">
+        <label className="workspace-project-picker workspace-topbar-project" aria-label="Project">
           <select value={projectId} onChange={(e) => navigate(`/project/${e.target.value}`)}>
             {projects.map((item) => (
               <option value={item.id} key={item.id}>
@@ -1296,7 +1416,30 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
           </button>
         </div>
       </div>
+    ),
+    [
+      navigate,
+      projectId,
+      projects,
+      showFilesPanel,
+      showPreviewPanel,
+      showProjectSettingsPanel,
+      showRevisionPanel
+    ]
+  );
 
+  useEffect(() => {
+    setWorkspaceTopbar(workspaceTopbarControls);
+    return () => setWorkspaceTopbar(null);
+  }, [setWorkspaceTopbar, workspaceTopbarControls]);
+
+  if (!projectId) return <Navigate to="/projects" replace />;
+  if (!project && projects.length > 0) {
+    return <Navigate to={`/project/${projects[0].id}`} replace />;
+  }
+
+  return (
+    <section className="workspace-shell">
       <section className="workspace-stage">
         {showFilesPanel && (
           <>
@@ -1304,7 +1447,21 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
               <div className="panel-header">
                 <h2>Files</h2>
               </div>
-              <div className="panel-content">
+              <div
+                className={`panel-content ${filesDropActive ? "drop-active" : ""}`}
+                onDragOver={(event) => {
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = "copy";
+                  setFilesDropActive(true);
+                }}
+                onDragLeave={(event) => {
+                  const nextTarget = event.relatedTarget as Node | null;
+                  if (!(event.currentTarget as HTMLElement).contains(nextTarget)) {
+                    setFilesDropActive(false);
+                  }
+                }}
+                onDrop={onTreeDrop}
+              >
                 <div className="toolbar compact-left">
                   <button className="button" onClick={() => addPath("file")}>
                     New File
@@ -1312,11 +1469,8 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
                   <button className="button" onClick={() => addPath("directory")}>
                     New Folder
                   </button>
-                  <button className="button" onClick={() => uploadFiles()}>
-                    Upload Files
-                  </button>
-                  <button className="button" onClick={() => uploadFiles("", { directory: true })}>
-                    Upload Folder
+                  <button className="button" onClick={() => uploadFromPicker()}>
+                    Upload
                   </button>
                 </div>
                 <div className="tree">
@@ -1426,12 +1580,20 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
                 <h2>Preview</h2>
                 <div className="toolbar compact">
                   <button
-                    className={`icon-button ${previewFitLocked ? "filled" : ""}`}
-                    title="Toggle Fit To View"
-                    aria-label="Toggle Fit To View"
-                    onClick={togglePreviewFit}
+                    className={`icon-button ${previewFitMode === "page" ? "filled" : ""}`}
+                    title="Fit Whole Page"
+                    aria-label="Fit Whole Page"
+                    onClick={setPreviewFitWholePage}
                   >
                     ⤢
+                  </button>
+                  <button
+                    className={`icon-button ${previewFitMode === "width" ? "filled" : ""}`}
+                    title="Fit Page Width"
+                    aria-label="Fit Page Width"
+                    onClick={setPreviewFitPageWidth}
+                  >
+                    ↔
                   </button>
                   <button
                     className="icon-button"
@@ -1599,13 +1761,8 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
             </button>
           )}
           {contextMenu.kind === "directory" && (
-            <button className="mini" onClick={() => uploadFiles(contextMenu.path)}>
-              Upload Files
-            </button>
-          )}
-          {contextMenu.kind === "directory" && (
-            <button className="mini" onClick={() => uploadFiles(contextMenu.path, { directory: true })}>
-              Upload Folder
+            <button className="mini" onClick={() => uploadFromPicker(contextMenu.path)}>
+              Upload
             </button>
           )}
           <button className="mini" onClick={() => renamePath(contextMenu.path)}>
@@ -1633,33 +1790,54 @@ function UnsupportedFilePane({
   isPdf: boolean;
   dataUrl: string;
 }) {
+  const downloadName = path.split("/").filter(Boolean).pop() || path;
+
   if (!hasData) {
     return (
       <div className="file-preview empty">
         <div className="file-icon" aria-hidden />
-        <div>{path}</div>
+        <div className="file-preview-name">{path}</div>
         <small>File content is loading.</small>
       </div>
     );
   }
   if (isImage) {
     return (
-      <div className="file-preview">
-        <img src={dataUrl} alt={path} className="file-preview-image" />
+      <div className="file-preview file-preview-asset">
+        <div className="file-preview-media">
+          <img src={dataUrl} alt={path} className="file-preview-image" />
+        </div>
+        <div className="file-preview-meta">
+          <div className="file-preview-name">{path}</div>
+          <a className="button button-small" href={dataUrl} download={downloadName}>
+            Download
+          </a>
+        </div>
       </div>
     );
   }
   if (isPdf) {
     return (
-      <div className="file-preview">
-        <iframe title={path} src={dataUrl} className="file-preview-pdf" />
+      <div className="file-preview file-preview-asset">
+        <div className="file-preview-media">
+          <iframe title={path} src={dataUrl} className="file-preview-pdf" />
+        </div>
+        <div className="file-preview-meta">
+          <div className="file-preview-name">{path}</div>
+          <a className="button button-small" href={dataUrl} download={downloadName}>
+            Download
+          </a>
+        </div>
       </div>
     );
   }
   return (
     <div className="file-preview empty">
       <div className="file-icon" aria-hidden />
-      <div>{path}</div>
+      <div className="file-preview-name">{path}</div>
+      <a className="button button-small" href={dataUrl} download={downloadName}>
+        Download
+      </a>
     </div>
   );
 }

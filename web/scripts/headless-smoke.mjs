@@ -14,7 +14,6 @@ const collaboratorEmail = `collab-${runId}@example.com`;
 const collaboratorPassword = "Collab1234!";
 const contextCreatedPath = `chapters/from-context-${runId}.typ`;
 const contextRenamedPath = `chapters/renamed-${runId}.typ`;
-const uploadPath = `uploads/ui-upload-${runId}.typ`;
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const fontPath =
   process.env.FONT_FILE_PATH ??
@@ -111,26 +110,35 @@ async function openWorkspace(page, projectId) {
 async function canvasChecksum(page) {
   return page.evaluate(() => {
     const canvas = document.querySelector(".pdf-frame canvas");
-    if (!canvas) return 0;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return 0;
-    const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-    let sum = 0;
-    for (let i = 0; i < data.length; i += 2048) {
-      sum = (sum * 31 + data[i] + data[i + 1] + data[i + 2]) >>> 0;
+    if (canvas) {
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return 0;
+      const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      let sum = 0;
+      for (let i = 0; i < data.length; i += 2048) {
+        sum = (sum * 31 + data[i] + data[i + 1] + data[i + 2]) >>> 0;
+      }
+      return sum;
     }
-    return sum;
+    const pageNode = document.querySelector(".pdf-frame .typst-page");
+    if (!pageNode) return 0;
+    const raw = pageNode.outerHTML;
+    let hash = 0;
+    for (let i = 0; i < raw.length; i += 1) {
+      hash = (hash * 33 + raw.charCodeAt(i)) >>> 0;
+    }
+    return hash;
   });
 }
 
 async function waitForCanvas(page, timeoutMs = 60000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    if ((await page.locator(".pdf-frame canvas").count()) > 0) return;
+    if ((await page.locator(".pdf-frame canvas, .pdf-frame .typst-page").count()) > 0) return;
     await wait(300);
   }
   const errors = await page.locator(".error").allInnerTexts();
-  throw new Error(`Canvas not rendered. Errors: ${errors.join(" | ")}`);
+  throw new Error(`Preview not rendered. Errors: ${errors.join(" | ")}`);
 }
 
 async function assertWorkspaceLayout(page) {
@@ -432,29 +440,25 @@ try {
     .waitFor({ timeout: 10000 });
 
   const fileChooserPromise = pageA.waitForEvent("filechooser");
-  await pageA.getByRole("button", { name: "Upload Files" }).click();
+  await pageA.getByRole("button", { name: "Upload" }).first().click();
   const chooser = await fileChooserPromise;
-  pageA.once("dialog", async (dialog) => {
-    if (dialog.type() !== "prompt") throw new Error(`Expected prompt, got ${dialog.type()}`);
-    await dialog.accept(uploadPath);
-  });
   await chooser.setFiles(tempUploadFile);
-  await ensureDirectoryExpanded(pageA, "uploads");
+  const uploadedFileName = path.basename(tempUploadFile);
   await pageA
-    .locator(".tree-label", { hasText: path.basename(uploadPath) })
+    .locator(".tree-label", { hasText: uploadedFileName })
     .first()
     .waitFor({ timeout: 10000 });
-  await pageA.locator(".tree-label", { hasText: path.basename(uploadPath) }).first().click();
+  await pageA.locator(".tree-label", { hasText: uploadedFileName }).first().click();
   await pageA.getByText("Uploaded From UI").waitFor({ timeout: 10000 });
 
-  await openContextMenu(pageA, path.basename(uploadPath));
+  await openContextMenu(pageA, uploadedFileName);
   await acceptConfirm(
     pageA,
     () =>
       pageA.locator(".context-menu-floating .mini", { hasText: "Delete" }).first().click()
   );
   await pageA
-    .locator(".tree-label", { hasText: path.basename(uploadPath) })
+    .locator(".tree-label", { hasText: uploadedFileName })
     .first()
     .waitFor({ state: "hidden", timeout: 10000 });
 
