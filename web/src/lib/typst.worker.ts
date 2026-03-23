@@ -119,7 +119,7 @@ function base64ToUint8(value: string): Uint8Array {
 async function fetchArrayBufferWithContext(url: string, label: string) {
   let response: Response;
   try {
-    response = await fetch(url);
+    response = await fetch(url, { cache: "force-cache" });
   } catch (err) {
     const message = err instanceof Error ? err.message : "unknown";
     throw new Error(`${label} fetch failed at ${url}: ${message}`);

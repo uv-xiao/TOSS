@@ -46,7 +46,9 @@ pub async fn typst_package_proxy(Path(path): Path<String>) -> impl IntoResponse 
                 )
                     .into_response()
             }
-            Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "cache read failed").into_response(),
+            Err(_) => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, "cache read failed").into_response()
+            }
         }
     }
 

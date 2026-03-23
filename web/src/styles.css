@@ -135,6 +135,121 @@ body {
   padding: 14px;
 }
 
+.projects-page {
+  display: grid;
+  gap: 10px;
+}
+
+.projects-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.projects-title-row h2 {
+  margin: 0;
+}
+
+.projects-create-bar {
+  display: grid;
+  gap: 10px;
+}
+
+.projects-create-controls {
+  display: grid;
+  grid-template-columns: minmax(220px, 420px) max-content;
+  gap: 8px;
+}
+
+.projects-create-controls .button {
+  justify-self: start;
+}
+
+.projects-controls {
+  display: grid;
+  gap: 8px;
+}
+
+.projects-table-shell {
+  padding: 0;
+  overflow: hidden;
+}
+
+.projects-table-scroll {
+  width: 100%;
+  overflow: auto;
+}
+
+.projects-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 680px;
+}
+
+.projects-table th,
+.projects-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.projects-table thead th {
+  background: #f2f7fc;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.projects-table tbody tr:hover {
+  background: #f8fbff;
+}
+
+.projects-table th.align-right,
+.projects-table td.align-right {
+  text-align: right;
+}
+
+.projects-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.project-title-link {
+  color: var(--text);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.project-title-link:hover {
+  color: var(--accent);
+}
+
+.projects-empty {
+  text-align: center !important;
+  color: var(--muted);
+}
+
+.projects-org-memberships {
+  display: grid;
+  gap: 8px;
+}
+
+.projects-org-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.org-pill {
+  border: 1px solid var(--border);
+  background: #f8fbff;
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
 .card-list {
   display: grid;
   gap: 10px;
@@ -935,6 +1050,10 @@ label {
 }
 
 @media (max-width: 1100px) {
+  .projects-create-controls {
+    grid-template-columns: 1fr;
+  }
+
   .workspace-shell {
     padding: 6px;
   }

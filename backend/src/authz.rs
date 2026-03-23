@@ -47,11 +47,13 @@ fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
 }
 
 pub async fn session_user_id(db: &PgPool, token: &str) -> Option<Uuid> {
-    let row = sqlx::query("select user_id from auth_sessions where session_token = $1 and expires_at > now()")
-        .bind(token)
-        .fetch_optional(db)
-        .await
-        .ok()??;
+    let row = sqlx::query(
+        "select user_id from auth_sessions where session_token = $1 and expires_at > now()",
+    )
+    .bind(token)
+    .fetch_optional(db)
+    .await
+    .ok()??;
     Some(row.get("user_id"))
 }
 
@@ -109,7 +111,10 @@ pub async fn ensure_project_role_for_user(
                 ProjectRole::Owner | ProjectRole::Teacher | ProjectRole::TA | ProjectRole::Student
             ),
             AccessNeed::Manage => matches!(role, ProjectRole::Owner | ProjectRole::Teacher),
-            AccessNeed::GitSync => matches!(role, ProjectRole::Owner | ProjectRole::Teacher | ProjectRole::TA),
+            AccessNeed::GitSync => matches!(
+                role,
+                ProjectRole::Owner | ProjectRole::Teacher | ProjectRole::TA
+            ),
         };
         return if allowed {
             Ok(())
@@ -145,7 +150,11 @@ pub async fn ensure_project_role_for_user(
         AccessNeed::Manage => false,
         AccessNeed::GitSync => false,
     };
-    if allowed { Ok(()) } else { Err(StatusCode::FORBIDDEN) }
+    if allowed {
+        Ok(())
+    } else {
+        Err(StatusCode::FORBIDDEN)
+    }
 }
 
 pub async fn authenticated_user_id(

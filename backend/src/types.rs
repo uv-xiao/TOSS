@@ -85,11 +85,14 @@ pub struct HealthResponse {
 #[derive(Serialize)]
 pub struct Project {
     pub id: Uuid,
-    pub organization_id: Uuid,
     pub name: String,
-    pub description: Option<String>,
+    pub owner_user_id: Option<Uuid>,
+    pub owner_display_name: String,
     pub my_role: String,
     pub created_at: DateTime<Utc>,
+    pub last_edited_at: DateTime<Utc>,
+    pub archived: bool,
+    pub archived_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Serialize)]
@@ -112,9 +115,18 @@ pub struct OrganizationMembershipListResponse {
 
 #[derive(Deserialize)]
 pub struct CreateProjectInput {
-    pub organization_id: Option<Uuid>,
     pub name: String,
-    pub description: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct ListProjectsQuery {
+    pub include_archived: Option<bool>,
+    pub q: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct UpdateProjectArchivedInput {
+    pub archived: bool,
 }
 
 #[derive(Serialize)]

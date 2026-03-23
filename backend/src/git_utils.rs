@@ -21,8 +21,14 @@ pub fn ensure_git_repo_initialized(repo_path: &str, default_branch: &str) -> Res
     if !git_dir.exists() {
         run_git(repo_path, &["init", "-b", default_branch])?;
     }
-    run_git(repo_path, &["config", "receive.denyNonFastForwards", "true"])?;
-    run_git(repo_path, &["config", "receive.denyCurrentBranch", "updateInstead"])?;
+    run_git(
+        repo_path,
+        &["config", "receive.denyNonFastForwards", "true"],
+    )?;
+    run_git(
+        repo_path,
+        &["config", "receive.denyCurrentBranch", "updateInstead"],
+    )?;
     run_git(repo_path, &["config", "http.receivepack", "true"])?;
     Ok(())
 }
@@ -30,7 +36,11 @@ pub fn ensure_git_repo_initialized(repo_path: &str, default_branch: &str) -> Res
 pub fn ensure_git_branch_checked_out(repo_path: &str, default_branch: &str) -> Result<(), String> {
     let has_branch = run_git(
         repo_path,
-        &["show-ref", "--verify", &format!("refs/heads/{}", default_branch)],
+        &[
+            "show-ref",
+            "--verify",
+            &format!("refs/heads/{}", default_branch),
+        ],
     )
     .is_ok();
     if !has_branch {
@@ -95,10 +105,12 @@ pub fn sanitize_repo_relative_path(repo_path: &str, relative: &str) -> Result<Pa
     if rel_path.is_absolute() {
         return Err("document path cannot be absolute".to_string());
     }
-    if rel_path
-        .components()
-        .any(|c| matches!(c, Component::ParentDir | Component::RootDir | Component::Prefix(_)))
-    {
+    if rel_path.components().any(|c| {
+        matches!(
+            c,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
         return Err("document path contains invalid traversal".to_string());
     }
     Ok(PathBuf::from(repo_path).join(rel_path))

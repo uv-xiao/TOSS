@@ -56,6 +56,7 @@ import {
   oidcLoginUrl,
   revokeProjectShareLink,
   revokePersonalAccessToken,
+  setProjectArchived,
   type AdminAuthSettings,
   type AuthConfig,
   type AuthUser,
@@ -77,6 +78,7 @@ import {
   uploadProjectAsset
 } from "@/lib/api";
 import { readStoredLocale, translate, type UiLocale } from "@/lib/i18n";
+import { loadProjectSnapshotFromCache, saveProjectSnapshotToCache } from "@/lib/projectCache";
 
 type ProjectTreeNodeView = {
   name: string;
@@ -172,6 +174,48 @@ function parentProjectPath(path: string) {
   const idx = clean.lastIndexOf("/");
   if (idx < 0) return "";
   return clean.slice(0, idx);
+}
+
+function formatRelativeTime(iso: string) {
+  const at = Date.parse(iso);
+  if (!Number.isFinite(at)) return iso;
+  const diffMs = Date.now() - at;
+  const abs = Math.abs(diffMs);
+  const minute = 60_000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  const week = 7 * day;
+  const month = 30 * day;
+  const year = 365 * day;
+  const rawValue =
+    abs < hour
+      ? Math.round(abs / minute)
+      : abs < day
+        ? Math.round(abs / hour)
+        : abs < week
+          ? Math.round(abs / day)
+          : abs < month
+            ? Math.round(abs / week)
+            : abs < year
+              ? Math.round(abs / month)
+              : Math.round(abs / year);
+  const value = Math.max(1, rawValue);
+  const unit =
+    abs < hour
+      ? "minute"
+      : abs < day
+        ? "hour"
+        : abs < week
+          ? "day"
+          : abs < month
+            ? "week"
+            : abs < year
+              ? "month"
+              : "year";
+  const formatter = new Intl.RelativeTimeFormat(readStoredLocale() === "zh-CN" ? "zh-CN" : "en", {
+    numeric: "auto"
+  });
+  return formatter.format(diffMs >= 0 ? -value : value, unit as Intl.RelativeTimeFormatUnit);
 }
 
 function isTextFile(path: string) {
@@ -399,7 +443,7 @@ export function App() {
       setOrganizations([]);
       return;
     }
-    Promise.all([listProjects(), listMyOrganizations()])
+    Promise.all([listProjects({ includeArchived: true }), listMyOrganizations()])
       .then(([res, orgs]) => {
         setProjects(res.projects);
         setOrganizations(orgs.organizations);
@@ -418,7 +462,7 @@ export function App() {
     }
   }, [onWorkspaceRoute, workspaceTopbar]);
 
-  const firstProject = projects[0]?.id;
+  const firstProject = projects.find((project) => !project.archived)?.id ?? projects[0]?.id;
   const siteName = authConfig?.site_name?.trim() || t("brand.name");
 
   async function handleLogout() {
@@ -430,7 +474,7 @@ export function App() {
 
   async function refreshProjects() {
     if (!authUser) return;
-    const [next, orgs] = await Promise.all([listProjects(), listMyOrganizations()]);
+    const [next, orgs] = await Promise.all([listProjects({ includeArchived: true }), listMyOrganizations()]);
     setProjects(next.projects);
     setOrganizations(orgs.organizations);
   }
@@ -473,6 +517,16 @@ export function App() {
         )}
         <div className="topbar-workspace-slot">{onWorkspaceRoute ? workspaceTopbar : null}</div>
         <div className="meta">
+          {!onWorkspaceRoute && (
+            <>
+              <Link className="tab" to="/profile">
+                {t("nav.profile")}
+              </Link>
+              <Link className="tab" to="/admin">
+                {t("nav.admin")}
+              </Link>
+            </>
+          )}
           <span>{authUser.display_name}</span>
           <button className="button" onClick={handleLogout}>
             {t("nav.logout")}
@@ -610,84 +664,148 @@ function ProjectsPage({
   t: (key: string) => string;
 }) {
   const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [organizationId, setOrganizationId] = useState<string>("");
+  const [search, setSearch] = useState("");
+  const [view, setView] = useState<"active" | "archived">("active");
+  const [busyProjectId, setBusyProjectId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    if (!organizationId && organizations.length > 0) {
-      setOrganizationId(organizations[0].organization_id);
-    }
-  }, [organizationId, organizations]);
+  const filteredProjects = useMemo(() => {
+    const keyword = search.trim().toLowerCase();
+    return projects
+      .filter((project) => (view === "archived" ? project.archived : !project.archived))
+      .filter((project) => {
+        if (!keyword) return true;
+        return (
+          project.name.toLowerCase().includes(keyword) ||
+          project.owner_display_name.toLowerCase().includes(keyword)
+        );
+      })
+      .sort((a, b) => Date.parse(b.last_edited_at) - Date.parse(a.last_edited_at));
+  }, [projects, search, view]);
+
   return (
-    <section className="page">
-      <h2>{t("projects.title")}</h2>
-      <div className="card create-card">
-        <strong>{t("projects.createTitle")}</strong>
-        <select
-          value={organizationId}
-          onChange={(e) => setOrganizationId(e.target.value)}
-          disabled={organizations.length === 0}
-        >
-          {organizations.map((org) => (
-            <option value={org.organization_id} key={org.organization_id}>
-              {org.organization_name}
-            </option>
-          ))}
-        </select>
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Project name" />
-        <input
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          placeholder="Description (optional)"
-        />
-        <button
-          className="button"
-          onClick={async () => {
-            if (!name.trim()) return;
-            try {
-              setError(null);
-              await createProject({
-                organization_id: organizationId || null,
-                name: name.trim(),
-                description: description.trim() || null
-              });
-              setName("");
-              setDescription("");
-              await refreshProjects();
-            } catch (err) {
-              const message = err instanceof Error ? err.message : "Unable to create project";
-              setError(message);
-            }
-          }}
-        >
-          {t("projects.createAction")}
-        </button>
-        {error && <div className="error">{error}</div>}
+    <section className="page projects-page">
+      <div className="projects-title-row">
+        <h2>{t("projects.title")}</h2>
       </div>
-      <div className="card">
-        <strong>Organizations</strong>
-        <div className="card-list">
+      <div className="card projects-create-bar">
+        <strong>{t("projects.createTitle")}</strong>
+        <div className="projects-create-controls">
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder={t("projects.namePlaceholder")} />
+          <button
+            className="button"
+            onClick={async () => {
+              if (!name.trim()) return;
+              try {
+                setError(null);
+                await createProject({ name: name.trim() });
+                setName("");
+                await refreshProjects();
+              } catch (err) {
+                const message = err instanceof Error ? err.message : "Unable to create project";
+                setError(message);
+              }
+            }}
+          >
+            {t("projects.createAction")}
+          </button>
+        </div>
+      </div>
+      <div className="card projects-controls">
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder={t("projects.searchPlaceholder")}
+          aria-label="Search projects"
+        />
+        <div className="toolbar compact-left">
+          <button className={`button ${view === "active" ? "filled" : ""}`} onClick={() => setView("active")}>
+            {t("projects.active")}
+          </button>
+          <button className={`button ${view === "archived" ? "filled" : ""}`} onClick={() => setView("archived")}>
+            {t("projects.archived")}
+          </button>
+        </div>
+      </div>
+      <div className="card projects-table-shell">
+        <div className="projects-table-scroll">
+          <table className="projects-table">
+            <thead>
+              <tr>
+                <th>{t("projects.tableTitle")}</th>
+                <th>{t("projects.tableOwner")}</th>
+                <th>{t("projects.tableLastEdited")}</th>
+                <th className="align-right">{t("projects.tableActions")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredProjects.map((project) => (
+                <tr key={project.id}>
+                  <td>
+                    <Link to={`/project/${project.id}`} className="project-title-link">
+                      {project.name}
+                    </Link>
+                  </td>
+                  <td>{project.owner_display_name}</td>
+                  <td title={new Date(project.last_edited_at).toLocaleString()}>{formatRelativeTime(project.last_edited_at)}</td>
+                  <td className="align-right">
+                    <div className="projects-row-actions">
+                      <Link className="button button-small" to={`/project/${project.id}`}>
+                        {t("projects.open")}
+                      </Link>
+                      <button
+                        className="button button-small"
+                        disabled={busyProjectId === project.id}
+                        onClick={async () => {
+                          try {
+                            setError(null);
+                            setBusyProjectId(project.id);
+                            await setProjectArchived(project.id, !project.archived);
+                            await refreshProjects();
+                          } catch (err) {
+                            const message =
+                              err instanceof Error
+                                ? err.message
+                                : project.archived
+                                  ? "Unable to unarchive project"
+                                  : "Unable to archive project";
+                            setError(message);
+                          } finally {
+                            setBusyProjectId(null);
+                          }
+                        }}
+                      >
+                        {project.archived ? t("projects.unarchive") : t("projects.archive")}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {filteredProjects.length === 0 && (
+                <tr>
+                  <td colSpan={4} className="projects-empty">
+                    {t("projects.empty")}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div className="card projects-org-memberships">
+        <strong>{t("projects.organizations")}</strong>
+        <div className="projects-org-list">
           {organizations.length > 0 ? (
             organizations.map((org) => (
-              <div key={org.organization_id} className="card">
-                <strong>{org.organization_name}</strong>
-                <span>{org.is_admin ? "Admin" : "Member"}</span>
-              </div>
+              <span key={org.organization_id} className="org-pill">
+                {org.organization_name}
+              </span>
             ))
           ) : (
-            <div className="card">No organization memberships.</div>
+            <span className="muted">{t("projects.noOrganizations")}</span>
           )}
         </div>
       </div>
-      <div className="card-list">
-        {projects.map((project) => (
-          <Link key={project.id} to={`/project/${project.id}`} className="card">
-            <strong>{project.name}</strong>
-            <span>{project.description || "No description"}</span>
-          </Link>
-        ))}
-        {projects.length === 0 && <div className="card">No projects are available for this account.</div>}
-      </div>
+      {error && <div className="error">{error}</div>}
     </section>
   );
 }
@@ -861,6 +979,20 @@ function WorkspacePage({
   const refreshProjectData = async () => {
     if (!projectId) return;
     setWorkspaceLoaded(false);
+    const cached = loadProjectSnapshotFromCache(projectId);
+    if (cached) {
+      setNodes(cached.nodes);
+      setEntryFilePath(cached.entryFilePath || "main.typ");
+      setDocs(cached.docs || {});
+      const cachedPaths = new Set(cached.nodes.map((node) => node.path));
+      const fallbackPath =
+        activePath && cachedPaths.has(activePath)
+          ? activePath
+          : cached.nodes.find((node) => node.kind === "file")?.path || cached.entryFilePath || "main.typ";
+      setActivePath(fallbackPath);
+      setExpandedDirs((prev) => expandAncestors(fallbackPath, prev));
+      setWorkspaceLoaded(true);
+    }
     const sharePromise = canManageProject ? listProjectShareLinks(projectId).catch(() => []) : Promise.resolve([]);
     const orgAccessPromise = canManageProject
       ? listProjectOrganizationAccess(projectId).catch(() => [])
@@ -868,17 +1000,26 @@ function WorkspacePage({
     const accessUsersPromise = canManageProject
       ? listProjectAccessUsers(projectId).then((res) => res.users).catch(() => [])
       : Promise.resolve([]);
-    let [treeRes, settings, git, docsRes, revisionsRes, assetsRes, shareRes, orgAccessRes, accessUsersRes] = await Promise.all([
-      getProjectTree(projectId),
-      getProjectSettings(projectId).catch(() => ({ entry_file_path: "main.typ" })),
-      getGitRepoLink(projectId).catch(() => ({ repo_url: "" })),
-      listDocuments(projectId),
-      listRevisions(projectId).catch(() => ({ revisions: [] })),
-      listProjectAssets(projectId).catch(() => ({ assets: [] })),
-      sharePromise,
-      orgAccessPromise,
-      accessUsersPromise
-    ]);
+    const responseTuple = await Promise.all([
+        getProjectTree(projectId),
+        getProjectSettings(projectId).catch(() => ({ entry_file_path: "main.typ" })),
+        getGitRepoLink(projectId).catch(() => ({ repo_url: "" })),
+        listDocuments(projectId),
+        listRevisions(projectId).catch(() => ({ revisions: [] })),
+        listProjectAssets(projectId).catch(() => ({ assets: [] })),
+        sharePromise,
+        orgAccessPromise,
+        accessUsersPromise
+      ]).catch((err) => {
+        if (cached) {
+          setWorkspaceError("Working from cached project data (offline mode).");
+          setApiReachable(false);
+          return null;
+        }
+        throw err;
+      });
+    if (!responseTuple) return;
+    let [treeRes, settings, git, docsRes, revisionsRes, assetsRes, shareRes, orgAccessRes, accessUsersRes] = responseTuple;
     if (!treeRes.nodes.some((node) => node.kind === "file")) {
       await createProjectFile(projectId, {
         path: "main.typ",
@@ -900,6 +1041,12 @@ function WorkspacePage({
     const nextDocs: Record<string, string> = {};
     for (const doc of docsRes.documents) nextDocs[doc.path] = doc.content;
     setDocs(nextDocs);
+    saveProjectSnapshotToCache({
+      projectId,
+      entryFilePath: settings.entry_file_path || treeRes.entry_file_path || "main.typ",
+      nodes: treeRes.nodes,
+      docs: nextDocs
+    });
 
     const nextAssets: Record<string, string> = {};
     const nextAssetMeta: Record<string, AssetMeta> = {};
@@ -929,6 +1076,7 @@ function WorkspacePage({
       setExpandedDirs((prev) => expandAncestors(target, prev));
     }
     setApiReachable(true);
+    setWorkspaceError(null);
     setWorkspaceLoaded(true);
   };
 
@@ -982,6 +1130,20 @@ function WorkspacePage({
       setWorkspaceLoaded(true);
     });
   }, [projectId]);
+
+  useEffect(() => {
+    if (!projectId || !workspaceLoaded || isRevisionMode) return;
+    const nextDocs = { ...docs };
+    if (activePath && Object.prototype.hasOwnProperty.call(nextDocs, activePath)) {
+      nextDocs[activePath] = docText;
+    }
+    saveProjectSnapshotToCache({
+      projectId,
+      entryFilePath,
+      nodes,
+      docs: nextDocs
+    });
+  }, [activePath, docText, docs, entryFilePath, isRevisionMode, nodes, projectId, workspaceLoaded]);
 
   useEffect(() => {
     if (!projectId || !workspaceLoaded || !canManageProject) return;

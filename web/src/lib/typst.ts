@@ -168,7 +168,8 @@ async function getRenderer() {
   if (!rendererPromise) {
     const renderer = createTypstRenderer();
     await renderer.init({
-      getModule: async () => fetch(RENDERER_WASM_URL).then((resp) => resp.arrayBuffer())
+      getModule: async () =>
+        fetch(RENDERER_WASM_URL, { cache: "force-cache" }).then((resp) => resp.arrayBuffer())
     });
     rendererPromise = renderer;
   }

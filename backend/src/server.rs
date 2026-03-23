@@ -92,19 +92,46 @@ pub async fn run() {
         .route("/v1/auth/logout", post(auth_logout))
         .route("/v1/realtime/auth/{project_id}", get(realtime_auth))
         .route("/v1/realtime/ws/{doc_id}", get(realtime_ws_handler))
-        .route("/v1/profile/security/tokens", get(list_personal_access_tokens).post(create_personal_access_token))
-        .route("/v1/profile/security/tokens/{token_id}", delete(revoke_personal_access_token))
-        .route("/v1/security/tokens", get(list_personal_access_tokens).post(create_personal_access_token))
-        .route("/v1/security/tokens/{token_id}", delete(revoke_personal_access_token))
+        .route(
+            "/v1/profile/security/tokens",
+            get(list_personal_access_tokens).post(create_personal_access_token),
+        )
+        .route(
+            "/v1/profile/security/tokens/{token_id}",
+            delete(revoke_personal_access_token),
+        )
+        .route(
+            "/v1/security/tokens",
+            get(list_personal_access_tokens).post(create_personal_access_token),
+        )
+        .route(
+            "/v1/security/tokens/{token_id}",
+            delete(revoke_personal_access_token),
+        )
         .route("/v1/organizations/mine", get(list_my_organizations))
         .route("/v1/projects", get(list_projects).post(create_project))
         .route("/v1/projects/{project_id}/tree", get(get_project_tree))
         .route("/v1/projects/{project_id}/files", post(create_project_file))
-        .route("/v1/projects/{project_id}/files/move", patch(move_project_file))
-        .route("/v1/projects/{project_id}/files/{*path}", delete(delete_project_file))
-        .route("/v1/projects/{project_id}/roles", get(list_roles).post(upsert_role))
-        .route("/v1/projects/{project_id}/access-users", get(list_project_access_users))
-        .route("/v1/projects/{project_id}/settings", get(get_project_settings).put(upsert_project_settings))
+        .route(
+            "/v1/projects/{project_id}/files/move",
+            patch(move_project_file),
+        )
+        .route(
+            "/v1/projects/{project_id}/files/{*path}",
+            delete(delete_project_file),
+        )
+        .route(
+            "/v1/projects/{project_id}/roles",
+            get(list_roles).post(upsert_role),
+        )
+        .route(
+            "/v1/projects/{project_id}/access-users",
+            get(list_project_access_users),
+        )
+        .route(
+            "/v1/projects/{project_id}/settings",
+            get(get_project_settings).put(upsert_project_settings),
+        )
         .route(
             "/v1/projects/{project_id}/organization-access",
             get(list_project_organization_access),
@@ -129,19 +156,27 @@ pub async fn run() {
             "/v1/projects/{project_id}/group-roles/{group_name}",
             delete(delete_group_role),
         )
-        .route("/v1/projects/{project_id}/revisions", get(list_revisions).post(create_revision))
+        .route(
+            "/v1/projects/{project_id}/revisions",
+            get(list_revisions).post(create_revision),
+        )
         .route(
             "/v1/projects/{project_id}/revisions/{revision_id}/documents",
             get(get_revision_documents),
         )
-        .route("/v1/projects/{project_id}/documents", get(list_documents).post(create_document))
+        .route(
+            "/v1/projects/{project_id}/documents",
+            get(list_documents).post(create_document),
+        )
         .route(
             "/v1/projects/{project_id}/documents/by-path/{path}",
             put(upsert_document_by_path),
         )
         .route(
             "/v1/projects/{project_id}/documents/{document_id}",
-            get(get_document).put(update_document).delete(delete_document),
+            get(get_document)
+                .put(update_document)
+                .delete(delete_document),
         )
         .route(
             "/v1/projects/{project_id}/snapshots",
@@ -163,7 +198,10 @@ pub async fn run() {
             "/v1/projects/{project_id}/assets/{asset_id}/raw",
             get(get_project_asset_raw),
         )
-        .route("/v1/projects/{project_id}/archive", get(download_project_archive))
+        .route(
+            "/v1/projects/{project_id}/archive",
+            get(download_project_archive).patch(update_project_archived),
+        )
         .route(
             "/v1/projects/{project_id}/pdf-artifacts",
             post(upload_project_pdf_artifact),
@@ -175,7 +213,10 @@ pub async fn run() {
         .route("/v1/typst/packages/{*path}", get(typst_package_proxy))
         .route("/v1/git/status/{project_id}", get(git_status))
         .route("/v1/git/repo-link/{project_id}", get(git_repo_link))
-        .route("/v1/git/config/{project_id}", get(get_git_config).put(upsert_git_config))
+        .route(
+            "/v1/git/config/{project_id}",
+            get(get_git_config).put(upsert_git_config),
+        )
         .route("/v1/git/sync/pull/{project_id}", post(git_pull))
         .route("/v1/git/sync/push/{project_id}", post(git_push))
         .route("/v1/git/repo/{project_id}/{*rest}", any(git_http_backend))
@@ -241,9 +282,10 @@ async fn seed_default_data(pool: &PgPool) {
     .execute(pool)
     .await;
 
-    let _ = sqlx::query("insert into projects (id, organization_id, name, description, created_at) values ($1, $2, $3, $4, $5) on conflict (id) do nothing")
+    let _ = sqlx::query("insert into projects (id, organization_id, owner_user_id, name, description, created_at) values ($1, $2, $3, $4, $5, $6) on conflict (id) do nothing")
         .bind(project_id)
         .bind(org_id)
+        .bind(admin_id)
         .bind("Sample Project")
         .bind(Some("Realtime Typst collaboration project"))
         .bind(now)
@@ -399,7 +441,13 @@ async fn local_login(
 ) -> axum::response::Response {
     let settings = match load_auth_settings(&state.db, &state.oidc).await {
         Ok(s) => s,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "auth settings unavailable").into_response(),
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "auth settings unavailable",
+            )
+                .into_response()
+        }
     };
     if !settings.allow_local_login {
         return (StatusCode::FORBIDDEN, "local login disabled").into_response();
@@ -424,7 +472,9 @@ async fn local_login(
     let password_hash: String = row.get("password_hash");
     let parsed = match PasswordHash::new(&password_hash) {
         Ok(p) => p,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "password hash corrupted").into_response(),
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "password hash corrupted").into_response()
+        }
     };
     if Argon2::default()
         .verify_password(input.password.as_bytes(), &parsed)
@@ -442,7 +492,13 @@ async fn local_register(
 ) -> axum::response::Response {
     let settings = match load_auth_settings(&state.db, &state.oidc).await {
         Ok(s) => s,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "auth settings unavailable").into_response(),
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "auth settings unavailable",
+            )
+                .into_response()
+        }
     };
     if !settings.allow_local_registration {
         return (StatusCode::FORBIDDEN, "local registration disabled").into_response();
@@ -536,7 +592,13 @@ async fn oidc_login(State(state): State<AppState>) -> axum::response::Response {
         .unwrap_or(false);
     let settings = match load_auth_settings(&state.db, &state.oidc).await {
         Ok(v) => v,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "auth settings unavailable").into_response(),
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "auth settings unavailable",
+            )
+                .into_response()
+        }
     };
     if !settings.allow_oidc {
         return (StatusCode::FORBIDDEN, "OIDC disabled").into_response();
@@ -619,7 +681,13 @@ async fn oidc_callback(
         .unwrap_or(false);
     let settings = match load_auth_settings(&state.db, &state.oidc).await {
         Ok(v) => v,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "auth settings unavailable").into_response(),
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "auth settings unavailable",
+            )
+                .into_response()
+        }
     };
     if !settings.allow_oidc {
         return (StatusCode::FORBIDDEN, "OIDC disabled").into_response();
@@ -689,7 +757,13 @@ async fn oidc_callback(
     let id_token_verifier = client.id_token_verifier();
     let claims: CoreIdTokenClaims = match id_token.claims(&id_token_verifier, &Nonce::new(nonce)) {
         Ok(c) => c.clone(),
-        Err(_) => return (StatusCode::UNAUTHORIZED, "OIDC id_token verification failed").into_response(),
+        Err(_) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                "OIDC id_token verification failed",
+            )
+                .into_response()
+        }
     };
     let issuer = claims.issuer().url().to_string();
     let subject = claims.subject().as_str().to_string();
@@ -703,7 +777,8 @@ async fn oidc_callback(
     } else {
         "OIDC User".to_string()
     };
-    let oidc_groups = extract_groups_from_id_token(id_token.to_string(), &settings.oidc_groups_claim);
+    let oidc_groups =
+        extract_groups_from_id_token(id_token.to_string(), &settings.oidc_groups_claim);
 
     let user_row = sqlx::query(
         "insert into users (id, email, display_name, created_at, oidc_subject, oidc_issuer)
@@ -721,7 +796,9 @@ async fn oidc_callback(
     .await;
     let user_id = match user_row {
         Ok(r) => r.get::<Uuid, _>("id"),
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to upsert user").into_response(),
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to upsert user").into_response()
+        }
     };
     if let Ok(org_row) = sqlx::query("select id from organizations order by created_at asc limit 1")
         .fetch_optional(&state.db)
@@ -796,10 +873,21 @@ async fn oidc_callback(
         .build();
     let mut jar = jar.remove(Cookie::from("typst_oidc_state"));
     jar = jar.add(session_cookie);
-    (jar, Json(SessionResponse { session_token: token, user_id })).into_response()
+    (
+        jar,
+        Json(SessionResponse {
+            session_token: token,
+            user_id,
+        }),
+    )
+        .into_response()
 }
 
-async fn auth_me(State(state): State<AppState>, headers: HeaderMap, jar: CookieJar) -> impl IntoResponse {
+async fn auth_me(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    jar: CookieJar,
+) -> impl IntoResponse {
     let user_id = match authenticated_user_id(&state.db, &headers, &jar).await {
         Ok(id) => id,
         Err(_) => return (StatusCode::UNAUTHORIZED, "No session").into_response(),
@@ -879,7 +967,14 @@ async fn issue_session_response(
         .build();
     let mut jar = CookieJar::new();
     jar = jar.add(session_cookie);
-    (jar, Json(SessionResponse { session_token: token, user_id })).into_response()
+    (
+        jar,
+        Json(SessionResponse {
+            session_token: token,
+            user_id,
+        }),
+    )
+        .into_response()
 }
 
 fn hash_password(raw: &str) -> Result<String, String> {
@@ -941,7 +1036,10 @@ fn discovery_issuer(input: &str) -> Result<IssuerUrl, ()> {
     IssuerUrl::new(trimmed.to_string()).map_err(|_| ())
 }
 
-async fn load_auth_settings(db: &PgPool, defaults: &OidcSettings) -> Result<AuthSettings, StatusCode> {
+async fn load_auth_settings(
+    db: &PgPool,
+    defaults: &OidcSettings,
+) -> Result<AuthSettings, StatusCode> {
     let row = sqlx::query(
         "select allow_local_login, allow_local_registration, allow_oidc, site_name,
                 oidc_issuer, oidc_client_id, oidc_client_secret, oidc_redirect_uri, oidc_groups_claim, updated_at
@@ -1098,18 +1196,43 @@ async fn revoke_personal_access_token(
 
 async fn list_projects(
     State(state): State<AppState>,
+    Query(query): Query<ListProjectsQuery>,
     headers: HeaderMap,
 ) -> Result<Json<ProjectListResponse>, StatusCode> {
     let Some(actor) = request_user_id(&state.db, &headers).await else {
         return Err(StatusCode::UNAUTHORIZED);
     };
+    let include_archived = query.include_archived.unwrap_or(true);
+    let search = query
+        .q
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| format!("%{v}%"));
     let direct_rows = sqlx::query(
-        "select p.id, p.organization_id, p.name, p.description, p.created_at, pr.role as my_role
+        "select p.id,
+                p.name,
+                p.owner_user_id,
+                coalesce(owner.display_name, 'Unknown') as owner_display_name,
+                p.created_at,
+                greatest(
+                  p.created_at,
+                  coalesce((select max(d.updated_at) from documents d where d.project_id = p.id), p.created_at),
+                  coalesce((select max(r.created_at) from revisions r where r.project_id = p.id), p.created_at),
+                  coalesce((select max(a.created_at) from project_assets a where a.project_id = p.id), p.created_at)
+                ) as last_edited_at,
+                p.archived_at,
+                pr.role as my_role
          from projects p
          join project_roles pr on pr.project_id = p.id
-         where pr.user_id = $1",
+         left join users owner on owner.id = p.owner_user_id
+         where pr.user_id = $1
+           and ($2::boolean = true or p.archived_at is null)
+           and ($3::text is null or p.name ilike $3)",
     )
     .bind(actor)
+    .bind(include_archived)
+    .bind(search.as_deref())
     .fetch_all(&state.db)
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -1118,12 +1241,29 @@ async fn list_projects(
         Vec::new()
     } else {
         sqlx::query(
-            "select p.id, p.organization_id, p.name, p.description, p.created_at, poa.permission
+            "select p.id,
+                    p.name,
+                    p.owner_user_id,
+                    coalesce(owner.display_name, 'Unknown') as owner_display_name,
+                    p.created_at,
+                    greatest(
+                      p.created_at,
+                      coalesce((select max(d.updated_at) from documents d where d.project_id = p.id), p.created_at),
+                      coalesce((select max(r.created_at) from revisions r where r.project_id = p.id), p.created_at),
+                      coalesce((select max(a.created_at) from project_assets a where a.project_id = p.id), p.created_at)
+                    ) as last_edited_at,
+                    p.archived_at,
+                    poa.permission
              from projects p
              join project_organization_access poa on poa.project_id = p.id
-             where poa.organization_id = any($1::uuid[])",
+             left join users owner on owner.id = p.owner_user_id
+             where poa.organization_id = any($1::uuid[])
+               and ($2::boolean = true or p.archived_at is null)
+               and ($3::text is null or p.name ilike $3)",
         )
         .bind(&org_ids)
+        .bind(include_archived)
+        .bind(search.as_deref())
         .fetch_all(&state.db)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
@@ -1135,11 +1275,14 @@ async fn list_projects(
             project_id,
             Project {
                 id: project_id,
-                organization_id: row.get("organization_id"),
                 name: row.get("name"),
-                description: row.get("description"),
+                owner_user_id: row.get("owner_user_id"),
+                owner_display_name: row.get("owner_display_name"),
                 my_role: row.get("my_role"),
                 created_at: row.get("created_at"),
+                last_edited_at: row.get("last_edited_at"),
+                archived: row.get::<Option<DateTime<Utc>>, _>("archived_at").is_some(),
+                archived_at: row.get("archived_at"),
             },
         );
     }
@@ -1161,16 +1304,19 @@ async fn list_projects(
             project_id,
             Project {
                 id: project_id,
-                organization_id: row.get("organization_id"),
                 name: row.get("name"),
-                description: row.get("description"),
+                owner_user_id: row.get("owner_user_id"),
+                owner_display_name: row.get("owner_display_name"),
                 my_role: derived_role,
                 created_at: row.get("created_at"),
+                last_edited_at: row.get("last_edited_at"),
+                archived: row.get::<Option<DateTime<Utc>>, _>("archived_at").is_some(),
+                archived_at: row.get("archived_at"),
             },
         );
     }
     let mut projects = projects_by_id.into_values().collect::<Vec<_>>();
-    projects.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    projects.sort_by(|a, b| b.last_edited_at.cmp(&a.last_edited_at));
 
     Ok(Json(ProjectListResponse { projects }))
 }
@@ -1260,7 +1406,8 @@ async fn default_organization_id(db: &PgPool) -> Result<Uuid, StatusCode> {
         .fetch_optional(db)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    row.map(|r| r.get("id")).ok_or(StatusCode::INTERNAL_SERVER_ERROR)
+    row.map(|r| r.get("id"))
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 async fn create_project(
@@ -1273,11 +1420,11 @@ async fn create_project(
     };
     let id = Uuid::new_v4();
     let created_at = Utc::now();
-    let org_id = if let Some(org_id) = input.organization_id {
-        org_id
-    } else {
-        default_organization_id(&state.db).await?
-    };
+    let org_id = user_organization_ids(&state.db, actor)
+        .await?
+        .into_iter()
+        .next()
+        .unwrap_or(default_organization_id(&state.db).await?);
     let _ = sqlx::query(
         "insert into organization_memberships (organization_id, user_id, joined_at)
          values ($1, $2, $3)
@@ -1289,13 +1436,15 @@ async fn create_project(
     .execute(&state.db)
     .await;
     let row = sqlx::query(
-        "insert into projects (id, organization_id, name, description, created_at) values ($1, $2, $3, $4, $5)
-         returning id, organization_id, name, description, created_at",
+        "insert into projects (id, organization_id, owner_user_id, name, description, created_at)
+         values ($1, $2, $3, $4, $5, $6)
+         returning id, name, created_at, owner_user_id, archived_at",
     )
     .bind(id)
     .bind(org_id)
+    .bind(actor)
     .bind(input.name)
-    .bind(input.description)
+    .bind(Option::<String>::None)
     .bind(created_at)
     .fetch_one(&state.db)
     .await
@@ -1340,6 +1489,15 @@ async fn create_project(
     .execute(&state.db)
     .await;
 
+    let owner_display_name = sqlx::query("select display_name from users where id = $1")
+        .bind(actor)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .map(|r| r.get::<String, _>("display_name"))
+        .unwrap_or_else(|| "Unknown".to_string());
+
     write_audit(
         &state.db,
         Some(actor),
@@ -1350,11 +1508,14 @@ async fn create_project(
 
     Ok(Json(Project {
         id: row.get("id"),
-        organization_id: row.get("organization_id"),
         name: row.get("name"),
-        description: row.get("description"),
+        owner_user_id: row.get("owner_user_id"),
+        owner_display_name,
         my_role: "Owner".to_string(),
         created_at: row.get("created_at"),
+        last_edited_at: row.get("created_at"),
+        archived: false,
+        archived_at: row.get("archived_at"),
     }))
 }
 
@@ -1609,14 +1770,13 @@ async fn join_project_share_link(
     let permission: String = row.get("permission");
     let target_role = grant_role_from_share_permission(&permission).to_string();
     let granted_at = Utc::now();
-    let existing = sqlx::query(
-        "select role from project_roles where project_id = $1 and user_id = $2",
-    )
-    .bind(project_id)
-    .bind(actor)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let existing =
+        sqlx::query("select role from project_roles where project_id = $1 and user_id = $2")
+            .bind(project_id)
+            .bind(actor)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let final_role = if let Some(existing) = existing {
         let existing_role: String = existing.get("role");
         if role_rank(&existing_role) >= role_rank(&target_role) {
@@ -1765,23 +1925,24 @@ async fn get_project_tree(
         .fetch_all(&state.db)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let dir_rows = sqlx::query("select path from project_directories where project_id = $1 order by path asc")
-        .bind(project_id)
-        .fetch_all(&state.db)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let asset_rows = sqlx::query("select path from project_assets where project_id = $1 order by path asc")
-        .bind(project_id)
-        .fetch_all(&state.db)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let settings = sqlx::query(
-        "select entry_file_path from project_settings where project_id = $1",
-    )
-    .bind(project_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let dir_rows =
+        sqlx::query("select path from project_directories where project_id = $1 order by path asc")
+            .bind(project_id)
+            .fetch_all(&state.db)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let asset_rows =
+        sqlx::query("select path from project_assets where project_id = $1 order by path asc")
+            .bind(project_id)
+            .fetch_all(&state.db)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let settings =
+        sqlx::query("select entry_file_path from project_settings where project_id = $1")
+            .bind(project_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let entry_file_path = settings
         .map(|r| r.get::<String, _>("entry_file_path"))
         .unwrap_or_else(|| "main.typ".to_string());
@@ -1954,7 +2115,10 @@ async fn move_project_file(
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    if dir_move.rows_affected() > 0 || doc_move.rows_affected() > 0 || asset_move.rows_affected() > 0 {
+    if dir_move.rows_affected() > 0
+        || doc_move.rows_affected() > 0
+        || asset_move.rows_affected() > 0
+    {
         mark_project_dirty(&state.db, project_id, Some(actor)).await;
     }
 
@@ -2314,7 +2478,11 @@ async fn list_project_access_users(
     for user in &mut output {
         user.sources.sort();
     }
-    output.sort_by(|a, b| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()));
+    output.sort_by(|a, b| {
+        a.display_name
+            .to_lowercase()
+            .cmp(&b.display_name.to_lowercase())
+    });
     Ok(Json(ProjectAccessUserListResponse { users: output }))
 }
 
@@ -2396,14 +2564,13 @@ async fn delete_group_role(
     Path((project_id, group_name)): Path<(Uuid, String)>,
 ) -> Result<StatusCode, StatusCode> {
     let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Manage).await?;
-    let result = sqlx::query(
-        "delete from project_group_roles where project_id = $1 and group_name = $2",
-    )
-    .bind(project_id)
-    .bind(group_name.clone())
-    .execute(&state.db)
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let result =
+        sqlx::query("delete from project_group_roles where project_id = $1 and group_name = $2")
+            .bind(project_id)
+            .bind(group_name.clone())
+            .execute(&state.db)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if result.rows_affected() == 0 {
         return Err(StatusCode::NOT_FOUND);
     }
@@ -2425,14 +2592,12 @@ async fn ensure_org_admin(
     let Some(actor) = request_user_id(db, headers).await else {
         return Err(StatusCode::UNAUTHORIZED);
     };
-    let row = sqlx::query(
-        "select 1 from org_admins where organization_id = $1 and user_id = $2",
-    )
-    .bind(org_id)
-    .bind(actor)
-    .fetch_optional(db)
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let row = sqlx::query("select 1 from org_admins where organization_id = $1 and user_id = $2")
+        .bind(org_id)
+        .bind(actor)
+        .fetch_optional(db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if row.is_none() {
         return Err(StatusCode::FORBIDDEN);
     }
@@ -2583,8 +2748,7 @@ async fn upsert_admin_auth_settings(
         let Some(discovery_url) = discovery_url.clone() else {
             return Err(StatusCode::BAD_REQUEST);
         };
-        let issuer =
-            discovery_issuer(&discovery_url).map_err(|_| StatusCode::BAD_REQUEST)?;
+        let issuer = discovery_issuer(&discovery_url).map_err(|_| StatusCode::BAD_REQUEST)?;
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(8))
             .redirect(Policy::none())
@@ -2774,14 +2938,12 @@ async fn get_revision_documents(
     Path((project_id, revision_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<RevisionDocumentsResponse>, StatusCode> {
     ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
-    let exists = sqlx::query(
-        "select 1 from revisions where id = $1 and project_id = $2",
-    )
-    .bind(revision_id)
-    .bind(project_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let exists = sqlx::query("select 1 from revisions where id = $1 and project_id = $2")
+        .bind(revision_id)
+        .bind(project_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if exists.is_none() {
         return Err(StatusCode::NOT_FOUND);
     }
@@ -3086,11 +3248,12 @@ async fn create_project_snapshot(
     let Some(storage) = state.storage.clone() else {
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     };
-    let rows = sqlx::query("select path, content from documents where project_id = $1 order by path asc")
-        .bind(project_id)
-        .fetch_all(&state.db)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let rows =
+        sqlx::query("select path, content from documents where project_id = $1 order by path asc")
+            .bind(project_id)
+            .fetch_all(&state.db)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let documents = rows
         .iter()
         .map(|row| SnapshotDocumentPayload {
@@ -3103,7 +3266,8 @@ async fn create_project_snapshot(
         created_at: Utc::now(),
         documents,
     };
-    let bytes = serde_json::to_vec(&snapshot_payload).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let bytes =
+        serde_json::to_vec(&snapshot_payload).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let snapshot_id = Uuid::new_v4();
     let object_key = format!("projects/{project_id}/snapshots/{snapshot_id}.json");
     put_object(&storage, &object_key, "application/json", bytes.clone())
@@ -3153,14 +3317,13 @@ async fn restore_project_snapshot(
     let Some(storage) = state.storage.clone() else {
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     };
-    let row = sqlx::query(
-        "select object_key from project_snapshots where project_id = $1 and id = $2",
-    )
-    .bind(project_id)
-    .bind(snapshot_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let row =
+        sqlx::query("select object_key from project_snapshots where project_id = $1 and id = $2")
+            .bind(project_id)
+            .bind(snapshot_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let Some(row) = row else {
         return Err(StatusCode::NOT_FOUND);
     };
@@ -3262,8 +3425,11 @@ async fn upload_project_asset(
 ) -> Result<Json<ProjectAsset>, StatusCode> {
     let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Write).await?;
     let path = sanitize_project_path(&input.path)?;
-    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, input.content_base64)
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let bytes = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        input.content_base64,
+    )
+    .map_err(|_| StatusCode::BAD_REQUEST)?;
     let content_type = input
         .content_type
         .unwrap_or_else(|| "application/octet-stream".to_string());
@@ -3357,10 +3523,7 @@ async fn get_project_asset(
             uploaded_by: row.get("uploaded_by"),
             created_at: row.get("created_at"),
         },
-        content_base64: base64::Engine::encode(
-            &base64::engine::general_purpose::STANDARD,
-            bytes,
-        ),
+        content_base64: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes),
     }))
 }
 
@@ -3370,12 +3533,13 @@ async fn delete_project_asset(
     Path((project_id, asset_id)): Path<(Uuid, Uuid)>,
 ) -> Result<StatusCode, StatusCode> {
     let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Write).await?;
-    let row = sqlx::query("select object_key from project_assets where project_id = $1 and id = $2")
-        .bind(project_id)
-        .bind(asset_id)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let row =
+        sqlx::query("select object_key from project_assets where project_id = $1 and id = $2")
+            .bind(project_id)
+            .bind(asset_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let Some(row) = row else {
         return Err(StatusCode::NOT_FOUND);
     };
@@ -3449,11 +3613,12 @@ async fn download_project_archive(
     Path(project_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, StatusCode> {
     ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
-    let rows = sqlx::query("select path, content from documents where project_id = $1 order by path asc")
-        .bind(project_id)
-        .fetch_all(&state.db)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let rows =
+        sqlx::query("select path, content from documents where project_id = $1 order by path asc")
+            .bind(project_id)
+            .fetch_all(&state.db)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let mut cursor = std::io::Cursor::new(Vec::<u8>::new());
     {
         let mut zip = zip::ZipWriter::new(&mut cursor);
@@ -3495,7 +3660,8 @@ async fn download_project_archive(
             zip.write_all(&bytes)
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         }
-        zip.finish().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        zip.finish()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     }
     let bytes = cursor.into_inner();
     let mut resp = axum::http::Response::new(Body::from(bytes));
@@ -3514,6 +3680,52 @@ async fn download_project_archive(
     Ok(resp)
 }
 
+async fn update_project_archived(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Json(input): Json<UpdateProjectArchivedInput>,
+) -> Result<StatusCode, StatusCode> {
+    let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Manage).await?;
+    let changed = if input.archived {
+        sqlx::query(
+            "update projects
+             set archived_at = coalesce(archived_at, $1), archived_by = $2
+             where id = $3",
+        )
+        .bind(Utc::now())
+        .bind(actor)
+        .bind(project_id)
+        .execute(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    } else {
+        sqlx::query("update projects set archived_at = null, archived_by = null where id = $1")
+            .bind(project_id)
+            .execute(&state.db)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    };
+    if changed.rows_affected() == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    write_audit(
+        &state.db,
+        Some(actor),
+        if input.archived {
+            "project.archive"
+        } else {
+            "project.unarchive"
+        },
+        serde_json::json!({
+            "project_id": project_id,
+            "archived": input.archived
+        }),
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn upload_project_pdf_artifact(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -3521,12 +3733,8 @@ async fn upload_project_pdf_artifact(
     Json(input): Json<UploadPdfArtifactInput>,
 ) -> Result<Json<PdfArtifact>, StatusCode> {
     let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Write).await?;
-    let entry_file_path = sanitize_project_path(
-        input
-            .entry_file_path
-            .as_deref()
-            .unwrap_or("main.typ"),
-    )?;
+    let entry_file_path =
+        sanitize_project_path(input.entry_file_path.as_deref().unwrap_or("main.typ"))?;
     let content_type = input
         .content_type
         .unwrap_or_else(|| "application/pdf".to_string());
@@ -3713,7 +3921,10 @@ async fn upsert_git_config(
     }))
 }
 
-async fn git_status_by_project(db: &PgPool, project_id: Uuid) -> Result<Json<GitSyncState>, StatusCode> {
+async fn git_status_by_project(
+    db: &PgPool,
+    project_id: Uuid,
+) -> Result<Json<GitSyncState>, StatusCode> {
     let row = sqlx::query(
         "select project_id, branch, last_pull_at, last_push_at, has_conflicts, status from git_sync_states where project_id = $1",
     )
@@ -3751,10 +3962,20 @@ async fn git_pull(
         let _ = run_git(&config.local_path, &["remote", "remove", "origin"]);
         run_git(&config.local_path, &["remote", "add", "origin", remote_url])
             .map_err(|_| StatusCode::BAD_REQUEST)?;
-        if let Err(err) = run_git(&config.local_path, &["fetch", "origin", &config.default_branch]) {
-            update_git_sync_state(&state.db, project_id, "pull_failed", true, Some(Utc::now()), None)
-                .await
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if let Err(err) = run_git(
+            &config.local_path,
+            &["fetch", "origin", &config.default_branch],
+        ) {
+            update_git_sync_state(
+                &state.db,
+                project_id,
+                "pull_failed",
+                true,
+                Some(Utc::now()),
+                None,
+            )
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             write_audit(
                 &state.db,
                 Some(actor),
@@ -3768,9 +3989,16 @@ async fn git_pull(
             &config.local_path,
             &["pull", "--rebase", "origin", &config.default_branch],
         ) {
-            update_git_sync_state(&state.db, project_id, "pull_conflict", true, Some(Utc::now()), None)
-                .await
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            update_git_sync_state(
+                &state.db,
+                project_id,
+                "pull_conflict",
+                true,
+                Some(Utc::now()),
+                None,
+            )
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             write_audit(
                 &state.db,
                 Some(actor),
@@ -3787,9 +4015,16 @@ async fn git_pull(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    update_git_sync_state(&state.db, project_id, "pulled", false, Some(Utc::now()), None)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    update_git_sync_state(
+        &state.db,
+        project_id,
+        "pulled",
+        false,
+        Some(Utc::now()),
+        None,
+    )
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let _ = create_git_bundle_artifact(&state, project_id, &config.local_path, "pull").await;
 
     write_audit(
@@ -3839,9 +4074,16 @@ async fn git_push(
             &config.local_path,
             &["push", "origin", &format!("HEAD:{}", config.default_branch)],
         ) {
-            update_git_sync_state(&state.db, project_id, "push_failed", true, None, Some(Utc::now()))
-                .await
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            update_git_sync_state(
+                &state.db,
+                project_id,
+                "push_failed",
+                true,
+                None,
+                Some(Utc::now()),
+            )
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             write_audit(
                 &state.db,
                 Some(actor),
@@ -3855,9 +4097,16 @@ async fn git_push(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    update_git_sync_state(&state.db, project_id, "pushed", false, None, Some(Utc::now()))
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    update_git_sync_state(
+        &state.db,
+        project_id,
+        "pushed",
+        false,
+        None,
+        Some(Utc::now()),
+    )
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let _ = create_git_bundle_artifact(&state, project_id, &config.local_path, "push").await;
 
     write_audit(
@@ -3891,7 +4140,11 @@ async fn git_http_backend(
         }
     };
     let can_push = rest.ends_with("git-receive-pack");
-    let need = if can_push { AccessNeed::GitSync } else { AccessNeed::Read };
+    let need = if can_push {
+        AccessNeed::GitSync
+    } else {
+        AccessNeed::Read
+    };
     if ensure_project_role_for_user(&state.db, actor, project_id, need)
         .await
         .is_err()
@@ -3903,14 +4156,22 @@ async fn git_http_backend(
         .await
         .is_err()
     {
-        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to flush server updates").into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to flush server updates",
+        )
+            .into_response();
     }
 
     let Ok(config) = load_git_config(&state.db, project_id).await else {
         return (StatusCode::NOT_FOUND, "Git repository config missing").into_response();
     };
     if ensure_git_repo_initialized(&config.local_path, &config.default_branch).is_err() {
-        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to initialize repo").into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to initialize repo",
+        )
+            .into_response();
     }
 
     let query = uri.query().unwrap_or_default();
@@ -3921,15 +4182,21 @@ async fn git_http_backend(
     };
     let mut command = Command::new("git");
     command.arg("http-backend");
-    command.env("GIT_PROJECT_ROOT", git_storage_root().to_string_lossy().to_string());
+    command.env(
+        "GIT_PROJECT_ROOT",
+        git_storage_root().to_string_lossy().to_string(),
+    );
     command.env("GIT_HTTP_EXPORT_ALL", "1");
     command.env("REQUEST_METHOD", method.as_str());
     command.env("PATH_INFO", path_info);
     command.env("QUERY_STRING", query);
-    command.env("CONTENT_TYPE", headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or(""));
+    command.env(
+        "CONTENT_TYPE",
+        headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or(""),
+    );
     command.env("CONTENT_LENGTH", body.len().to_string());
     command.env("REMOTE_USER", actor.to_string());
     command.stdin(std::process::Stdio::piped());
@@ -3937,7 +4204,11 @@ async fn git_http_backend(
     command.stderr(std::process::Stdio::piped());
 
     let Ok(mut child) = command.spawn() else {
-        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to spawn git http-backend").into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to spawn git http-backend",
+        )
+            .into_response();
     };
     if let Some(mut stdin) = child.stdin.take() {
         use std::io::Write;
@@ -3971,7 +4242,9 @@ async fn git_http_backend(
                 serde_json::json!({"project_id": project_id}),
             )
             .await;
-            let _ = create_git_bundle_artifact(&state, project_id, &config.local_path, "receive_pack").await;
+            let _ =
+                create_git_bundle_artifact(&state, project_id, &config.local_path, "receive_pack")
+                    .await;
         }
     }
 
@@ -4077,8 +4350,8 @@ async fn apply_project_group_roles(
          from projects p
          join org_oidc_group_role_mappings m on m.organization_id = p.organization_id",
     )
-        .fetch_all(db)
-        .await?;
+    .fetch_all(db)
+    .await?;
     let group_set: HashSet<String> = groups.iter().cloned().collect();
     let mut mapped_projects: HashSet<Uuid> = HashSet::new();
     let mut desired: HashMap<Uuid, String> = HashMap::new();
@@ -4139,7 +4412,12 @@ async fn apply_project_group_roles(
     Ok(())
 }
 
-async fn write_audit(db: &PgPool, actor_user_id: Option<Uuid>, event_type: &str, payload: serde_json::Value) {
+async fn write_audit(
+    db: &PgPool,
+    actor_user_id: Option<Uuid>,
+    event_type: &str,
+    payload: serde_json::Value,
+) {
     let _ = sqlx::query(
         "insert into audit_events (id, actor_user_id, event_type, payload, created_at) values ($1, $2, $3, $4, $5)",
     )
@@ -4159,11 +4437,13 @@ struct LoadedGitConfig {
 }
 
 async fn load_git_config(db: &PgPool, project_id: Uuid) -> Result<LoadedGitConfig, StatusCode> {
-    let row = sqlx::query("select remote_url, local_path, default_branch from git_repositories where project_id = $1")
-        .bind(project_id)
-        .fetch_optional(db)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let row = sqlx::query(
+        "select remote_url, local_path, default_branch from git_repositories where project_id = $1",
+    )
+    .bind(project_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let Some(row) = row else {
         return Err(StatusCode::NOT_FOUND);
     };
@@ -4215,7 +4495,13 @@ async fn create_git_bundle_artifact(
     let bytes = std::fs::read(&bundle_path).map_err(|e| e.to_string())?;
     let artifact_id = Uuid::new_v4();
     let object_key = format!("projects/{project_id}/git-bundles/{artifact_id}.bundle");
-    put_object(&storage, &object_key, "application/x-git-bundle", bytes.clone()).await?;
+    put_object(
+        &storage,
+        &object_key,
+        "application/x-git-bundle",
+        bytes.clone(),
+    )
+    .await?;
     let _ = sqlx::query(
         "insert into git_bundle_artifacts (id, project_id, event_type, object_key, size_bytes, created_at)
          values ($1, $2, $3, $4, $5, $6)",
@@ -4411,7 +4697,8 @@ async fn mark_project_dirty(db: &PgPool, project_id: Uuid, actor_user_id: Option
     .flatten()
     .map(|row| row.get::<DateTime<Utc>, _>("created_at"));
     let should_create = if let Some(created_at) = recent_created_at.as_ref() {
-        Utc::now().signed_duration_since(created_at.clone()) >= chrono::Duration::seconds(interval_sec)
+        Utc::now().signed_duration_since(created_at.clone())
+            >= chrono::Duration::seconds(interval_sec)
     } else {
         true
     };
@@ -4555,10 +4842,7 @@ async fn flush_pending_server_commit(
     let message = if trailers.is_empty() {
         "Recent updates on Typst server".to_string()
     } else {
-        format!(
-            "Recent updates on Typst server\n\n{}",
-            trailers.join("\n")
-        )
+        format!("Recent updates on Typst server\n\n{}", trailers.join("\n"))
     };
     let _ = run_git(
         &local_path,
@@ -4634,13 +4918,12 @@ async fn git_http_user(db: &PgPool, headers: &HeaderMap) -> Option<Uuid> {
     .await
     .ok()??;
     let user_id: Uuid = row.get("user_id");
-    let _ = sqlx::query(
-        "update personal_access_tokens set last_used_at = $2 where token_hash = $1",
-    )
-    .bind(token_sha256(token))
-    .bind(Utc::now())
-    .execute(db)
-    .await;
+    let _ =
+        sqlx::query("update personal_access_tokens set last_used_at = $2 where token_hash = $1")
+            .bind(token_sha256(token))
+            .bind(Utc::now())
+            .execute(db)
+            .await;
     Some(user_id)
 }
 
@@ -4652,5 +4935,8 @@ fn token_sha256(value: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(value.as_bytes());
     let bytes = hasher.finalize();
-    bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+    bytes
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>()
 }

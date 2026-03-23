@@ -37,11 +37,14 @@ export type OrganizationMembership = {
 
 export type Project = {
   id: string;
-  organization_id: string;
   name: string;
-  description: string | null;
+  owner_user_id: string | null;
+  owner_display_name: string;
   my_role: ProjectRole | "Viewer";
   created_at: string;
+  last_edited_at: string;
+  archived: boolean;
+  archived_at: string | null;
 };
 
 export type ProjectTreeNode = {
@@ -266,8 +269,14 @@ export async function logout() {
   });
 }
 
-export async function listProjects() {
-  const res = await fetch(apiUrl("/v1/projects"), {
+export async function listProjects(input?: { includeArchived?: boolean; q?: string }) {
+  const params = new URLSearchParams();
+  if (typeof input?.includeArchived === "boolean") {
+    params.set("include_archived", input.includeArchived ? "true" : "false");
+  }
+  if (input?.q?.trim()) params.set("q", input.q.trim());
+  const query = params.size > 0 ? `?${params.toString()}` : "";
+  const res = await fetch(apiUrl(`/v1/projects${query}`), {
     cache: "no-store",
     credentials: authCredentials(),
     headers: authHeaders()
@@ -275,11 +284,7 @@ export async function listProjects() {
   return parseJsonOrThrow<{ projects: Project[] }>(res, "Unable to load projects");
 }
 
-export async function createProject(input: {
-  organization_id?: string | null;
-  name: string;
-  description?: string | null;
-}) {
+export async function createProject(input: { name: string }) {
   const res = await fetch(apiUrl("/v1/projects"), {
     method: "POST",
     credentials: authCredentials(),
@@ -287,6 +292,16 @@ export async function createProject(input: {
     body: JSON.stringify(input)
   });
   return parseJsonOrThrow<Project>(res, "Unable to create project");
+}
+
+export async function setProjectArchived(projectId: string, archived: boolean) {
+  const res = await fetch(apiUrl(`/v1/projects/${projectId}/archive`), {
+    method: "PATCH",
+    credentials: authCredentials(),
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify({ archived })
+  });
+  if (!res.ok) throw new Error(`Unable to ${archived ? "archive" : "unarchive"} project (${res.status})`);
 }
 
 export async function listMyOrganizations() {
