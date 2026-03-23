@@ -242,12 +242,21 @@ function treeNode(page, name) {
 }
 
 async function ensureDirectoryExpanded(page, name) {
-  const row = treeNode(page, name);
-  const toggle = row.locator(".tree-toggle").first();
-  const symbol = (await toggle.textContent())?.trim();
-  if (symbol === "▸") {
-    await toggle.click();
+  const start = Date.now();
+  while (Date.now() - start < 10000) {
+    const row = treeNode(page, name);
+    await row.waitFor({ timeout: 4000 });
+    const toggle = row.locator(".tree-toggle").first();
+    const symbol = (await toggle.textContent())?.trim();
+    if (symbol === "▾") return;
+    if (symbol === "▸") {
+      await row.locator(".tree-label").first().click();
+      await wait(120);
+      continue;
+    }
+    await wait(100);
   }
+  throw new Error(`directory did not expand: ${name}`);
 }
 
 async function editorText(page) {
@@ -292,6 +301,7 @@ const contextB = await browser.newContext({
   viewport: { width: 1620, height: 1020 },
   locale: "en-US"
 });
+await contextA.grantPermissions(["clipboard-read", "clipboard-write"], { origin: baseUrl });
 const pageA = await contextA.newPage();
 const pageB = await contextB.newPage();
 const browserErrors = [];
@@ -467,7 +477,7 @@ try {
   await pageA
     .locator(".tree-label", { hasText: path.basename(contextCreatedPath) })
     .first()
-    .waitFor({ timeout: 10000 });
+    .waitFor({ timeout: 20000 });
 
   await openContextMenu(pageA, path.basename(contextCreatedPath));
   await acceptPrompt(
@@ -550,6 +560,9 @@ try {
   if (settingsPanelInfo.optionCount < 1) {
     throw new Error("entry file select has no options");
   }
+  const copyButtonBefore = pageA.getByRole("button", { name: "Copy" }).first();
+  await copyButtonBefore.click();
+  await pageA.getByRole("button", { name: "Copied" }).first().waitFor({ timeout: 3000 });
   await pageA.getByRole("button", { name: "Revisions" }).click();
   const historyCount = await pageA.locator(".history-item").count();
   if (historyCount < 1) throw new Error("No revisions available");

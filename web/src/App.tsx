@@ -714,6 +714,7 @@ function WorkspacePage({
   const canvasPreviewRef = useRef<HTMLDivElement | null>(null);
   const centerSplitRef = useRef<HTMLDivElement | null>(null);
   const lastSavedDocRef = useRef<string>("");
+  const copyNoticeTimerRef = useRef<number | null>(null);
 
   const [nodes, setNodes] = useState<{ path: string; kind: "file" | "directory" }[]>([]);
   const [entryFilePath, setEntryFilePath] = useState("main.typ");
@@ -759,6 +760,7 @@ function WorkspacePage({
   const [typstRuntimeStatus, setTypstRuntimeStatus] = useState<TypstRuntimeStatus>({ stage: "idle" });
   const [apiReachable, setApiReachable] = useState(true);
   const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>("connecting");
+  const [copiedControl, setCopiedControl] = useState<string | null>(null);
 
   const tree = useMemo(() => projectTreeFromFlat(nodes), [nodes]);
   const isRevisionMode = !!activeRevisionId;
@@ -835,6 +837,12 @@ function WorkspacePage({
     if (accessType === "manage") return "Manage";
     if (accessType === "write") return "Read + write";
     if (accessType === "read") return "Read only";
+    return role;
+  };
+  const formatRoleLabel = (role: string) => {
+    if (role === "Teacher") return "Manager";
+    if (role === "TA") return "Maintainer";
+    if (role === "Student") return "Contributor";
     return role;
   };
   const formatAccessSource = (source: string) => {
@@ -927,6 +935,14 @@ function WorkspacePage({
   useEffect(() => {
     const unsub = subscribeTypstRuntimeStatus((status) => setTypstRuntimeStatus(status));
     return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (copyNoticeTimerRef.current) {
+        window.clearTimeout(copyNoticeTimerRef.current);
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -1552,6 +1568,23 @@ function WorkspacePage({
     }
   }
 
+  async function copyToClipboard(controlKey: string, value: string) {
+    if (!value.trim()) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopiedControl(controlKey);
+      if (copyNoticeTimerRef.current) {
+        window.clearTimeout(copyNoticeTimerRef.current);
+      }
+      copyNoticeTimerRef.current = window.setTimeout(() => {
+        setCopiedControl((current) => (current === controlKey ? null : current));
+      }, 1600);
+      setWorkspaceError(null);
+    } catch {
+      setWorkspaceError("Unable to copy to clipboard");
+    }
+  }
+
   async function upsertOrgAccessGrant(organizationId: string, permission: "read" | "write") {
     if (!projectId) return;
     try {
@@ -2067,6 +2100,15 @@ function WorkspacePage({
                 <div className="settings-section">
                   <strong>Git access</strong>
                   <code>{gitRepoUrl || "Loading..."}</code>
+                  <div className="toolbar compact-left">
+                    <button
+                      className="button button-small"
+                      onClick={() => copyToClipboard("git-access-url", gitRepoUrl)}
+                      disabled={!gitRepoUrl}
+                    >
+                      {copiedControl === "git-access-url" ? t("share.copied") : t("share.copy")}
+                    </button>
+                  </div>
                   <small>Use PAT as HTTP password. Force push is rejected.</small>
                 </div>
                 <div className="settings-section">
@@ -2095,12 +2137,13 @@ function WorkspacePage({
                           <button
                             className="button"
                             onClick={async () => {
-                              await navigator.clipboard.writeText(
+                              await copyToClipboard(
+                                "share-read-link",
                                 `${window.location.origin}/share/${activeReadShare.token_value}`
                               );
                             }}
                           >
-                            {t("share.copy")}
+                            {copiedControl === "share-read-link" ? t("share.copied") : t("share.copy")}
                           </button>
                         </>
                       ) : (
@@ -2130,12 +2173,13 @@ function WorkspacePage({
                           <button
                             className="button"
                             onClick={async () => {
-                              await navigator.clipboard.writeText(
+                              await copyToClipboard(
+                                "share-write-link",
                                 `${window.location.origin}/share/${activeWriteShare.token_value}`
                               );
                             }}
                           >
-                            {t("share.copy")}
+                            {copiedControl === "share-write-link" ? t("share.copied") : t("share.copy")}
                           </button>
                         </>
                       ) : (
@@ -2186,7 +2230,7 @@ function WorkspacePage({
                           <strong>{user.display_name || user.email}</strong>
                           <span>{user.email}</span>
                           <span>{`Access type: ${formatAccessType(user.access_type, user.role)}`}</span>
-                          <span>{`Role: ${user.role}`}</span>
+                          <span>{`Role: ${formatRoleLabel(user.role)}`}</span>
                           <span>{`Source: ${user.sources.map((source) => formatAccessSource(source)).join(", ")}`}</span>
                         </div>
                       ))}
