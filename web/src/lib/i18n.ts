@@ -44,6 +44,8 @@ const messages: Record<UiLocale, Record<string, string>> = {
     "workspace.download": "Download",
     "workspace.notEditable":
       "This file is not editable in web editor. Edit offline and sync with Git.",
+    "workspace.readOnlyProject":
+      "You have read-only access to this project. Editing and file management are disabled.",
     "workspace.connectionLost":
       "Connection to server lost. Edits may not sync until the connection recovers.",
     "workspace.connectionReconnecting": "Reconnecting to collaboration server...",
@@ -113,6 +115,7 @@ const messages: Record<UiLocale, Record<string, string>> = {
     "workspace.newFolder": "新建文件夹",
     "workspace.download": "下载",
     "workspace.notEditable": "该文件暂不支持网页编辑。请离线编辑后通过 Git 同步。",
+    "workspace.readOnlyProject": "你对此项目只有只读权限。编辑和文件管理功能已禁用。",
     "workspace.connectionLost": "与服务器连接中断。恢复连接前编辑可能无法同步。",
     "workspace.connectionReconnecting": "正在重新连接协作服务器…",
     "preview.loadingCompiler": "正在浏览器中准备 Typst 编译器",

@@ -1995,6 +1995,11 @@ function WorkspacePage({
 
   return (
     <section className="workspace-shell">
+      {!canWrite && (
+        <div className="workspace-access-banner" role="status">
+          {t("workspace.readOnlyProject")}
+        </div>
+      )}
       <section className="workspace-stage">
         {showFilesPanel && (
           <>

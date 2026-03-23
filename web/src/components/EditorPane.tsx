@@ -1,7 +1,13 @@
 import CodeMirror from "@uiw/react-codemirror";
 import { StateEffect, Transaction } from "@codemirror/state";
 import { markdown } from "@codemirror/lang-markdown";
-import { HighlightStyle, StreamLanguage, syntaxHighlighting, type StreamParser } from "@codemirror/language";
+import {
+  HighlightStyle,
+  Language,
+  LanguageSupport,
+  defineLanguageFacet,
+  syntaxHighlighting
+} from "@codemirror/language";
 import {
   Decoration,
   EditorView,
@@ -13,6 +19,7 @@ import {
 import { RangeSetBuilder } from "@codemirror/state";
 import { useEffect, useMemo, useRef } from "react";
 import { tags } from "@lezer/highlight";
+import { TypstParser, typstHighlight as typstNodeHighlight } from "codemirror-lang-typst";
 
 export type EditorChange = {
   from: number;
@@ -106,100 +113,38 @@ const remoteCursorPlugin = ViewPlugin.fromClass(
   }
 );
 
-type TypstState = {
-  inString: '"' | "'" | null;
-};
-
-const typstKeywords = new Set([
-  "set",
-  "show",
-  "let",
-  "if",
-  "else",
-  "for",
-  "while",
-  "in",
-  "break",
-  "continue",
-  "return",
-  "import",
-  "include",
-  "as",
-  "and",
-  "or",
-  "not",
-  "none",
-  "auto",
-  "true",
-  "false"
+const typstEditorHighlight = HighlightStyle.define([
+  { tag: tags.heading, color: "#0b3a63", fontWeight: "700" },
+  { tag: tags.comment, color: "#667085", fontStyle: "italic" },
+  { tag: [tags.string, tags.special(tags.string)], color: "#0a7a52" },
+  { tag: [tags.number, tags.integer, tags.float, tags.bool], color: "#9a3d02" },
+  {
+    tag: [
+      tags.controlKeyword,
+      tags.definitionKeyword,
+      tags.moduleKeyword,
+      tags.operatorKeyword,
+      tags.keyword
+    ],
+    color: "#5b3cc4",
+    fontWeight: "650"
+  },
+  { tag: [tags.variableName, tags.name], color: "#243447" },
+  { tag: [tags.labelName, tags.link], color: "#0e65aa" },
+  { tag: [tags.monospace, tags.contentSeparator, tags.controlOperator], color: "#1f4f7a" },
+  { tag: tags.invalid, color: "#b42318", textDecoration: "wavy underline" }
 ]);
 
-const typstParser: StreamParser<TypstState> = {
-  startState() {
-    return { inString: null };
-  },
-  token(stream, state) {
-    if (state.inString) {
-      let escaped = false;
-      while (!stream.eol()) {
-        const ch = stream.next();
-        if (!ch) break;
-        if (escaped) {
-          escaped = false;
-          continue;
-        }
-        if (ch === "\\") {
-          escaped = true;
-          continue;
-        }
-        if (ch === state.inString) {
-          state.inString = null;
-          break;
-        }
-      }
-      return "string";
-    }
+const typstLanguageData = defineLanguageFacet({
+  commentTokens: { line: "//", block: { open: "/*", close: "*/" } }
+});
 
-    if (stream.match("//")) {
-      stream.skipToEnd();
-      return "comment";
-    }
-    if (stream.eatSpace()) return null;
-
-    const quote = stream.peek();
-    if (quote === '"' || quote === "'") {
-      state.inString = quote;
-      stream.next();
-      return "string";
-    }
-
-    if (stream.match(/#[A-Za-z_][\w-]*/)) return "keyword";
-    if (stream.match(/[0-9]+(\.[0-9]+)?/)) return "number";
-    if (stream.match(/[+\-*/=<>!]+/)) return "operator";
-    if (stream.match(/[:.,()[\]{}]/)) return "punctuation";
-    if (stream.match(/[A-Za-z_][\w-]*/)) {
-      const word = stream.current();
-      if (typstKeywords.has(word)) return "keyword";
-      if (stream.peek() === "(") return "function";
-      return "variableName";
-    }
-    stream.next();
-    return null;
-  },
-  languageData: {
-    commentTokens: { line: "//" }
-  }
-};
-
-const typstHighlight = HighlightStyle.define([
-  { tag: tags.keyword, color: "#7c3aed", fontWeight: "600" },
-  { tag: tags.comment, color: "#4b5563", fontStyle: "italic" },
-  { tag: tags.string, color: "#047857" },
-  { tag: tags.number, color: "#b45309" },
-  { tag: [tags.variableName, tags.name], color: "#1f2937" },
-  { tag: tags.function(tags.variableName), color: "#0369a1" },
-  { tag: tags.operator, color: "#0f172a" }
-]);
+function buildTypstLanguageSupport() {
+  const parser = new (TypstParser as unknown as new (highlighting: unknown) => TypstParser)(typstNodeHighlight);
+  const updateListener = parser.updateListener();
+  const language = new Language(typstLanguageData, parser, [updateListener], "typst");
+  return new LanguageSupport(language, [syntaxHighlighting(typstEditorHighlight)]);
+}
 
 
 type Props = {
@@ -270,13 +215,13 @@ export function EditorPane({
   );
 
   const extensions = useMemo(() => {
-    const languageExtension =
+    const languageExtensions =
       language === "typst"
-        ? StreamLanguage.define(typstParser)
+        ? [buildTypstLanguageSupport()]
         : language === "markdown"
-          ? markdown()
+          ? [markdown()]
           : [];
-    const base = [languageExtension, syntaxHighlighting(typstHighlight), cursorListener, changeListener, remoteCursorPlugin];
+    const base = [...languageExtensions, cursorListener, changeListener, remoteCursorPlugin];
     if (lineWrap) base.push(EditorView.lineWrapping);
     return base;
   }, [changeListener, cursorListener, language, lineWrap]);

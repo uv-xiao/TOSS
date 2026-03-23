@@ -17,6 +17,7 @@
     "@myriaddreamin/typst-ts-web-compiler": "^0.7.0-rc2",
     "@myriaddreamin/typst.ts": "^0.7.0-rc2",
     "@uiw/react-codemirror": "^4.23.12",
+    "codemirror-lang-typst": "^0.4.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-router-dom": "^7.9.3",
@@ -29,6 +30,8 @@
     "@vitejs/plugin-react": "^5.1.0",
     "playwright": "^1.58.2",
     "typescript": "^5.8.3",
-    "vite": "^7.1.10"
+    "vite": "^7.1.10",
+    "vite-plugin-top-level-await": "^1.6.0",
+    "vite-plugin-wasm": "^3.6.0"
   }
 }

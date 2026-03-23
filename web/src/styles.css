@@ -347,6 +347,17 @@ body {
   padding: 8px;
 }
 
+.workspace-access-banner {
+  margin: 0 0 8px;
+  border: 1px solid #f2d9a6;
+  background: #fff8e8;
+  color: #7a4a0a;
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .workspace-topbar-controls {
   display: flex;
   align-items: center;
