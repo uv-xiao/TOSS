@@ -1,5 +1,10 @@
 import CodeMirror from "@uiw/react-codemirror";
-import { StateEffect, StateField, Transaction } from "@codemirror/state";
+import {
+  StateEffect,
+  type StateEffectType,
+  StateField,
+  Transaction
+} from "@codemirror/state";
 import { markdown } from "@codemirror/lang-markdown";
 import {
   HighlightStyle,
@@ -142,6 +147,7 @@ const typstLanguageData = defineLanguageFacet({
 
 function buildTypstLanguageSupport() {
   const parser = new (TypstParser as unknown as new (highlighting: unknown) => TypstParser)(typstNodeHighlight);
+  const resetParserEffect = StateEffect.define<null>();
   const safeParserSync = StateField.define<null>({
     create() {
       return null;
@@ -155,11 +161,22 @@ function buildTypstLanguageSupport() {
         // Avoid wasm incremental-edit panics by reparsing from the latest source.
         parser.clearParser();
       }
+      for (const effect of transaction.effects) {
+        if (effect.is(resetParserEffect)) {
+          // Controlled value swaps (revision switching/realtime hydration) can bypass
+          // incremental parser bookkeeping. Explicit reset keeps highlights aligned.
+          parser.clearParser();
+          break;
+        }
+      }
       return value;
     }
   });
   const language = new Language(typstLanguageData, parser, [safeParserSync], "typst");
-  return new LanguageSupport(language, [syntaxHighlighting(typstEditorHighlight)]);
+  return {
+    support: new LanguageSupport(language, [syntaxHighlighting(typstEditorHighlight)]),
+    resetParserEffect
+  };
 }
 
 
@@ -194,13 +211,18 @@ export function EditorPane({
   const onDeltaRef = useRef<Props["onDelta"]>(onDelta);
   const onChangeRef = useRef<Props["onChange"]>(onChange);
   const onCursorChangeRef = useRef<Props["onCursorChange"]>(onCursorChange);
-  const typstLanguageSupport = useMemo(() => buildTypstLanguageSupport(), []);
+  const typstLanguage = useMemo(() => buildTypstLanguageSupport(), []);
+  const typstResetEffectRef = useRef<StateEffectType<null> | null>(typstLanguage.resetParserEffect);
 
   useEffect(() => {
     onDeltaRef.current = onDelta;
     onChangeRef.current = onChange;
     onCursorChangeRef.current = onCursorChange;
   }, [onChange, onCursorChange, onDelta]);
+
+  useEffect(() => {
+    typstResetEffectRef.current = typstLanguage.resetParserEffect;
+  }, [typstLanguage]);
 
   const cursorListener = useMemo(
     () =>
@@ -245,14 +267,25 @@ export function EditorPane({
   const extensions = useMemo(() => {
     const languageExtensions =
       language === "typst"
-        ? [typstLanguageSupport]
+        ? [typstLanguage.support]
         : language === "markdown"
           ? [markdown()]
           : [];
     const base = [...languageExtensions, cursorListener, changeListener, remoteCursorPlugin];
     if (lineWrap) base.push(EditorView.lineWrapping);
     return base;
-  }, [changeListener, cursorListener, language, lineWrap, typstLanguageSupport]);
+  }, [changeListener, cursorListener, language, lineWrap, typstLanguage]);
+
+  useEffect(() => {
+    if (language !== "typst") return;
+    const view = editorRef.current;
+    if (!view) return;
+    const resetEffect = typstResetEffectRef.current;
+    if (!resetEffect) return;
+    view.dispatch({
+      effects: resetEffect.of(null)
+    });
+  }, [language, value]);
 
   useEffect(() => {
     const view = editorRef.current;
