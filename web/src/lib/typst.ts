@@ -237,13 +237,40 @@ export async function renderTypstVectorToCanvas(container: HTMLElement, vectorDa
     for (const page of Array.from(pages.querySelectorAll(".typst-page"))) {
       const pageElement = page as HTMLElement;
       pageElement.style.overflow = "hidden";
-      const styleWidth = Number.parseFloat(pageElement.style.width || "");
-      const styleHeight = Number.parseFloat(pageElement.style.height || "");
+      const transformWrapper = pageElement.querySelector(":scope > div") as HTMLElement | null;
+      const transformText = transformWrapper?.style.transform || "";
+      const scaleMatch = transformText.match(/scale\(([-+]?\d*\.?\d+)\)/i);
+      const rendererScale = scaleMatch ? Number.parseFloat(scaleMatch[1]) : 1;
+      const innerCanvas = transformWrapper?.querySelector("canvas") as HTMLCanvasElement | null;
+      const canvasWidthStyle = Number.parseFloat(innerCanvas?.style.width || "");
+      const canvasHeightStyle = Number.parseFloat(innerCanvas?.style.height || "");
       const rect = pageElement.getBoundingClientRect();
-      const baseWidth = Math.max(1, styleWidth || rect.width || pageElement.clientWidth || 1);
-      const baseHeight = Math.max(1, styleHeight || rect.height || pageElement.clientHeight || 1);
+      const baseWidth = Math.max(
+        1,
+        (Number.isFinite(canvasWidthStyle) ? canvasWidthStyle : 0) || rect.width || pageElement.clientWidth || 1
+      );
+      const baseHeight = Math.max(
+        1,
+        (Number.isFinite(canvasHeightStyle) ? canvasHeightStyle : 0) || rect.height || pageElement.clientHeight || 1
+      );
       pageElement.dataset.baseWidth = `${baseWidth}`;
       pageElement.dataset.baseHeight = `${baseHeight}`;
+      pageElement.dataset.baseScale = "1";
+      if (Number.isFinite(canvasWidthStyle) && canvasWidthStyle > 0) {
+        pageElement.dataset.canvasWidth = `${canvasWidthStyle}`;
+      }
+      if (Number.isFinite(canvasHeightStyle) && canvasHeightStyle > 0) {
+        pageElement.dataset.canvasHeight = `${canvasHeightStyle}`;
+      }
+      if (transformWrapper) {
+        // Normalize renderer-internal scale so our zoom controls own the effective page size.
+        transformWrapper.style.transformOrigin = "0 0";
+        transformWrapper.style.transform = "scale(1)";
+      }
+      if (innerCanvas && rendererScale > 0 && rendererScale !== 1) {
+        innerCanvas.style.width = `${Math.max(1, Math.round(baseWidth))}px`;
+        innerCanvas.style.height = `${Math.max(1, Math.round(baseHeight))}px`;
+      }
     }
     for (const canvas of Array.from(pages.querySelectorAll("canvas"))) {
       const styleWidth = Number.parseFloat(canvas.style.width || "");

@@ -252,6 +252,26 @@ function applyPreviewZoom(frame: HTMLElement, zoom: number) {
     const baseHeight = size.height;
     const nextWidth = Math.max(1, Math.round(baseWidth * zoom));
     const nextHeight = Math.max(1, Math.round(baseHeight * zoom));
+    if (surface.classList.contains("typst-page")) {
+      const canvasBaseWidth = Number.parseFloat(surface.dataset.canvasWidth || "");
+      const canvasBaseHeight = Number.parseFloat(surface.dataset.canvasHeight || "");
+      const transformWrapper = surface.querySelector(":scope > div") as HTMLElement | null;
+      if (
+        transformWrapper &&
+        Number.isFinite(canvasBaseWidth) &&
+        canvasBaseWidth > 0 &&
+        Number.isFinite(canvasBaseHeight) &&
+        canvasBaseHeight > 0
+      ) {
+        const canvas = transformWrapper.querySelector("canvas") as HTMLCanvasElement | null;
+        if (canvas) {
+          canvas.style.width = `${Math.max(1, Math.round(canvasBaseWidth))}px`;
+          canvas.style.height = `${Math.max(1, Math.round(canvasBaseHeight))}px`;
+        }
+        transformWrapper.style.transformOrigin = "0 0";
+        transformWrapper.style.transform = `scale(${zoom})`;
+      }
+    }
     surface.style.width = `${nextWidth}px`;
     surface.style.height = `${nextHeight}px`;
     widest = Math.max(widest, nextWidth);
