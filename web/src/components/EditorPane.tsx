@@ -1,9 +1,16 @@
 import CodeMirror from "@uiw/react-codemirror";
-import { Transaction } from "@codemirror/state";
+import { StateEffect, Transaction } from "@codemirror/state";
 import { markdown } from "@codemirror/lang-markdown";
-import { Decoration, EditorView, type DecorationSet, type ViewUpdate, WidgetType } from "@codemirror/view";
+import {
+  Decoration,
+  EditorView,
+  ViewPlugin,
+  type DecorationSet,
+  type ViewUpdate,
+  WidgetType
+} from "@codemirror/view";
 import { RangeSetBuilder } from "@codemirror/state";
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 export type EditorChange = {
   from: number;
@@ -66,6 +73,37 @@ function buildRemoteCursorDecorations(
   return builder.finish();
 }
 
+const setRemoteCursorsEffect = StateEffect.define<RemoteCursor[]>();
+
+const remoteCursorPlugin = ViewPlugin.fromClass(
+  class {
+    cursors: RemoteCursor[] = [];
+    decorations: DecorationSet;
+
+    constructor(view: EditorView) {
+      this.decorations = buildRemoteCursorDecorations(view, []);
+    }
+
+    update(update: ViewUpdate) {
+      let changed = update.docChanged;
+      for (const tr of update.transactions) {
+        for (const effect of tr.effects) {
+          if (effect.is(setRemoteCursorsEffect)) {
+            this.cursors = effect.value;
+            changed = true;
+          }
+        }
+      }
+      if (changed) {
+        this.decorations = buildRemoteCursorDecorations(update.view, this.cursors);
+      }
+    }
+  },
+  {
+    decorations: (instance) => instance.decorations
+  }
+);
+
 
 type Props = {
   value: string;
@@ -73,7 +111,10 @@ type Props = {
   onDelta?: (changes: EditorChange[]) => void;
   onCursorChange?: (cursor: { line: number; column: number }) => void;
   readOnly?: boolean;
+  lineWrap?: boolean;
   remoteCursors?: RemoteCursor[];
+  jumpTo?: { line: number; column: number; token: number } | null;
+  onJumpHandled?: () => void;
 };
 
 export function EditorPane({
@@ -82,50 +123,91 @@ export function EditorPane({
   onDelta,
   onCursorChange,
   readOnly,
-  remoteCursors = []
+  lineWrap = true,
+  remoteCursors = [],
+  jumpTo,
+  onJumpHandled
 }: Props) {
-  const cursorListener = EditorView.updateListener.of((update: ViewUpdate) => {
-    if (!update.selectionSet) return;
-    const head = update.state.selection.main.head;
-    const line = update.state.doc.lineAt(head);
-    onCursorChange?.({
-      line: line.number,
-      column: head - line.from + 1
-    });
-  });
+  const editorRef = useRef<EditorView | null>(null);
 
-  const changeListener = EditorView.updateListener.of((update: ViewUpdate) => {
-    if (!update.docChanged) return;
-    const hasUserInput = update.transactions.some((transaction) => {
-      const event = transaction.annotation(Transaction.userEvent);
-      return typeof event === "string";
-    });
-    if (!hasUserInput) return;
-    if (onDelta) {
-      const changes: EditorChange[] = [];
-      update.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
-        changes.push({
-          from: fromA,
-          to: toA,
-          insert: inserted.toString()
+  const cursorListener = useMemo(
+    () =>
+      EditorView.updateListener.of((update: ViewUpdate) => {
+        if (!update.selectionSet) return;
+        const head = update.state.selection.main.head;
+        const line = update.state.doc.lineAt(head);
+        onCursorChange?.({
+          line: line.number,
+          column: head - line.from + 1
         });
-      });
-      if (changes.length > 0) onDelta(changes);
-    } else if (onChange) {
-      onChange(update.state.doc.toString());
-    }
-  });
-
-  const remoteCursorExtension = useMemo(
-    () => EditorView.decorations.of((view) => buildRemoteCursorDecorations(view, remoteCursors)),
-    [remoteCursors]
+      }),
+    [onCursorChange]
   );
+
+  const changeListener = useMemo(
+    () =>
+      EditorView.updateListener.of((update: ViewUpdate) => {
+        if (!update.docChanged) return;
+        const hasUserInput = update.transactions.some((transaction) => {
+          const event = transaction.annotation(Transaction.userEvent);
+          return typeof event === "string";
+        });
+        if (!hasUserInput) return;
+        if (onDelta) {
+          const changes: EditorChange[] = [];
+          update.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+            changes.push({
+              from: fromA,
+              to: toA,
+              insert: inserted.toString()
+            });
+          });
+          if (changes.length > 0) onDelta(changes);
+        } else if (onChange) {
+          onChange(update.state.doc.toString());
+        }
+      }),
+    [onChange, onDelta]
+  );
+
+  const extensions = useMemo(() => {
+    const base = [markdown(), cursorListener, changeListener, remoteCursorPlugin];
+    if (lineWrap) base.push(EditorView.lineWrapping);
+    return base;
+  }, [changeListener, cursorListener, lineWrap]);
+
+  useEffect(() => {
+    const view = editorRef.current;
+    if (!view) return;
+    view.dispatch({
+      effects: setRemoteCursorsEffect.of(remoteCursors)
+    });
+  }, [remoteCursors]);
+
+  useEffect(() => {
+    if (!jumpTo) return;
+    const view = editorRef.current;
+    if (!view) return;
+    const lineNo = Math.max(1, Math.min(jumpTo.line, view.state.doc.lines));
+    const line = view.state.doc.line(lineNo);
+    const column = Math.max(1, Math.min(jumpTo.column, line.length + 1));
+    const position = line.from + column - 1;
+    view.dispatch({
+      selection: { anchor: position },
+      scrollIntoView: true
+    });
+    view.focus();
+    onJumpHandled?.();
+  }, [jumpTo, onJumpHandled]);
 
   return (
     <CodeMirror
       value={value}
       height="100%"
-      extensions={[markdown(), cursorListener, changeListener, remoteCursorExtension]}
+      extensions={extensions}
+      onCreateEditor={(view) => {
+        editorRef.current = view;
+      }}
       onChange={(v) => {
         if (!onDelta && onChange) onChange(v);
       }}

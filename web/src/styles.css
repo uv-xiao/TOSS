@@ -176,15 +176,18 @@ body {
 .workspace-headbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 10px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  min-width: 0;
 }
 
 .workspace-project-picker {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 260px;
+  flex: 1 1 auto;
 }
 
 .workspace-project-picker span {
@@ -193,7 +196,8 @@ body {
 }
 
 .workspace-project-picker select {
-  min-width: 260px;
+  min-width: 220px;
+  width: 100%;
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 6px 10px;
@@ -204,6 +208,8 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 1px;
 }
 
 .icon-toggle {
@@ -211,14 +217,16 @@ body {
   background: #fff;
   color: var(--muted);
   border-radius: 8px;
-  width: 34px;
-  height: 34px;
-  display: grid;
-  place-items: center;
+  min-height: 34px;
+  padding: 6px 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   cursor: pointer;
-  font-size: 15px;
-  font-weight: 700;
-  line-height: 1;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.1;
+  white-space: nowrap;
 }
 
 .icon-toggle.active {
@@ -307,6 +315,7 @@ body {
   padding: 8px;
   display: grid;
   gap: 8px;
+  align-content: start;
   min-height: 0;
   flex: 1;
 }
@@ -314,6 +323,7 @@ body {
 .panel-content.flush {
   padding: 0;
   gap: 0;
+  align-content: stretch;
 }
 
 .editor-panel-content {
@@ -322,7 +332,20 @@ body {
 
 .editor-surface {
   min-height: 0;
+  min-width: 0;
   height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-surface > [class^="cm-theme"] {
+  min-height: 0;
+  min-width: 0;
+  height: 100%;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
 }
 
 .editor-surface .cm-editor,
@@ -333,6 +356,20 @@ body {
 .editor-surface .cm-editor {
   border: 0;
   border-radius: 0;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  flex: 1;
+}
+
+.editor-surface .cm-scroller {
+  overflow: auto !important;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  flex: 1;
 }
 
 .toolbar {
@@ -525,17 +562,24 @@ body {
 }
 
 .pdf-pages {
-  transform: scale(var(--preview-zoom, 1));
-  transform-origin: top center;
   width: max-content;
+  min-width: 100%;
   margin: 0 auto;
-  padding: 10px 0;
+  padding: 10px;
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  gap: 14px;
 }
 
 .pdf-pages canvas {
   display: block;
-  margin: 0 auto 14px;
+  margin: 0;
   box-shadow: 0 8px 28px rgba(18, 35, 53, 0.15);
+}
+
+.pdf-frame.rendering .pdf-pages {
+  visibility: hidden;
 }
 
 .git-box {
@@ -674,6 +718,65 @@ body {
   background: #fff4f4;
 }
 
+.panel-inline-error.diagnostics {
+  display: grid;
+  gap: 6px;
+}
+
+.diagnostic-item {
+  border: 1px solid #efc4c6;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--danger);
+  text-align: left;
+  font-size: 12px;
+  display: grid;
+  gap: 3px;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+.diagnostic-level {
+  width: max-content;
+  border-radius: 999px;
+  padding: 1px 6px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  border: 1px solid;
+}
+
+.diagnostic-level.error {
+  background: #fff1f1;
+  border-color: #efc4c6;
+}
+
+.diagnostic-level.warning {
+  background: #fff7ea;
+  color: #8c5a11;
+  border-color: #f3d3a0;
+}
+
+.diagnostic-level.info {
+  background: #eaf4ff;
+  color: #2f5f86;
+  border-color: #c4dcf2;
+}
+
+.diagnostic-main {
+  overflow-wrap: anywhere;
+}
+
+.inline-toggle {
+  border: 1px solid var(--border);
+  background: #fff;
+  border-radius: 7px;
+  font-size: 11px;
+  color: var(--muted);
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
 label {
   display: grid;
   gap: 4px;
@@ -695,6 +798,10 @@ label {
   }
 
   .topbar {
+    flex-wrap: wrap;
+  }
+
+  .workspace-headbar {
     flex-wrap: wrap;
   }
 }

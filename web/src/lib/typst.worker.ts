@@ -24,6 +24,16 @@ type CompileResponse = {
   vectorBytes?: Uint8Array;
   pdfBytes?: Uint8Array;
   errors?: string[];
+  diagnostics?: CompileDiagnostic[];
+};
+
+type CompileDiagnostic = {
+  severity: "error" | "warning" | "info";
+  message: string;
+  path?: string;
+  line?: number;
+  column?: number;
+  raw: string;
 };
 
 class NormalizedFetchAccessModel extends FetchAccessModel {
@@ -62,6 +72,34 @@ function normalizeWorkspacePath(path: string) {
 
 function sourcePath(path: string) {
   return `/${normalizeWorkspacePath(path)}`;
+}
+
+function parseCompileDiagnostic(rawLine: string): CompileDiagnostic {
+  const raw = rawLine.trim();
+  const pattern =
+    /^(?<path>.+?):(?<line>\d+):(?<column>\d+)(?::\d+:\d+)?:\s*(?<severity>error|warning|info):\s*(?<message>.+)$/i;
+  const matched = raw.match(pattern);
+  if (!matched?.groups) {
+    return {
+      severity: "error",
+      message: raw,
+      raw
+    };
+  }
+  const path = matched.groups.path.replace(/^\/+/, "");
+  const line = Number.parseInt(matched.groups.line, 10);
+  const column = Number.parseInt(matched.groups.column, 10);
+  const severityRaw = matched.groups.severity.toLowerCase();
+  const severity: "error" | "warning" | "info" =
+    severityRaw === "warning" ? "warning" : severityRaw === "info" ? "info" : "error";
+  return {
+    severity,
+    path: path || undefined,
+    line: Number.isFinite(line) ? line : undefined,
+    column: Number.isFinite(column) ? column : undefined,
+    message: matched.groups.message.trim(),
+    raw
+  };
 }
 
 function base64ToUint8(value: string): Uint8Array {
@@ -146,8 +184,35 @@ async function handleCompile(eventData: CompileRequest) {
       await typst.mapShadow(rel, bytes);
     }
     const mainFilePath = sourcePath(entryFilePath);
-    const vector = await typst.vector({ mainFilePath });
-    const pdf = await typst.pdf({ mainFilePath });
+    const compiler = await typst.getCompiler();
+    const worldResult = await compiler.runWithWorld({ mainFilePath }, async (world) => {
+      const check = await world.compile({ diagnostics: "unix" });
+      const checkDiagnostics = (check.diagnostics || []).map((item) => String(item).trim()).filter((item) => !!item);
+      if (check.hasError) {
+        return {
+          vector: undefined,
+          pdf: undefined,
+          diagnostics: checkDiagnostics
+        };
+      }
+      const vectorResult = await world.vector({ diagnostics: "unix" });
+      const pdfResult = await world.pdf({ diagnostics: "none" });
+      const vectorDiagnostics = (vectorResult.diagnostics || [])
+        .map((item) => String(item).trim())
+        .filter((item) => !!item);
+      return {
+        vector: vectorResult.result,
+        pdf: pdfResult.result,
+        diagnostics: vectorDiagnostics.length > 0 ? vectorDiagnostics : checkDiagnostics
+      };
+    });
+    const vector = worldResult.vector;
+    const pdf = worldResult.pdf;
+    const diagnostics = (worldResult.diagnostics || [])
+      .map((item) => String(item).trim())
+      .filter((item) => !!item)
+      .map((item) => parseCompileDiagnostic(item));
+    const errorDiagnostics = diagnostics.filter((item) => item.severity === "error");
     compileCount += 1;
     if (compileCount > 40) {
       resetCompilerState();
@@ -157,7 +222,11 @@ async function handleCompile(eventData: CompileRequest) {
       ok: !!vector,
       vectorBytes: vector,
       pdfBytes: pdf,
-      errors: []
+      errors:
+        errorDiagnostics.length > 0
+          ? errorDiagnostics.map((item) => item.raw)
+          : diagnostics.map((item) => item.raw),
+      diagnostics
     } satisfies CompileResponse);
     return;
   } catch (err) {

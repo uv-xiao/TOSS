@@ -1,10 +1,10 @@
 import { startTransition, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
-import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
+import { Link, Navigate, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import * as Y from "yjs";
 import { EditorPane, type EditorChange } from "@/components/EditorPane";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { bindRealtimeYDoc, type PresencePeer } from "@/lib/realtime";
-import { compileTypstClientSide, renderTypstVectorToCanvas } from "@/lib/typst";
+import { compileTypstClientSide, renderTypstVectorToCanvas, type CompileDiagnostic } from "@/lib/typst";
 import {
   createPersonalAccessToken,
   createProject,
@@ -86,6 +86,8 @@ const MIN_SIDE_PANEL_WIDTH = 220;
 const MAX_SIDE_PANEL_WIDTH = 520;
 const MIN_EDITOR_RATIO = 0.28;
 const MAX_EDITOR_RATIO = 0.72;
+const PREVIEW_MIN_ZOOM = 0.2;
+const PREVIEW_MAX_ZOOM = 5;
 
 function clampNumber(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -117,7 +119,7 @@ function readWorkspaceLayoutPrefs(): WorkspaceLayoutPrefs {
 }
 
 function looksLikeUuid(value: string) {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 }
 
 function normalizePath(path: string) {
@@ -164,6 +166,35 @@ function inferContentType(path: string, contentType?: string) {
   if (/\.gif$/i.test(path)) return "image/gif";
   if (/\.webp$/i.test(path)) return "image/webp";
   return "application/octet-stream";
+}
+
+function deriveFitZoom(frame: HTMLElement, pages: HTMLElement) {
+  const firstCanvas = pages.querySelector("canvas") as HTMLCanvasElement | null;
+  if (!firstCanvas) return 1;
+  const baseWidth = Number(firstCanvas.dataset.baseWidth) || firstCanvas.width / 2 || firstCanvas.clientWidth || 1;
+  const baseHeight = Number(firstCanvas.dataset.baseHeight) || firstCanvas.height / 2 || firstCanvas.clientHeight || 1;
+  return clampNumber(
+    Math.min((frame.clientWidth - 20) / baseWidth, (frame.clientHeight - 20) / baseHeight),
+    PREVIEW_MIN_ZOOM,
+    PREVIEW_MAX_ZOOM
+  );
+}
+
+function applyPreviewZoom(frame: HTMLElement, zoom: number) {
+  const pages = frame.querySelector(".pdf-pages") as HTMLElement | null;
+  if (!pages) return;
+  const canvases = Array.from(pages.querySelectorAll("canvas"));
+  let widest = 0;
+  for (const canvas of canvases) {
+    const baseWidth = Number(canvas.dataset.baseWidth) || canvas.width / 2 || canvas.clientWidth || 1;
+    const baseHeight = Number(canvas.dataset.baseHeight) || canvas.height / 2 || canvas.clientHeight || 1;
+    const nextWidth = Math.max(1, Math.round(baseWidth * zoom));
+    const nextHeight = Math.max(1, Math.round(baseHeight * zoom));
+    canvas.style.width = `${nextWidth}px`;
+    canvas.style.height = `${nextHeight}px`;
+    widest = Math.max(widest, nextWidth);
+  }
+  pages.style.width = `${Math.max(widest, 1)}px`;
 }
 
 function isImageAsset(path: string, contentType?: string) {
@@ -244,7 +275,6 @@ export function App() {
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const location = useLocation();
 
   useEffect(() => {
     Promise.all([getAuthConfig(), getAuthMe()])
@@ -308,25 +338,9 @@ export function App() {
     <main className="app-shell">
       <header className="topbar">
         <strong>Typst Collaboration</strong>
-        <nav className="tabs">
-          <Link className={location.pathname === "/projects" ? "tab active" : "tab"} to="/projects">
-            Projects
-          </Link>
-          <Link className={location.pathname.startsWith("/admin") ? "tab active" : "tab"} to="/admin">
-            Admin
-          </Link>
-          <Link className={location.pathname.startsWith("/profile") ? "tab active" : "tab"} to="/profile">
-            Profile
-          </Link>
-          {firstProject && (
-            <Link
-              className={location.pathname.startsWith("/project/") ? "tab active" : "tab"}
-              to={`/project/${firstProject}`}
-            >
-              Workspace
-            </Link>
-          )}
-        </nav>
+        <Link className="tab" to="/projects">
+          Back to projects
+        </Link>
         <div className="meta">
           <span>{authUser.display_name}</span>
           <button className="button" onClick={handleLogout}>
@@ -510,6 +524,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
   const [vectorData, setVectorData] = useState<Uint8Array | null>(null);
   const [pdfData, setPdfData] = useState<Uint8Array | null>(null);
   const [compileErrors, setCompileErrors] = useState<string[]>([]);
+  const [compileDiagnostics, setCompileDiagnostics] = useState<CompileDiagnostic[]>([]);
   const [compiledAt, setCompiledAt] = useState<number | null>(null);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [workspaceLoaded, setWorkspaceLoaded] = useState(false);
@@ -528,6 +543,9 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
   const [previewZoom, setPreviewZoom] = useState(1);
   const [previewFitLocked, setPreviewFitLocked] = useState(true);
   const [previewRenderTick, setPreviewRenderTick] = useState(0);
+  const [lineWrapEnabled, setLineWrapEnabled] = useState(true);
+  const [jumpTarget, setJumpTarget] = useState<{ line: number; column: number; token: number } | null>(null);
+  const [queuedJump, setQueuedJump] = useState<{ path: string; line: number; column: number } | null>(null);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set([""]));
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [bundledFonts, setBundledFonts] = useState<Uint8Array[]>([]);
@@ -671,6 +689,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
     setWorkspaceLoaded(false);
     setWorkspaceError(null);
     setCompileErrors([]);
+    setCompileDiagnostics([]);
     setVectorData(null);
     setPdfData(null);
     setCompiledAt(null);
@@ -694,6 +713,17 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
   useEffect(() => {
     setExpandedDirs((prev) => expandAncestors(activePath, prev));
   }, [activePath]);
+
+  useEffect(() => {
+    if (!queuedJump) return;
+    if (queuedJump.path !== activePath) return;
+    setJumpTarget({
+      line: queuedJump.line,
+      column: queuedJump.column,
+      token: Date.now()
+    });
+    setQueuedJump(null);
+  }, [activePath, queuedJump]);
 
   useEffect(() => {
     let cancelled = false;
@@ -843,6 +873,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
       setVectorData(null);
       setPdfData(null);
       setCompileErrors(["Project has no source documents"]);
+      setCompileDiagnostics([]);
       setCompiledAt(Date.now());
       return;
     }
@@ -859,6 +890,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
         setVectorData(output.vectorData);
         setPdfData(output.pdfData);
         setCompileErrors(output.errors);
+        setCompileDiagnostics(output.diagnostics);
         setCompiledAt(output.compiledAt);
       });
     });
@@ -868,6 +900,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
   }, [compileAssets, compileDocuments, entryFilePath, fontData, projectId, workspaceLoaded]);
 
   useEffect(() => {
+    if (!showPreviewPanel) return;
     const frame = canvasPreviewRef.current;
     if (!frame) return;
     if (!vectorData) {
@@ -875,43 +908,55 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
       setPreviewRenderTick((value) => value + 1);
       return;
     }
+    let cancelled = false;
+    frame.classList.add("rendering");
     renderTypstVectorToCanvas(frame, vectorData)
       .then(() => {
+        if (cancelled) return;
+        const pages = frame.querySelector(".pdf-pages") as HTMLElement | null;
+        if (pages) {
+          const zoom = previewFitLocked ? deriveFitZoom(frame, pages) : previewZoom;
+          applyPreviewZoom(frame, zoom);
+          if (previewFitLocked && Math.abs(zoom - previewZoom) > 0.01) {
+            setPreviewZoom(zoom);
+          }
+        }
+        frame.classList.remove("rendering");
         setPreviewRenderTick((value) => value + 1);
       })
       .catch((err) => {
         const message = err instanceof Error ? err.message : "Preview render failed";
         setCompileErrors([message]);
+        setCompileDiagnostics([]);
         frame.replaceChildren();
+        frame.classList.remove("rendering");
       });
-  }, [vectorData]);
+    return () => {
+      cancelled = true;
+      frame.classList.remove("rendering");
+    };
+  }, [showPreviewPanel, vectorData]);
 
   useEffect(() => {
     const frame = canvasPreviewRef.current;
     if (!frame) return;
     const pages = frame.querySelector(".pdf-pages") as HTMLElement | null;
-    const firstCanvas = pages?.querySelector("canvas") as HTMLCanvasElement | null;
-    if (!pages || !firstCanvas) return;
-
-    const measuredWidth = firstCanvas.width > 0 ? firstCanvas.width / 2 : firstCanvas.offsetWidth;
-    const measuredHeight = firstCanvas.height > 0 ? firstCanvas.height / 2 : firstCanvas.offsetHeight;
-    const baseWidth = Number(pages.dataset.baseWidth) || measuredWidth || 1;
-    const baseHeight = Number(pages.dataset.baseHeight) || measuredHeight || 1;
-    pages.dataset.baseWidth = `${baseWidth}`;
-    pages.dataset.baseHeight = `${baseHeight}`;
-
-    const zoom = previewFitLocked
-      ? clampNumber(
-          Math.min((frame.clientWidth - 20) / baseWidth, (frame.clientHeight - 20) / baseHeight),
-          0.1,
-          5
-        )
-      : previewZoom;
-    pages.style.setProperty("--preview-zoom", `${zoom}`);
+    if (!pages) return;
+    const zoom = previewFitLocked ? deriveFitZoom(frame, pages) : previewZoom;
+    applyPreviewZoom(frame, zoom);
     if (previewFitLocked && Math.abs(zoom - previewZoom) > 0.01) {
       setPreviewZoom(zoom);
     }
-  }, [previewFitLocked, previewZoom, previewRenderTick, showPreviewPanel, editorRatio, showFilesPanel, showProjectSettingsPanel, showRevisionPanel]);
+  }, [
+    editorRatio,
+    previewFitLocked,
+    previewRenderTick,
+    previewZoom,
+    showFilesPanel,
+    showPreviewPanel,
+    showProjectSettingsPanel,
+    showRevisionPanel
+  ]);
 
   useEffect(() => {
     if (!showPreviewPanel) return;
@@ -919,18 +964,9 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
     if (!frame) return;
     const observer = new ResizeObserver(() => {
       const pages = frame.querySelector(".pdf-pages") as HTMLElement | null;
-      const firstCanvas = pages?.querySelector("canvas") as HTMLCanvasElement | null;
-      if (!pages || !firstCanvas || !previewFitLocked) return;
-      const measuredWidth = firstCanvas.width > 0 ? firstCanvas.width / 2 : firstCanvas.offsetWidth;
-      const measuredHeight = firstCanvas.height > 0 ? firstCanvas.height / 2 : firstCanvas.offsetHeight;
-      const baseWidth = Number(pages.dataset.baseWidth) || measuredWidth || 1;
-      const baseHeight = Number(pages.dataset.baseHeight) || measuredHeight || 1;
-      const zoom = clampNumber(
-        Math.min((frame.clientWidth - 20) / baseWidth, (frame.clientHeight - 20) / baseHeight),
-        0.1,
-        5
-      );
-      pages.style.setProperty("--preview-zoom", `${zoom}`);
+      if (!pages || !previewFitLocked) return;
+      const zoom = deriveFitZoom(frame, pages);
+      applyPreviewZoom(frame, zoom);
       setPreviewZoom(zoom);
     });
     observer.observe(frame);
@@ -960,14 +996,14 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
     const ytext = ytextRef.current;
     if (!ydoc || !ytext) return;
     ydoc.transact(() => {
-      let offset = 0;
-      for (const change of changes) {
-        const from = Math.max(0, change.from + offset);
-        const to = Math.max(from, change.to + offset);
-        const deleteCount = to - from;
+      // Apply from right-to-left so CodeMirror positions stay stable in Yjs.
+      const ordered = [...changes].sort((a, b) => b.from - a.from || b.to - a.to);
+      for (const change of ordered) {
+        const from = Math.max(0, change.from);
+        const to = Math.max(from, change.to);
+        const deleteCount = Math.max(0, to - from);
         if (deleteCount > 0) ytext.delete(from, deleteCount);
         if (change.insert) ytext.insert(from, change.insert);
-        offset += change.insert.length - deleteCount;
       }
     });
   }
@@ -1134,6 +1170,31 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
     setExpandedDirs((prev) => expandAncestors(path, prev));
   }
 
+  function jumpToDiagnostic(diagnostic: CompileDiagnostic) {
+    const path = normalizePath(diagnostic.path || activePath);
+    const line = Math.max(1, diagnostic.line ?? 1);
+    const column = Math.max(1, diagnostic.column ?? 1);
+    if (!path) {
+      setJumpTarget({
+        line,
+        column,
+        token: Date.now()
+      });
+      return;
+    }
+    setExpandedDirs((prev) => expandAncestors(path, prev));
+    if (path !== activePath) {
+      setQueuedJump({ path, line, column });
+      setActivePath(path);
+      return;
+    }
+    setJumpTarget({
+      line,
+      column,
+      token: Date.now()
+    });
+  }
+
   function requestContextMenu(next: ContextMenuState) {
     setContextMenu(next);
   }
@@ -1156,12 +1217,12 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
 
   function increasePreviewZoom() {
     setPreviewFitLocked(false);
-    setPreviewZoom((value) => clampNumber(value + 0.1, 0.2, 3));
+    setPreviewZoom((value) => clampNumber(value + 0.1, PREVIEW_MIN_ZOOM, PREVIEW_MAX_ZOOM));
   }
 
   function decreasePreviewZoom() {
     setPreviewFitLocked(false);
-    setPreviewZoom((value) => clampNumber(value - 0.1, 0.2, 3));
+    setPreviewZoom((value) => clampNumber(value - 0.1, PREVIEW_MIN_ZOOM, PREVIEW_MAX_ZOOM));
   }
 
   function toggleRevisionPanel() {
@@ -1203,7 +1264,8 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
             title="Toggle Files Panel"
             onClick={() => setShowFilesPanel((v) => !v)}
           >
-            ☰
+            <span aria-hidden>☰</span>
+            <span>Files</span>
           </button>
           <button
             className={`icon-toggle ${showPreviewPanel ? "active" : ""}`}
@@ -1211,7 +1273,8 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
             title="Toggle Preview Panel"
             onClick={() => setShowPreviewPanel((v) => !v)}
           >
-            ▭
+            <span aria-hidden>▭</span>
+            <span>Preview</span>
           </button>
           <button
             className={`icon-toggle ${showProjectSettingsPanel ? "active" : ""}`}
@@ -1219,7 +1282,8 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
             title="Toggle Project Settings Panel"
             onClick={() => setShowProjectSettingsPanel((v) => !v)}
           >
-            ⚙
+            <span aria-hidden>⚙</span>
+            <span>Settings</span>
           </button>
           <button
             className={`icon-toggle ${showRevisionPanel ? "active" : ""}`}
@@ -1227,7 +1291,8 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
             title="Toggle Revision Panel"
             onClick={toggleRevisionPanel}
           >
-            ↺
+            <span aria-hidden>↺</span>
+            <span>Revisions</span>
           </button>
         </div>
       </div>
@@ -1297,6 +1362,9 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
                 <span>Mode: {isRevisionMode ? "Revision" : "Live"}</span>
                 <span>Save: {saveState}</span>
                 <span>Compiled: {compiledAt ? new Date(compiledAt).toLocaleTimeString() : "n/a"}</span>
+                <button className="inline-toggle" onClick={() => setLineWrapEnabled((value) => !value)}>
+                  Wrap: {lineWrapEnabled ? "On" : "Off"}
+                </button>
                 <span>
                   Collaborators:{" "}
                   {remoteCursors.length > 0 ? remoteCursors.map((user) => user.name).join(", ") : "none"}
@@ -1311,7 +1379,10 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
                     onDelta={applyDocumentDeltas}
                     onCursorChange={(cursor) => realtimeRef.current?.sendCursor(cursor)}
                     readOnly={isRevisionMode}
+                    lineWrap={lineWrapEnabled}
                     remoteCursors={remoteCursors}
+                    jumpTo={jumpTarget}
+                    onJumpHandled={() => setJumpTarget(null)}
                   />
                 </div>
               ) : (
@@ -1400,7 +1471,29 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
               </div>
               <div className="panel-content flush">
                 <div ref={canvasPreviewRef} className="pdf-frame" />
-                {compileErrors.length > 0 && <div className="error panel-inline-error">{compileErrors.join("; ")}</div>}
+                {compileDiagnostics.length > 0 && (
+                  <div className="panel-inline-error diagnostics">
+                    {compileDiagnostics.map((diagnostic, index) => (
+                      <button
+                        key={`${diagnostic.raw}-${index}`}
+                        className="diagnostic-item"
+                        onClick={() => jumpToDiagnostic(diagnostic)}
+                      >
+                        <span className={`diagnostic-level ${diagnostic.severity}`}>{diagnostic.severity}</span>
+                        <span className="diagnostic-main">
+                          {diagnostic.path
+                            ? `${diagnostic.path}:${diagnostic.line ?? 1}:${diagnostic.column ?? 1}`
+                            : "workspace"}
+                          {" — "}
+                          {diagnostic.message}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {compileDiagnostics.length === 0 && compileErrors.length > 0 && (
+                  <div className="error panel-inline-error">{compileErrors.join("; ")}</div>
+                )}
               </div>
             </aside>
           )}

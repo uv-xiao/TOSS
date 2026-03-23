@@ -4,7 +4,17 @@ export type CompileOutput = {
   vectorData: Uint8Array | null;
   pdfData: Uint8Array | null;
   errors: string[];
+  diagnostics: CompileDiagnostic[];
   compiledAt: number;
+};
+
+export type CompileDiagnostic = {
+  severity: "error" | "warning" | "info";
+  message: string;
+  path?: string;
+  line?: number;
+  column?: number;
+  raw: string;
 };
 
 type WorkerCompileResponse = {
@@ -13,6 +23,7 @@ type WorkerCompileResponse = {
   vectorBytes?: Uint8Array;
   pdfBytes?: Uint8Array;
   errors?: string[];
+  diagnostics?: CompileDiagnostic[];
 };
 
 export type CompileOptions = {
@@ -132,6 +143,7 @@ export async function compileTypstClientSide(options: CompileOptions): Promise<C
       vectorData: null,
       pdfData: null,
       errors: ["Project has no source documents"],
+      diagnostics: [],
       compiledAt: Date.now()
     };
   }
@@ -141,6 +153,7 @@ export async function compileTypstClientSide(options: CompileOptions): Promise<C
       vectorData: result.vectorBytes,
       pdfData: result.pdfBytes ?? null,
       errors: [],
+      diagnostics: result.diagnostics ?? [],
       compiledAt: Date.now()
     };
   }
@@ -152,6 +165,7 @@ export async function compileTypstClientSide(options: CompileOptions): Promise<C
       : [
           "This browser cannot run Typst WASM preview. You can continue editing source and sync via Git for offline compilation."
         ],
+    diagnostics: result.diagnostics ?? [],
     compiledAt: Date.now()
   };
 }
@@ -173,6 +187,15 @@ export async function renderTypstVectorToCanvas(container: HTMLElement, vectorDa
       backgroundColor: "#ffffff",
       pixelPerPt: 2
     });
+    for (const canvas of Array.from(pages.querySelectorAll("canvas"))) {
+      const baseWidth = canvas.width > 0 ? canvas.width / 2 : canvas.clientWidth;
+      const baseHeight = canvas.height > 0 ? canvas.height / 2 : canvas.clientHeight;
+      canvas.dataset.baseWidth = `${Math.max(1, baseWidth)}`;
+      canvas.dataset.baseHeight = `${Math.max(1, baseHeight)}`;
+      canvas.style.width = `${Math.max(1, baseWidth)}px`;
+      canvas.style.height = `${Math.max(1, baseHeight)}px`;
+      canvas.style.display = "block";
+    }
   });
   await renderQueue;
 }

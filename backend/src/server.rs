@@ -3603,17 +3603,17 @@ async fn mark_project_dirty(db: &PgPool, project_id: Uuid, actor_user_id: Option
         .and_then(|v| v.parse::<i64>().ok())
         .filter(|v| *v >= 10)
         .unwrap_or(30);
-    let recent = sqlx::query(
+    let recent_created_at = sqlx::query(
         "select created_at from revisions where project_id = $1 order by created_at desc limit 1",
     )
     .bind(project_id)
     .fetch_optional(db)
     .await
     .ok()
-    .flatten();
-    let should_create = if let Some(row) = recent {
-        let created_at: DateTime<Utc> = row.get("created_at");
-        Utc::now().signed_duration_since(created_at) >= chrono::Duration::seconds(interval_sec)
+    .flatten()
+    .map(|row| row.get::<DateTime<Utc>, _>("created_at"));
+    let should_create = if let Some(created_at) = recent_created_at.as_ref() {
+        Utc::now().signed_duration_since(created_at.clone()) >= chrono::Duration::seconds(interval_sec)
     } else {
         true
     };
@@ -3632,12 +3632,25 @@ async fn mark_project_dirty(db: &PgPool, project_id: Uuid, actor_user_id: Option
         .execute(db)
         .await;
         let _ = snapshot_revision_documents(db, project_id, revision_id).await;
-        let authors = sqlx::query("select user_id from git_pending_authors where project_id = $1")
+        let authors = if let Some(previous_revision_time) = recent_created_at.as_ref() {
+            sqlx::query(
+                "select user_id from git_pending_authors
+                 where project_id = $1 and touched_at >= $2",
+            )
             .bind(project_id)
+            .bind(previous_revision_time.clone())
             .fetch_all(db)
             .await
             .ok()
-            .unwrap_or_default();
+            .unwrap_or_default()
+        } else {
+            sqlx::query("select user_id from git_pending_authors where project_id = $1")
+                .bind(project_id)
+                .fetch_all(db)
+                .await
+                .ok()
+                .unwrap_or_default()
+        };
         for row in authors {
             let user_id: Uuid = row.get("user_id");
             let _ = sqlx::query(
