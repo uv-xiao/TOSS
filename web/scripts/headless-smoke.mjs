@@ -524,7 +524,32 @@ try {
   }
 
   await pageA.getByRole("button", { name: "Settings" }).click();
-  await pageA.getByText("Git Access URL").waitFor({ timeout: 10000 });
+  await pageA.getByText("Git access").waitFor({ timeout: 10000 });
+  const settingsPanelInfo = await pageA.evaluate(() => {
+    const panel = document.querySelector(".panel-settings .panel-content");
+    const entrySelect = document.querySelector(".panel-settings select");
+    if (!panel || !entrySelect) {
+      return {
+        ok: false,
+        hasPanel: !!panel,
+        hasEntrySelect: !!entrySelect
+      };
+    }
+    const overflowY = getComputedStyle(panel).overflowY;
+    const optionCount = entrySelect.querySelectorAll("option").length;
+    return { ok: true, overflowY, optionCount };
+  });
+  if (!settingsPanelInfo.ok) {
+    throw new Error(
+      `settings panel controls missing (panel=${settingsPanelInfo.hasPanel}, entrySelect=${settingsPanelInfo.hasEntrySelect})`
+    );
+  }
+  if (!["auto", "scroll"].includes(settingsPanelInfo.overflowY)) {
+    throw new Error(`settings panel is not vertically scrollable (overflowY=${settingsPanelInfo.overflowY})`);
+  }
+  if (settingsPanelInfo.optionCount < 1) {
+    throw new Error("entry file select has no options");
+  }
   await pageA.getByRole("button", { name: "Revisions" }).click();
   const historyCount = await pageA.locator(".history-item").count();
   if (historyCount < 1) throw new Error("No revisions available");

@@ -97,8 +97,8 @@ TMP_DIR="$(mktemp -d /tmp/typst-git-qa.XXXXXX)"
 REPO_A="$TMP_DIR/owner-clone"
 REPO_B="$TMP_DIR/collab-clone"
 
-REMOTE_OWNER="http://qa:${OWNER_PAT}@127.0.0.1:18080/v1/git/repo/${PROJECT_ID}"
-REMOTE_COLLAB="http://qa:${COLLAB_PAT}@127.0.0.1:18080/v1/git/repo/${PROJECT_ID}"
+REMOTE_OWNER="$(printf '%s/v1/git/repo/%s' "$CORE_API_URL" "$PROJECT_ID" | sed "s#^http://#http://qa:${OWNER_PAT}@#")"
+REMOTE_COLLAB="$(printf '%s/v1/git/repo/%s' "$CORE_API_URL" "$PROJECT_ID" | sed "s#^http://#http://qa:${COLLAB_PAT}@#")"
 
 git clone "$REMOTE_OWNER" "$REPO_A" >/dev/null 2>&1 || true
 git clone "$REMOTE_COLLAB" "$REPO_B" >/dev/null 2>&1 || true

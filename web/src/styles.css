@@ -157,8 +157,8 @@ body {
 .toolbar select,
 .panel-content input,
 .panel-content select,
-.git-box select,
-.git-box input {
+.settings-section select,
+.settings-section input {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 8px;
@@ -392,6 +392,16 @@ body {
   outline: 2px dashed #6ca2cf;
   outline-offset: -6px;
   background: #eef5fd;
+}
+
+.panel-settings .panel-content {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  align-content: unset;
+  overflow-y: auto;
+  overflow-x: hidden;
+  gap: 8px;
 }
 
 .editor-panel-content {
@@ -652,7 +662,7 @@ body {
   display: none !important;
 }
 
-.git-box {
+.settings-section {
   border: 1px solid var(--border);
   border-radius: 10px;
   background: #fbfdff;
@@ -662,7 +672,7 @@ body {
   min-width: 0;
 }
 
-.git-box code {
+.settings-section code {
   display: block;
   max-width: 100%;
   white-space: pre-wrap;
@@ -670,8 +680,8 @@ body {
   font-size: 12px;
 }
 
-.panel-settings .git-box select,
-.panel-settings .git-box input {
+.panel-settings .settings-section select,
+.panel-settings .settings-section input {
   width: 100%;
   min-width: 0;
   max-width: 100%;

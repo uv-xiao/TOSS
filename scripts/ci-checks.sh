@@ -37,8 +37,8 @@ done
 curl -fsS "$CORE_API_URL/health" >/dev/null
 
 echo "[ci] run API-level collaboration and git checks"
-node web/scripts/realtime-multiuser-test.mjs
-bash web/scripts/git-multiuser-test.sh
+CORE_API_URL="$CORE_API_URL" REALTIME_WS_URL="$REALTIME_URL" node web/scripts/realtime-multiuser-test.mjs
+CORE_API_URL="$CORE_API_URL" bash web/scripts/git-multiuser-test.sh
 
 echo "[ci] run headless browser checks"
 WEB_BASE_URL="$CORE_API_URL" node web/scripts/headless-smoke.mjs

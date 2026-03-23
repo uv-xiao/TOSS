@@ -819,6 +819,18 @@ function WorkspacePage({
   const activeReadShare = shareLinks.find((link) => link.permission === "read" && !link.revoked_at) ?? null;
   const activeWriteShare = shareLinks.find((link) => link.permission === "write" && !link.revoked_at) ?? null;
   const myOrganizations = organizations;
+  const typEntryOptions = useMemo(() => {
+    const values = new Set<string>();
+    for (const path of Object.keys(docs)) {
+      if (path.endsWith(".typ")) values.add(path);
+    }
+    for (const node of nodes) {
+      if (node.kind === "file" && node.path.endsWith(".typ")) values.add(node.path);
+    }
+    if (entryFilePath.endsWith(".typ")) values.add(entryFilePath);
+    if (values.size === 0) values.add("main.typ");
+    return Array.from(values).sort((a, b) => a.localeCompare(b));
+  }, [docs, entryFilePath, nodes]);
   const formatAccessType = (accessType: string, role: string) => {
     if (accessType === "manage") return "Manage";
     if (accessType === "write") return "Read + write";
@@ -2029,11 +2041,11 @@ function WorkspacePage({
                 <h2>{t("workspace.settings")}</h2>
               </div>
               <div className="panel-content">
-                <div className="git-box">
+                <div className="settings-section">
+                  <strong>Compilation</strong>
                   <label>
                     Entry file
-                    <input
-                      list="entry-file-options"
+                    <select
                       value={entryFilePath}
                       onChange={async (e) => {
                         const next = e.target.value.trim();
@@ -2042,22 +2054,22 @@ function WorkspacePage({
                         setEntryFilePath(updated.entry_file_path);
                       }}
                       disabled={!canManageProject}
-                    />
-                    <datalist id="entry-file-options">
-                      {Object.keys(docs)
-                        .filter((path) => path.endsWith(".typ"))
-                        .map((path) => (
-                          <option value={path} key={path} />
-                        ))}
-                    </datalist>
+                    >
+                      {typEntryOptions.map((path) => (
+                        <option value={path} key={path}>
+                          {path}
+                        </option>
+                      ))}
+                    </select>
                   </label>
-                  <div>
-                    <strong>Git Access URL</strong>
-                    <code>{gitRepoUrl || "Loading..."}</code>
-                    <small>Use PAT as HTTP password. Force push is rejected.</small>
-                  </div>
+                  <small>Preview and PDF export compile from this file.</small>
                 </div>
-                <div className="git-box">
+                <div className="settings-section">
+                  <strong>Git access</strong>
+                  <code>{gitRepoUrl || "Loading..."}</code>
+                  <small>Use PAT as HTTP password. Force push is rejected.</small>
+                </div>
+                <div className="settings-section">
                   <strong>{t("share.title")}</strong>
                   <div className="settings-share-grid">
                     <div className="card">
@@ -2132,7 +2144,7 @@ function WorkspacePage({
                     </div>
                   </div>
                 </div>
-                <div className="git-box">
+                <div className="settings-section">
                   <strong>Organization access</strong>
                   {myOrganizations.length > 0 ? (
                     <div className="card-list">
@@ -2165,7 +2177,7 @@ function WorkspacePage({
                     <small>No organization memberships available for this account.</small>
                   )}
                 </div>
-                <div className="git-box">
+                <div className="settings-section">
                   <strong>Project access users</strong>
                   {projectAccessUsers.length > 0 ? (
                     <div className="card-list">
