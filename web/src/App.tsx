@@ -88,7 +88,7 @@ type ProjectTreeNodeView = {
 };
 
 type AssetMeta = {
-  id: string;
+  id?: string;
   contentType: string;
 };
 
@@ -320,7 +320,7 @@ function applyPreviewZoom(frame: HTMLElement, zoom: number) {
           canvas.style.height = `${Math.max(1, Math.round(canvasBaseHeight))}px`;
         }
         transformWrapper.style.transformOrigin = "0 0";
-        transformWrapper.style.transform = `scale(${zoom})`;
+        transformWrapper.style.transform = `scale(${nextWidth / canvasBaseWidth}, ${nextHeight / canvasBaseHeight})`;
       }
     }
     surface.style.width = `${nextWidth}px`;
@@ -328,6 +328,12 @@ function applyPreviewZoom(frame: HTMLElement, zoom: number) {
     widest = Math.max(widest, nextWidth);
   }
   pages.style.width = `${Math.max(widest, 1)}px`;
+}
+
+function pixelPerPtForZoom(mode: PreviewFitMode, zoom: number) {
+  if (mode !== "manual") return 2;
+  const dpr = typeof window === "undefined" ? 1 : Math.max(1, window.devicePixelRatio || 1);
+  return clampNumber(Math.ceil(zoom * dpr), 2, 12);
 }
 
 function isImageAsset(path: string, contentType?: string) {
@@ -864,6 +870,10 @@ function WorkspacePage({
   const [revisions, setRevisions] = useState<Revision[]>([]);
   const [activeRevisionId, setActiveRevisionId] = useState<string | null>(null);
   const [revisionDocs, setRevisionDocs] = useState<Record<string, string>>({});
+  const [revisionNodes, setRevisionNodes] = useState<{ path: string; kind: "file" | "directory" }[]>([]);
+  const [revisionEntryFilePath, setRevisionEntryFilePath] = useState("main.typ");
+  const [revisionAssetBase64, setRevisionAssetBase64] = useState<Record<string, string>>({});
+  const [revisionAssetMeta, setRevisionAssetMeta] = useState<Record<string, AssetMeta>>({});
   const [showFilesPanel, setShowFilesPanel] = useState(true);
   const [showRevisionPanel, setShowRevisionPanel] = useState(false);
   const [showProjectSettingsPanel, setShowProjectSettingsPanel] = useState(false);
@@ -890,12 +900,17 @@ function WorkspacePage({
   const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>("connecting");
   const [copiedControl, setCopiedControl] = useState<string | null>(null);
 
-  const tree = useMemo(() => projectTreeFromFlat(nodes), [nodes]);
   const isRevisionMode = !!activeRevisionId;
-  const hasActiveDoc = Object.prototype.hasOwnProperty.call(docs, activePath);
+  const currentNodes = isRevisionMode ? revisionNodes : nodes;
+  const sourceAssetBase64 = isRevisionMode ? revisionAssetBase64 : assetBase64;
+  const sourceAssetMeta = isRevisionMode ? revisionAssetMeta : assetMeta;
+  const sourceEntryFilePath = isRevisionMode ? revisionEntryFilePath : entryFilePath;
+  const tree = useMemo(() => projectTreeFromFlat(currentNodes), [currentNodes]);
+  const hasActiveLiveDoc = Object.prototype.hasOwnProperty.call(docs, activePath);
   const isActiveTextDoc = isRevisionMode
     ? Object.prototype.hasOwnProperty.call(revisionDocs, activePath)
-    : hasActiveDoc;
+    : hasActiveLiveDoc;
+  const activePathExistsInTree = currentNodes.some((node) => node.kind === "file" && node.path === activePath);
   const currentEditorLanguage = editorLanguageForPath(activePath);
   const sourceDocs = isRevisionMode ? revisionDocs : docs;
   const compileDocuments = useMemo(() => {
@@ -906,12 +921,12 @@ function WorkspacePage({
     return Object.entries(baseDocs).map(([path, content]) => ({ path, content }));
   }, [activePath, docText, isRevisionMode, sourceDocs]);
   const compileAssets = useMemo(
-    () => Object.entries(assetBase64).map(([path, contentBase64]) => ({ path, contentBase64 })),
-    [assetBase64]
+    () => Object.entries(sourceAssetBase64).map(([path, contentBase64]) => ({ path, contentBase64 })),
+    [sourceAssetBase64]
   );
   const assetFontData = useMemo(
     () =>
-      Object.entries(assetBase64)
+      Object.entries(sourceAssetBase64)
         .filter(([path]) => isFontFile(path))
         .map(([, b64]) => {
           const binary = atob(b64);
@@ -919,7 +934,7 @@ function WorkspacePage({
           for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
           return bytes;
         }),
-    [assetBase64]
+    [sourceAssetBase64]
   );
   const fontData = useMemo(() => assetFontData, [assetFontData]);
   const remoteCursors = useMemo(
@@ -940,8 +955,8 @@ function WorkspacePage({
         })),
     [effectiveUserId, presence]
   );
-  const activeAsset = assetMeta[activePath];
-  const activeAssetBase64 = assetBase64[activePath];
+  const activeAsset = sourceAssetMeta[activePath];
+  const activeAssetBase64 = sourceAssetBase64[activePath];
   const activeAssetType = inferContentType(activePath, activeAsset?.contentType);
   const assetDataUrl = activeAssetBase64 ? `data:${activeAssetType};base64,${activeAssetBase64}` : "";
   const project = projects.find((p) => p.id === projectId);
@@ -982,6 +997,7 @@ function WorkspacePage({
     }
     return source;
   };
+  const previewPixelPerPt = pixelPerPtForZoom(previewFitMode, previewZoom);
   const previewPercent = Math.round(previewZoom * 100);
   const activeFileName = activePath.split("/").filter(Boolean).at(-1) || activePath;
   const realtimeRequired = isActiveTextDoc && !isRevisionMode;
@@ -1126,6 +1142,12 @@ function WorkspacePage({
   useEffect(() => {
     setWorkspaceLoaded(false);
     setWorkspaceError(null);
+    setActiveRevisionId(null);
+    setRevisionDocs({});
+    setRevisionNodes([]);
+    setRevisionAssetBase64({});
+    setRevisionAssetMeta({});
+    setRevisionEntryFilePath("main.typ");
     setCompileErrors([]);
     setCompileDiagnostics([]);
     setVectorData(null);
@@ -1198,6 +1220,10 @@ function WorkspacePage({
     if (!activeRevisionId) return;
     setActiveRevisionId(null);
     setRevisionDocs({});
+    setRevisionNodes([]);
+    setRevisionAssetBase64({});
+    setRevisionAssetMeta({});
+    setRevisionEntryFilePath("main.typ");
   }, [activeRevisionId, showRevisionPanel]);
 
   useEffect(() => {
@@ -1240,7 +1266,7 @@ function WorkspacePage({
 
   useEffect(() => {
     if (!projectId || !activePath || isRevisionMode || !workspaceLoaded) return;
-    if (!hasActiveDoc) {
+    if (!hasActiveLiveDoc) {
       setPresence([]);
       setDocText("");
       setRealtimeStatus("disconnected");
@@ -1289,7 +1315,7 @@ function WorkspacePage({
     activePath,
     effectiveUserId,
     effectiveUserName,
-    hasActiveDoc,
+    hasActiveLiveDoc,
     isRevisionMode,
     projectId,
     workspaceLoaded
@@ -1368,7 +1394,7 @@ function WorkspacePage({
 
   useEffect(() => {
     if (!projectId || !activePath || isRevisionMode || !workspaceLoaded) return;
-    if (!hasActiveDoc) return;
+    if (!hasActiveLiveDoc) return;
     if (docText === lastSavedDocRef.current) return;
     setSaveState("saving");
     const timer = window.setTimeout(() => {
@@ -1385,7 +1411,7 @@ function WorkspacePage({
         });
     }, 320);
     return () => window.clearTimeout(timer);
-  }, [activePath, docText, hasActiveDoc, isRevisionMode, projectId, workspaceLoaded]);
+  }, [activePath, docText, hasActiveLiveDoc, isRevisionMode, projectId, workspaceLoaded]);
 
   useEffect(() => {
     if (!projectId || !workspaceLoaded) return;
@@ -1400,7 +1426,7 @@ function WorkspacePage({
     }
     startTransition(() => {
       compileTypstClientSide({
-        entryFilePath,
+        entryFilePath: sourceEntryFilePath,
         documents: compileDocuments,
         assets: compileAssets,
         coreApiUrl: "",
@@ -1418,7 +1444,7 @@ function WorkspacePage({
     return () => {
       cancelled = true;
     };
-  }, [compileAssets, compileDocuments, entryFilePath, fontData, projectId, workspaceLoaded]);
+  }, [compileAssets, compileDocuments, fontData, projectId, sourceEntryFilePath, workspaceLoaded]);
 
   useEffect(() => {
     if (!showPreviewPanel) return;
@@ -1429,7 +1455,7 @@ function WorkspacePage({
       return;
     }
     let cancelled = false;
-    renderTypstVectorToCanvas(frame, vectorData)
+    renderTypstVectorToCanvas(frame, vectorData, { pixelPerPt: previewPixelPerPt })
       .then(() => {
         if (cancelled) return;
         const pages = frame.querySelector(".pdf-pages") as HTMLElement | null;
@@ -1450,7 +1476,7 @@ function WorkspacePage({
     return () => {
       cancelled = true;
     };
-  }, [showPreviewPanel, vectorData]);
+  }, [previewPixelPerPt, showPreviewPanel, vectorData]);
 
   useEffect(() => {
     const frame = canvasPreviewRef.current;
@@ -1540,7 +1566,7 @@ function WorkspacePage({
   }
 
   async function addPath(kind: "file" | "directory", parentPath = "") {
-    if (!projectId || !canWrite) return;
+    if (!projectId || !canWrite || isRevisionMode) return;
     const placeholder = kind === "file" ? "untitled.typ" : "folder";
     const suggested = joinProjectPath(parentPath, placeholder);
     const raw = window.prompt(kind === "file" ? "New file path" : "New directory path", suggested);
@@ -1566,7 +1592,7 @@ function WorkspacePage({
   }
 
   async function renamePath(path: string) {
-    if (!projectId || !canWrite) return;
+    if (!projectId || !canWrite || isRevisionMode) return;
     const to = window.prompt("Rename to", path);
     if (!to) return;
     let normalizedTo = normalizePath(to);
@@ -1588,7 +1614,7 @@ function WorkspacePage({
   }
 
   async function removePath(path: string) {
-    if (!projectId || !canWrite) return;
+    if (!projectId || !canWrite || isRevisionMode) return;
     if (!window.confirm(`Delete ${path}?`)) return;
     try {
       await deleteProjectFile(projectId, path);
@@ -1608,7 +1634,7 @@ function WorkspacePage({
   };
 
   async function commitUploads(items: UploadCandidate[], parentPath = "") {
-    if (!projectId || items.length === 0 || !canWrite) return;
+    if (!projectId || items.length === 0 || !canWrite || isRevisionMode) return;
     try {
       setContextMenu(null);
       for (const item of items) {
@@ -1636,7 +1662,7 @@ function WorkspacePage({
   }
 
   function uploadFromPicker(parentPath = "") {
-    if (!canWrite) return;
+    if (!canWrite || isRevisionMode) return;
     const picker = document.createElement("input");
     picker.type = "file";
     picker.multiple = true;
@@ -1713,7 +1739,7 @@ function WorkspacePage({
   async function onTreeDrop(event: ReactDragEvent<HTMLDivElement>) {
     event.preventDefault();
     setFilesDropActive(false);
-    if (!canWrite) return;
+    if (!canWrite || isRevisionMode) return;
     const items = await collectDragFiles(event.dataTransfer);
     await commitUploads(items, "");
   }
@@ -1817,13 +1843,35 @@ function WorkspacePage({
     if (activeRevisionId === revisionId) {
       setActiveRevisionId(null);
       setRevisionDocs({});
+      setRevisionNodes([]);
+      setRevisionAssetBase64({});
+      setRevisionAssetMeta({});
+      setRevisionEntryFilePath("main.typ");
       return;
     }
-    const response = await getRevisionDocuments(projectId, revisionId);
-    const map: Record<string, string> = {};
-    for (const doc of response.documents) map[doc.path] = doc.content;
-    setRevisionDocs(map);
-    setActiveRevisionId(revisionId);
+    try {
+      const response = await getRevisionDocuments(projectId, revisionId);
+      const map: Record<string, string> = {};
+      for (const doc of response.documents) map[doc.path] = doc.content;
+      const revisionAssets: Record<string, string> = {};
+      const revisionAssetMetaMap: Record<string, AssetMeta> = {};
+      for (const asset of response.assets || []) {
+        revisionAssets[asset.path] = asset.content_base64;
+        revisionAssetMetaMap[asset.path] = {
+          contentType: asset.content_type
+        };
+      }
+      setRevisionDocs(map);
+      setRevisionNodes(response.nodes || []);
+      setRevisionAssetBase64(revisionAssets);
+      setRevisionAssetMeta(revisionAssetMetaMap);
+      setRevisionEntryFilePath(response.entry_file_path || "main.typ");
+      setActiveRevisionId(revisionId);
+      setWorkspaceError(null);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to load revision snapshot";
+      setWorkspaceError(message);
+    }
   }
 
   function downloadCompiledPdf() {
@@ -1833,7 +1881,7 @@ function WorkspacePage({
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = entryFilePath.replace(/\.typ$/i, "") + ".pdf";
+    a.download = sourceEntryFilePath.replace(/\.typ$/i, "") + ".pdf";
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -1903,6 +1951,10 @@ function WorkspacePage({
       if (shown) {
         setActiveRevisionId(null);
         setRevisionDocs({});
+        setRevisionNodes([]);
+        setRevisionAssetBase64({});
+        setRevisionAssetMeta({});
+        setRevisionEntryFilePath("main.typ");
       }
       return !shown;
     });
@@ -2054,13 +2106,13 @@ function WorkspacePage({
                 onDrop={onTreeDrop}
               >
                 <div className="toolbar compact-left">
-                  <button className="button" onClick={() => addPath("file")} disabled={!canWrite}>
+                  <button className="button" onClick={() => addPath("file")} disabled={!canWrite || isRevisionMode}>
                     {t("workspace.newFile")}
                   </button>
-                  <button className="button" onClick={() => addPath("directory")} disabled={!canWrite}>
+                  <button className="button" onClick={() => addPath("directory")} disabled={!canWrite || isRevisionMode}>
                     {t("workspace.newFolder")}
                   </button>
-                  <button className="button" onClick={() => uploadFromPicker()} disabled={!canWrite}>
+                  <button className="button" onClick={() => uploadFromPicker()} disabled={!canWrite || isRevisionMode}>
                     {t("workspace.upload")}
                   </button>
                 </div>
@@ -2073,7 +2125,7 @@ function WorkspacePage({
                       expanded={expandedDirs}
                       setExpanded={setExpandedDirs}
                       onOpen={openTreePath}
-                      canManage={canWrite}
+                      canManage={canWrite && !isRevisionMode}
                       onRequestContextMenu={requestContextMenu}
                     />
                   ))}
@@ -2156,7 +2208,7 @@ function WorkspacePage({
                   {t("workspace.notEditable")}
                 </div>
               )}
-              {isRevisionMode && !Object.prototype.hasOwnProperty.call(revisionDocs, activePath) && (
+              {isRevisionMode && !activePathExistsInTree && (
                 <div className="error panel-inline-error">This file did not exist in this revision snapshot.</div>
               )}
               {!serverReachable && (

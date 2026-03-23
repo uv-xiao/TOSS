@@ -386,13 +386,24 @@ pub struct RevisionAuthor {
 #[derive(Serialize)]
 pub struct RevisionDocumentsResponse {
     pub revision_id: Uuid,
+    pub entry_file_path: String,
+    pub nodes: Vec<ProjectFileNode>,
     pub documents: Vec<RevisionDocument>,
+    pub assets: Vec<RevisionAsset>,
 }
 
 #[derive(Serialize)]
 pub struct RevisionDocument {
     pub path: String,
     pub content: String,
+}
+
+#[derive(Serialize)]
+pub struct RevisionAsset {
+    pub path: String,
+    pub content_type: String,
+    pub size_bytes: i64,
+    pub content_base64: String,
 }
 
 #[derive(Deserialize)]

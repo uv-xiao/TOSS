@@ -215,8 +215,13 @@ export function subscribeTypstRuntimeStatus(listener: (status: TypstRuntimeStatu
   return runtime.subscribe(listener);
 }
 
-export async function renderTypstVectorToCanvas(container: HTMLElement, vectorData: Uint8Array) {
+export async function renderTypstVectorToCanvas(
+  container: HTMLElement,
+  vectorData: Uint8Array,
+  options?: { pixelPerPt?: number }
+) {
   const version = ++renderVersion;
+  const pixelPerPt = Math.max(1, Math.min(8, options?.pixelPerPt ?? 2));
   renderQueue = renderQueue.catch(() => undefined).then(async () => {
     if (version !== renderVersion) return;
     const renderer = await getRenderer();
@@ -230,7 +235,7 @@ export async function renderTypstVectorToCanvas(container: HTMLElement, vectorDa
       container: pages,
       artifactContent: vectorData,
       backgroundColor: "#ffffff",
-      pixelPerPt: 2
+      pixelPerPt
     });
     for (const semanticLayer of Array.from(pages.querySelectorAll(".typst-html-semantics"))) {
       semanticLayer.remove();
@@ -239,52 +244,34 @@ export async function renderTypstVectorToCanvas(container: HTMLElement, vectorDa
       const pageElement = page as HTMLElement;
       pageElement.style.overflow = "hidden";
       const transformWrapper = pageElement.querySelector(":scope > div") as HTMLElement | null;
-      const transformText = transformWrapper?.style.transform || "";
-      const scaleMatch = transformText.match(/scale\(([-+]?\d*\.?\d+)\)/i);
-      const rendererScale = scaleMatch ? Number.parseFloat(scaleMatch[1]) : 1;
       const innerCanvas = transformWrapper?.querySelector("canvas") as HTMLCanvasElement | null;
-      const canvasWidthStyle = Number.parseFloat(innerCanvas?.style.width || "");
-      const canvasHeightStyle = Number.parseFloat(innerCanvas?.style.height || "");
       const canvasWidthPx = innerCanvas?.width ?? 0;
       const canvasHeightPx = innerCanvas?.height ?? 0;
-      const inferredCanvasWidth =
-        Number.isFinite(canvasWidthStyle) && canvasWidthStyle > 0
-          ? canvasWidthStyle
-          : canvasWidthPx > 0
-            ? canvasWidthPx * (rendererScale > 0 ? rendererScale : 1)
-            : 0;
-      const inferredCanvasHeight =
-        Number.isFinite(canvasHeightStyle) && canvasHeightStyle > 0
-          ? canvasHeightStyle
-          : canvasHeightPx > 0
-            ? canvasHeightPx * (rendererScale > 0 ? rendererScale : 1)
-            : 0;
       const rect = pageElement.getBoundingClientRect();
       const baseWidth = Math.max(
         1,
-        inferredCanvasWidth || rect.width || pageElement.clientWidth || 1
+        canvasWidthPx > 0 ? canvasWidthPx / pixelPerPt : rect.width || pageElement.clientWidth || 1
       );
       const baseHeight = Math.max(
         1,
-        inferredCanvasHeight || rect.height || pageElement.clientHeight || 1
+        canvasHeightPx > 0 ? canvasHeightPx / pixelPerPt : rect.height || pageElement.clientHeight || 1
       );
+      const canvasBaseWidth = Math.max(1, canvasWidthPx || Math.round(baseWidth));
+      const canvasBaseHeight = Math.max(1, canvasHeightPx || Math.round(baseHeight));
       pageElement.dataset.baseWidth = `${baseWidth}`;
       pageElement.dataset.baseHeight = `${baseHeight}`;
       pageElement.dataset.baseScale = "1";
-      if (inferredCanvasWidth > 0) {
-        pageElement.dataset.canvasWidth = `${inferredCanvasWidth}`;
-      }
-      if (inferredCanvasHeight > 0) {
-        pageElement.dataset.canvasHeight = `${inferredCanvasHeight}`;
-      }
+      pageElement.dataset.canvasWidth = `${canvasBaseWidth}`;
+      pageElement.dataset.canvasHeight = `${canvasBaseHeight}`;
       if (transformWrapper) {
-        // Normalize renderer-internal scale so our zoom controls own the effective page size.
+        const scaleX = baseWidth / canvasBaseWidth;
+        const scaleY = baseHeight / canvasBaseHeight;
         transformWrapper.style.transformOrigin = "0 0";
-        transformWrapper.style.transform = "scale(1)";
+        transformWrapper.style.transform = `scale(${scaleX}, ${scaleY})`;
       }
-      if (innerCanvas && rendererScale > 0 && rendererScale !== 1) {
-        innerCanvas.style.width = `${Math.max(1, Math.round(baseWidth))}px`;
-        innerCanvas.style.height = `${Math.max(1, Math.round(baseHeight))}px`;
+      if (innerCanvas) {
+        innerCanvas.style.width = `${canvasBaseWidth}px`;
+        innerCanvas.style.height = `${canvasBaseHeight}px`;
       }
     }
     for (const canvas of Array.from(pages.querySelectorAll("canvas"))) {

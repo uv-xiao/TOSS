@@ -17,9 +17,7 @@ const contextCreatedPath = `chapters/${contextCreatedName}`;
 const contextRenamedName = `renamed-${runId}.typ`;
 const contextRenamedPath = `chapters/${contextRenamedName}`;
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-const fontPath =
-  process.env.FONT_FILE_PATH ??
-  path.resolve(scriptDir, "../public/typst-fonts/NotoSans-Regular.ttf");
+const fontPath = process.env.FONT_FILE_PATH ?? "";
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -333,7 +331,14 @@ try {
     role: "Student"
   });
 
-  const fontBytes = new Uint8Array(await fs.readFile(fontPath));
+  let optionalFontBytes = null;
+  if (fontPath) {
+    try {
+      optionalFontBytes = new Uint8Array(await fs.readFile(fontPath));
+    } catch {
+      optionalFontBytes = null;
+    }
+  }
   const simpleSvg = new TextEncoder().encode(
     '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="#2f7d4a"/></svg>'
   );
@@ -367,7 +372,7 @@ try {
       content: [
         '#import "@preview/cetz:0.4.2": *',
         '#import "chapters/intro.typ": intro',
-        '#set text(font: "Noto Sans")',
+        '#set text(font: "Libertinus Serif")',
         "",
         "= Headless Functional Smoke",
         "",
@@ -385,11 +390,13 @@ try {
     content_base64: Buffer.from(simpleSvg).toString("base64"),
     content_type: "image/svg+xml"
   });
-  await bearerApi("POST", `/v1/projects/${projectId}/assets`, owner.sessionToken, {
-    path: "fonts/NotoSans-Regular.ttf",
-    content_base64: Buffer.from(fontBytes).toString("base64"),
-    content_type: "font/ttf"
-  });
+  if (optionalFontBytes) {
+    await bearerApi("POST", `/v1/projects/${projectId}/assets`, owner.sessionToken, {
+      path: "fonts/Custom.ttf",
+      content_base64: Buffer.from(optionalFontBytes).toString("base64"),
+      content_type: "font/ttf"
+    });
+  }
   await bearerApi("POST", `/v1/projects/${projectId}/assets`, owner.sessionToken, {
     path: "blob.bin",
     content_base64: Buffer.from(rawBinary).toString("base64"),

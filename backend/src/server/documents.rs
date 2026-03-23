@@ -51,9 +51,10 @@ async fn create_revision(
     }
     let now = Utc::now();
     let id = Uuid::new_v4();
+    let entry_file_path = lookup_project_entry_file_path(&state.db, project_id).await;
     let row = sqlx::query(
-        "insert into revisions (id, project_id, actor_user_id, summary, created_at)
-         values ($1, $2, $3, $4, $5)
+        "insert into revisions (id, project_id, actor_user_id, summary, created_at, entry_file_path)
+         values ($1, $2, $3, $4, $5, $6)
          returning id, project_id, actor_user_id, summary, created_at",
     )
     .bind(id)
@@ -61,10 +62,11 @@ async fn create_revision(
     .bind(actor)
     .bind(summary)
     .bind(now)
+    .bind(entry_file_path)
     .fetch_one(&state.db)
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    snapshot_revision_documents(&state.db, project_id, id)
+    snapshot_revision_state(&state.db, project_id, id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let _ = sqlx::query(
@@ -110,15 +112,24 @@ async fn get_revision_documents(
     Path((project_id, revision_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<RevisionDocumentsResponse>, StatusCode> {
     ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
-    let exists = sqlx::query("select 1 from revisions where id = $1 and project_id = $2")
+    let revision_row = sqlx::query(
+        "select entry_file_path
+         from revisions
+         where id = $1 and project_id = $2",
+    )
         .bind(revision_id)
         .bind(project_id)
         .fetch_optional(&state.db)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if exists.is_none() {
+    if revision_row.is_none() {
         return Err(StatusCode::NOT_FOUND);
     }
+    let entry_file_path = revision_row
+        .and_then(|row| row.get::<Option<String>, _>("entry_file_path"))
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "main.typ".to_string());
+
     let rows = sqlx::query(
         "select path, content
          from revision_documents
@@ -129,16 +140,115 @@ async fn get_revision_documents(
     .fetch_all(&state.db)
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let documents = rows
+    let documents: Vec<RevisionDocument> = rows
         .into_iter()
         .map(|row| RevisionDocument {
             path: row.get("path"),
             content: row.get("content"),
         })
         .collect();
+    let directory_rows = sqlx::query(
+        "select path
+         from revision_directories
+         where revision_id = $1
+         order by path asc",
+    )
+    .bind(revision_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let asset_rows = sqlx::query(
+        "select path, object_key, content_type, size_bytes, inline_data
+         from revision_assets
+         where revision_id = $1
+         order by path asc",
+    )
+    .bind(revision_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut dirs: HashSet<String> = HashSet::new();
+    let mut nodes: Vec<ProjectFileNode> = Vec::new();
+    for doc in &documents {
+        let clean = sanitize_project_path(&doc.path)?;
+        let mut acc = String::new();
+        let parts: Vec<&str> = clean.split('/').collect();
+        for part in parts.iter().take(parts.len().saturating_sub(1)) {
+            if acc.is_empty() {
+                acc.push_str(part);
+            } else {
+                acc.push('/');
+                acc.push_str(part);
+            }
+            dirs.insert(acc.clone());
+        }
+        nodes.push(ProjectFileNode {
+            path: clean,
+            kind: "file".to_string(),
+        });
+    }
+
+    let mut assets: Vec<RevisionAsset> = Vec::new();
+    for row in asset_rows {
+        let path: String = row.get("path");
+        let clean = sanitize_project_path(&path)?;
+        let mut acc = String::new();
+        let parts: Vec<&str> = clean.split('/').collect();
+        for part in parts.iter().take(parts.len().saturating_sub(1)) {
+            if acc.is_empty() {
+                acc.push_str(part);
+            } else {
+                acc.push('/');
+                acc.push_str(part);
+            }
+            dirs.insert(acc.clone());
+        }
+        nodes.push(ProjectFileNode {
+            path: clean.clone(),
+            kind: "file".to_string(),
+        });
+        let bytes = if let Some(inline) = row.get::<Option<Vec<u8>>, _>("inline_data") {
+            inline
+        } else {
+            let Some(storage) = state.storage.clone() else {
+                return Err(StatusCode::SERVICE_UNAVAILABLE);
+            };
+            let object_key: String = row.get("object_key");
+            get_object(&storage, &object_key)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        };
+        assets.push(RevisionAsset {
+            path: clean,
+            content_type: row.get("content_type"),
+            size_bytes: row.get("size_bytes"),
+            content_base64: base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                bytes,
+            ),
+        });
+    }
+    for row in directory_rows {
+        let dir_path: String = row.get("path");
+        let clean = sanitize_project_path(&dir_path)?;
+        dirs.insert(clean);
+    }
+    for dir in dirs {
+        nodes.push(ProjectFileNode {
+            path: dir,
+            kind: "directory".to_string(),
+        });
+    }
+    nodes.sort_by(|a, b| a.path.cmp(&b.path));
+    nodes.dedup_by(|a, b| a.path == b.path && a.kind == b.kind);
+
     Ok(Json(RevisionDocumentsResponse {
         revision_id,
+        entry_file_path,
+        nodes,
         documents,
+        assets,
     }))
 }
 

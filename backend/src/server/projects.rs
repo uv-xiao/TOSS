@@ -857,6 +857,7 @@ async fn create_project_file(
             .execute(&state.db)
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            mark_project_dirty(&state.db, project_id, Some(actor)).await;
         }
         _ => {
             sqlx::query(
@@ -969,7 +970,7 @@ async fn delete_project_file(
     let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Write).await?;
     let clean_path = sanitize_project_path(&path)?;
 
-    let _ = sqlx::query(
+    let deleted_dirs = sqlx::query(
         "delete from project_directories
          where project_id = $1 and (path = $2 or path like ($2 || '/%'))",
     )
@@ -997,7 +998,12 @@ async fn delete_project_file(
     .execute(&state.db)
     .await;
 
-    if deleted_docs.rows_affected() > 0
+    if deleted_dirs
+        .as_ref()
+        .ok()
+        .map(|r| r.rows_affected() > 0)
+        .unwrap_or(false)
+        || deleted_docs.rows_affected() > 0
         || deleted_assets
             .ok()
             .map(|r| r.rows_affected() > 0)
@@ -1045,7 +1051,7 @@ async fn upsert_project_settings(
     Path(project_id): Path<Uuid>,
     Json(input): Json<UpsertProjectSettingsInput>,
 ) -> Result<Json<ProjectSettingsResponse>, StatusCode> {
-    ensure_project_role(&state.db, &headers, project_id, AccessNeed::Manage).await?;
+    let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Manage).await?;
     let entry_file_path = sanitize_project_path(&input.entry_file_path)?;
     let row = sqlx::query(
         "insert into project_settings (project_id, entry_file_path, updated_at)
@@ -1059,6 +1065,7 @@ async fn upsert_project_settings(
     .fetch_one(&state.db)
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    mark_project_dirty(&state.db, project_id, Some(actor)).await;
     Ok(Json(ProjectSettingsResponse {
         project_id: row.get("project_id"),
         entry_file_path: row.get("entry_file_path"),

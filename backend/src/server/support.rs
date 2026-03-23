@@ -411,6 +411,88 @@ async fn snapshot_revision_documents(
     Ok(())
 }
 
+async fn snapshot_revision_directories(
+    db: &PgPool,
+    project_id: Uuid,
+    revision_id: Uuid,
+) -> Result<(), sqlx::Error> {
+    let rows = sqlx::query("select path from project_directories where project_id = $1")
+        .bind(project_id)
+        .fetch_all(db)
+        .await?;
+    for row in rows {
+        sqlx::query(
+            "insert into revision_directories (revision_id, path)
+             values ($1, $2)
+             on conflict (revision_id, path) do nothing",
+        )
+        .bind(revision_id)
+        .bind(row.get::<String, _>("path"))
+        .execute(db)
+        .await?;
+    }
+    Ok(())
+}
+
+async fn snapshot_revision_assets(
+    db: &PgPool,
+    project_id: Uuid,
+    revision_id: Uuid,
+) -> Result<(), sqlx::Error> {
+    let rows = sqlx::query(
+        "select path, object_key, content_type, size_bytes, inline_data
+         from project_assets
+         where project_id = $1",
+    )
+    .bind(project_id)
+    .fetch_all(db)
+    .await?;
+    for row in rows {
+        sqlx::query(
+            "insert into revision_assets
+               (revision_id, path, object_key, content_type, size_bytes, inline_data)
+             values ($1, $2, $3, $4, $5, $6)
+             on conflict (revision_id, path)
+             do update set
+               object_key = excluded.object_key,
+               content_type = excluded.content_type,
+               size_bytes = excluded.size_bytes,
+               inline_data = excluded.inline_data",
+        )
+        .bind(revision_id)
+        .bind(row.get::<String, _>("path"))
+        .bind(row.get::<String, _>("object_key"))
+        .bind(row.get::<String, _>("content_type"))
+        .bind(row.get::<i64, _>("size_bytes"))
+        .bind(row.get::<Option<Vec<u8>>, _>("inline_data"))
+        .execute(db)
+        .await?;
+    }
+    Ok(())
+}
+
+async fn snapshot_revision_state(
+    db: &PgPool,
+    project_id: Uuid,
+    revision_id: Uuid,
+) -> Result<(), sqlx::Error> {
+    snapshot_revision_documents(db, project_id, revision_id).await?;
+    snapshot_revision_directories(db, project_id, revision_id).await?;
+    snapshot_revision_assets(db, project_id, revision_id).await?;
+    Ok(())
+}
+
+async fn lookup_project_entry_file_path(db: &PgPool, project_id: Uuid) -> String {
+    sqlx::query("select entry_file_path from project_settings where project_id = $1")
+        .bind(project_id)
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten()
+        .map(|row| row.get::<String, _>("entry_file_path"))
+        .unwrap_or_else(|| "main.typ".to_string())
+}
+
 async fn mark_project_dirty(db: &PgPool, project_id: Uuid, actor_user_id: Option<Uuid>) {
     let _ = sqlx::query(
         "insert into git_repositories (project_id, remote_url, local_path, default_branch, pending_sync, updated_at)
@@ -458,18 +540,20 @@ async fn mark_project_dirty(db: &PgPool, project_id: Uuid, actor_user_id: Option
     if should_create {
         let revision_id = Uuid::new_v4();
         let now = Utc::now();
+        let entry_file_path = lookup_project_entry_file_path(db, project_id).await;
         let _ = sqlx::query(
-            "insert into revisions (id, project_id, actor_user_id, summary, created_at)
-             values ($1, $2, $3, $4, $5)",
+            "insert into revisions (id, project_id, actor_user_id, summary, created_at, entry_file_path)
+             values ($1, $2, $3, $4, $5, $6)",
         )
         .bind(revision_id)
         .bind(project_id)
         .bind(actor_user_id)
         .bind("Automatic snapshot")
         .bind(now)
+        .bind(entry_file_path)
         .execute(db)
         .await;
-        let _ = snapshot_revision_documents(db, project_id, revision_id).await;
+        let _ = snapshot_revision_state(db, project_id, revision_id).await;
         let authors = if let Some(previous_revision_time) = recent_created_at.as_ref() {
             sqlx::query(
                 "select user_id from git_pending_authors

@@ -129,9 +129,19 @@ export type RevisionDocument = {
   content: string;
 };
 
+export type RevisionAsset = {
+  path: string;
+  content_type: string;
+  size_bytes: number;
+  content_base64: string;
+};
+
 export type RevisionDocumentsResponse = {
   revision_id: string;
+  entry_file_path: string;
+  nodes: ProjectTreeNode[];
   documents: RevisionDocument[];
+  assets: RevisionAsset[];
 };
 
 export type ProjectAsset = {
