@@ -20,8 +20,52 @@ function encodePathPreservingSlashes(path: string) {
     .join("/");
 }
 
+export class ApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
+function statusDefaultHint(status: number): string {
+  if (status === 400) return "Invalid request";
+  if (status === 401) return "Please sign in again";
+  if (status === 403) return "Permission denied";
+  if (status === 404) return "Resource not found";
+  if (status === 409) return "Conflict";
+  if (status >= 500) return "Server error";
+  return "Request failed";
+}
+
+function messageFromErrorPayload(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") return null;
+  const record = payload as Record<string, unknown>;
+  const fields = [record.error, record.message, record.detail];
+  for (const value of fields) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+async function responseErrorMessage(res: Response): Promise<string | null> {
+  const contentType = (res.headers.get("content-type") || "").toLowerCase();
+  if (contentType.includes("application/json")) {
+    const payload = await res.json().catch(() => null);
+    return messageFromErrorPayload(payload);
+  }
+  const text = (await res.text().catch(() => "")).trim();
+  return text || null;
+}
+
+async function throwApiError(res: Response, fallback: string): Promise<never> {
+  const message = (await responseErrorMessage(res)) || statusDefaultHint(res.status);
+  throw new ApiError(`${fallback}: ${message}`, res.status);
+}
+
 async function parseJsonOrThrow<T>(res: Response, message: string): Promise<T> {
-  if (!res.ok) throw new Error(`${message} (${res.status})`);
+  if (!res.ok) await throwApiError(res, message);
   return (await res.json()) as T;
 }
 
@@ -229,7 +273,8 @@ export async function getAuthMe() {
     credentials: authCredentials(),
     headers: authHeaders()
   });
-  if (!res.ok) return null;
+  if (res.status === 401) return null;
+  if (!res.ok) await throwApiError(res, "Unable to load current session");
   return (await res.json()) as AuthUser;
 }
 
@@ -240,7 +285,7 @@ export async function localLogin(email: string, password: string) {
     headers: authHeaders({ "content-type": "application/json" }),
     body: JSON.stringify({ email, password })
   });
-  if (!res.ok) throw new Error(`Local login failed (${res.status})`);
+  if (!res.ok) await throwApiError(res, "Login failed");
 }
 
 export async function localRegister(input: {
@@ -254,7 +299,7 @@ export async function localRegister(input: {
     headers: authHeaders({ "content-type": "application/json" }),
     body: JSON.stringify(input)
   });
-  if (!res.ok) throw new Error(`Local register failed (${res.status})`);
+  if (!res.ok) await throwApiError(res, "Registration failed");
 }
 
 export function oidcLoginUrl() {
@@ -301,7 +346,7 @@ export async function setProjectArchived(projectId: string, archived: boolean) {
     headers: authHeaders({ "content-type": "application/json" }),
     body: JSON.stringify({ archived })
   });
-  if (!res.ok) throw new Error(`Unable to ${archived ? "archive" : "unarchive"} project (${res.status})`);
+  if (!res.ok) await throwApiError(res, `Unable to ${archived ? "archive" : "unarchive"} project`);
 }
 
 export async function listMyOrganizations() {
@@ -335,7 +380,7 @@ export async function createProjectFile(
     headers: authHeaders({ "content-type": "application/json" }),
     body: JSON.stringify(input)
   });
-  if (!res.ok) throw new Error("Unable to create path");
+  if (!res.ok) await throwApiError(res, "Unable to create path");
 }
 
 export async function moveProjectFile(projectId: string, fromPath: string, toPath: string) {
@@ -345,7 +390,7 @@ export async function moveProjectFile(projectId: string, fromPath: string, toPat
     headers: authHeaders({ "content-type": "application/json" }),
     body: JSON.stringify({ from_path: fromPath, to_path: toPath })
   });
-  if (!res.ok) throw new Error("Unable to move path");
+  if (!res.ok) await throwApiError(res, "Unable to move path");
 }
 
 export async function deleteProjectFile(projectId: string, path: string) {
@@ -355,7 +400,7 @@ export async function deleteProjectFile(projectId: string, path: string) {
     credentials: authCredentials(),
     headers: authHeaders()
   });
-  if (!res.ok) throw new Error("Unable to delete path");
+  if (!res.ok) await throwApiError(res, "Unable to delete path");
 }
 
 export async function listDocuments(projectId: string, path?: string) {
@@ -465,7 +510,7 @@ export async function downloadProjectArchive(projectId: string) {
     credentials: authCredentials(),
     headers: authHeaders()
   });
-  if (!res.ok) throw new Error(`Unable to download archive (${res.status})`);
+  if (!res.ok) await throwApiError(res, "Unable to download archive");
   return res.blob();
 }
 
@@ -494,7 +539,7 @@ export async function revokePersonalAccessToken(tokenId: string) {
     credentials: authCredentials(),
     headers: authHeaders()
   });
-  if (!res.ok) throw new Error("Unable to revoke token");
+  if (!res.ok) await throwApiError(res, "Unable to revoke token");
 }
 
 export async function listOrgGroupRoleMappings(orgId: string) {
@@ -526,7 +571,7 @@ export async function deleteOrgGroupRoleMapping(orgId: string, groupName: string
     credentials: authCredentials(),
     headers: authHeaders()
   });
-  if (!res.ok) throw new Error("Unable to delete mapping");
+  if (!res.ok) await throwApiError(res, "Unable to delete mapping");
 }
 
 export async function getAdminAuthSettings() {
@@ -594,7 +639,7 @@ export async function revokeProjectShareLink(projectId: string, shareLinkId: str
     credentials: authCredentials(),
     headers: authHeaders()
   });
-  if (!res.ok) throw new Error("Unable to revoke share link");
+  if (!res.ok) await throwApiError(res, "Unable to revoke share link");
 }
 
 export async function listProjectOrganizationAccess(projectId: string) {
@@ -632,7 +677,7 @@ export async function deleteProjectOrganizationAccess(projectId: string, organiz
     credentials: authCredentials(),
     headers: authHeaders()
   });
-  if (!res.ok) throw new Error("Unable to remove organization access");
+  if (!res.ok) await throwApiError(res, "Unable to remove organization access");
 }
 
 export async function listProjectAccessUsers(projectId: string) {

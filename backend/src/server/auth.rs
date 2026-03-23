@@ -6,20 +6,9 @@ async fn run_migrations(pool: &PgPool) {
 }
 
 async fn seed_default_data(pool: &PgPool) {
-    let org_id = Uuid::parse_str(DEFAULT_ORG_ID).unwrap();
-    let project_id = Uuid::parse_str("00000000-0000-0000-0000-000000000010").unwrap();
     let admin_id = Uuid::parse_str("00000000-0000-0000-0000-000000000100").unwrap();
     let legacy_member_id = Uuid::parse_str("00000000-0000-0000-0000-000000000101").unwrap();
     let now = Utc::now();
-
-    let _ = sqlx::query(
-        "insert into organizations (id, name, created_at) values ($1, $2, $3) on conflict (id) do nothing",
-    )
-    .bind(org_id)
-    .bind("Default Organization")
-    .bind(now)
-    .execute(pool)
-    .await;
 
     let _ = sqlx::query(
         "insert into users (id, email, display_name, created_at) values ($1, $2, $3, $4)
@@ -32,84 +21,6 @@ async fn seed_default_data(pool: &PgPool) {
     .execute(pool)
     .await;
 
-    let _ = sqlx::query("insert into projects (id, organization_id, owner_user_id, name, description, created_at) values ($1, $2, $3, $4, $5, $6) on conflict (id) do nothing")
-        .bind(project_id)
-        .bind(org_id)
-        .bind(admin_id)
-        .bind("Sample Project")
-        .bind(Some("Realtime Typst collaboration project"))
-        .bind(now)
-        .execute(pool)
-        .await;
-
-    let _ = sqlx::query(
-        "insert into org_admins (organization_id, user_id, granted_at) values ($1, $2, $3)
-         on conflict (organization_id, user_id) do nothing",
-    )
-    .bind(org_id)
-    .bind(admin_id)
-    .bind(now)
-    .execute(pool)
-    .await;
-
-    let _ = sqlx::query(
-        "insert into organization_memberships (organization_id, user_id, joined_at)
-         values ($1, $2, $3)
-         on conflict (organization_id, user_id) do nothing",
-    )
-    .bind(org_id)
-    .bind(admin_id)
-    .bind(now)
-    .execute(pool)
-    .await;
-
-    let _ = sqlx::query(
-        "insert into project_settings (project_id, entry_file_path, updated_at) values ($1, $2, $3)
-         on conflict (project_id) do nothing",
-    )
-    .bind(project_id)
-    .bind("main.typ")
-    .bind(now)
-    .execute(pool)
-    .await;
-
-    let _ = sqlx::query("insert into project_roles (project_id, user_id, role, granted_at) values ($1, $2, $3, $4) on conflict (project_id, user_id) do update set role = excluded.role")
-        .bind(project_id)
-        .bind(admin_id)
-        .bind("Owner")
-        .bind(now)
-        .execute(pool)
-        .await;
-
-    let _ = sqlx::query("insert into git_sync_states (project_id, branch, has_conflicts, status) values ($1, $2, $3, $4) on conflict (project_id) do nothing")
-        .bind(project_id)
-        .bind("main")
-        .bind(false)
-        .bind("clean")
-        .execute(pool)
-        .await;
-
-    let _ = sqlx::query(
-        "insert into git_repositories (project_id, remote_url, local_path, default_branch, updated_at)
-         values ($1, $2, $3, $4, $5)
-         on conflict (project_id) do nothing",
-    )
-    .bind(project_id)
-    .bind(Option::<String>::None)
-    .bind(project_git_repo_path(project_id).to_string_lossy().to_string())
-    .bind("main")
-    .bind(now)
-    .execute(pool)
-    .await;
-
-    let _ = sqlx::query("insert into documents (id, project_id, path, content, updated_at) values ($1, $2, $3, $4, $5) on conflict (project_id, path) do nothing")
-        .bind(Uuid::parse_str("00000000-0000-0000-0000-000000000201").unwrap())
-        .bind(project_id)
-        .bind("main.typ")
-        .bind("= Sample Document\n\nHello from Typst collaboration.\n")
-        .bind(now)
-        .execute(pool)
-        .await;
 
     let admin_exists = sqlx::query("select 1 from local_accounts where user_id = $1")
         .bind(admin_id)
@@ -191,20 +102,20 @@ async fn local_login(
 ) -> axum::response::Response {
     let settings = match load_auth_settings(&state.db, &state.oidc).await {
         Ok(s) => s,
-        Err(_) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "auth settings unavailable",
-            )
-                .into_response()
-        }
+        Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Authentication settings are unavailable"),
     };
     if !settings.allow_local_login {
-        return (StatusCode::FORBIDDEN, "local login disabled").into_response();
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "Local account login is disabled by the administrator",
+        );
     }
     let email = input.email.trim().to_lowercase();
     if email.is_empty() || input.password.is_empty() {
-        return (StatusCode::BAD_REQUEST, "email/password required").into_response();
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "Email and password are required",
+        );
     }
     let row = sqlx::query(
         "select u.id, la.password_hash
@@ -216,21 +127,19 @@ async fn local_login(
     .fetch_optional(&state.db)
     .await;
     let Ok(Some(row)) = row else {
-        return (StatusCode::UNAUTHORIZED, "invalid credentials").into_response();
+        return error_response(StatusCode::UNAUTHORIZED, "Incorrect email or password");
     };
     let user_id: Uuid = row.get("id");
     let password_hash: String = row.get("password_hash");
     let parsed = match PasswordHash::new(&password_hash) {
         Ok(p) => p,
-        Err(_) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, "password hash corrupted").into_response()
-        }
+        Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Account password data is corrupted"),
     };
     if Argon2::default()
         .verify_password(input.password.as_bytes(), &parsed)
         .is_err()
     {
-        return (StatusCode::UNAUTHORIZED, "invalid credentials").into_response();
+        return error_response(StatusCode::UNAUTHORIZED, "Incorrect email or password");
     }
     issue_session_response(&state.db, &headers, user_id).await
 }
@@ -242,20 +151,29 @@ async fn local_register(
 ) -> axum::response::Response {
     let settings = match load_auth_settings(&state.db, &state.oidc).await {
         Ok(s) => s,
-        Err(_) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "auth settings unavailable",
-            )
-                .into_response()
-        }
+        Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Authentication settings are unavailable"),
     };
     if !settings.allow_local_registration {
-        return (StatusCode::FORBIDDEN, "local registration disabled").into_response();
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "Self-registration is disabled by the administrator",
+        );
     }
     let email = input.email.trim().to_lowercase();
-    if email.is_empty() || input.password.len() < 8 {
-        return (StatusCode::BAD_REQUEST, "invalid email/password").into_response();
+    if email.is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "Email is required");
+    }
+    if !is_valid_email(&email) {
+        return error_response(StatusCode::BAD_REQUEST, "Email format is invalid");
+    }
+    if input.password.is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "Password is required");
+    }
+    if input.password.len() < 8 {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "Password must be at least 8 characters long",
+        );
     }
     let display_name = input
         .display_name
@@ -267,7 +185,7 @@ async fn local_register(
     let now = Utc::now();
     let hash = match hash_password(&input.password) {
         Ok(v) => v,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "hashing failed").into_response(),
+        Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Password hashing failed"),
     };
     let user_insert = sqlx::query(
         "insert into users (id, email, display_name, created_at)
@@ -280,7 +198,10 @@ async fn local_register(
     .execute(&state.db)
     .await;
     if user_insert.is_err() {
-        return (StatusCode::CONFLICT, "account already exists").into_response();
+        return error_response(
+            StatusCode::CONFLICT,
+            "An account with this email already exists",
+        );
     }
     if sqlx::query(
         "insert into local_accounts (user_id, password_hash, created_at, updated_at)
@@ -294,36 +215,10 @@ async fn local_register(
     .await
     .is_err()
     {
-        return (StatusCode::INTERNAL_SERVER_ERROR, "account creation failed").into_response();
-    }
-
-    if let Ok(org_row) = sqlx::query("select id from organizations order by created_at asc limit 1")
-        .fetch_optional(&state.db)
-        .await
-    {
-        if let Some(org) = org_row {
-            let org_id: Uuid = org.get("id");
-            let _ = sqlx::query(
-                "insert into organization_memberships (organization_id, user_id, joined_at)
-                 values ($1, $2, $3)
-                 on conflict (organization_id, user_id) do nothing",
-            )
-            .bind(org_id)
-            .bind(user_id)
-            .bind(now)
-            .execute(&state.db)
-            .await;
-            let _ = sqlx::query(
-                "insert into org_admins (organization_id, user_id, granted_at)
-                 select $1, $2, $3
-                 where not exists (select 1 from org_admins where organization_id = $1)",
-            )
-            .bind(org_id)
-            .bind(user_id)
-            .bind(now)
-            .execute(&state.db)
-            .await;
-        }
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to create the account",
+        );
     }
 
     write_audit(
@@ -342,39 +237,39 @@ async fn oidc_login(State(state): State<AppState>) -> axum::response::Response {
         .unwrap_or(false);
     let settings = match load_auth_settings(&state.db, &state.oidc).await {
         Ok(v) => v,
-        Err(_) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "auth settings unavailable",
-            )
-                .into_response()
-        }
+        Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Authentication settings are unavailable"),
     };
     if !settings.allow_oidc {
-        return (StatusCode::FORBIDDEN, "OIDC disabled").into_response();
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "OIDC login is disabled by the administrator",
+        );
     }
     let issuer_raw = settings.oidc_issuer.unwrap_or_default();
     let client_id_raw = settings.oidc_client_id.unwrap_or_default();
     let client_secret_raw = settings.oidc_client_secret.unwrap_or_default();
     let redirect_uri_raw = settings.oidc_redirect_uri.unwrap_or_default();
     if issuer_raw.is_empty() || client_id_raw.is_empty() || redirect_uri_raw.is_empty() {
-        return (StatusCode::BAD_REQUEST, "OIDC not configured").into_response();
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "OIDC is not configured yet. Contact an administrator",
+        );
     }
     let issuer = match discovery_issuer(&issuer_raw) {
         Ok(i) => i,
-        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid OIDC issuer").into_response(),
+        Err(_) => return error_response(StatusCode::BAD_REQUEST, "OIDC issuer URL is invalid"),
     };
     let http_client = match reqwest::Client::builder().redirect(Policy::none()).build() {
         Ok(c) => c,
-        Err(_) => return (StatusCode::BAD_GATEWAY, "OIDC HTTP client failure").into_response(),
+        Err(_) => return error_response(StatusCode::BAD_GATEWAY, "Failed to initialize OIDC client"),
     };
     let provider_metadata = match CoreProviderMetadata::discover_async(issuer, &http_client).await {
         Ok(m) => m,
-        Err(_) => return (StatusCode::BAD_GATEWAY, "OIDC discovery failed").into_response(),
+        Err(_) => return error_response(StatusCode::BAD_GATEWAY, "OIDC discovery failed"),
     };
     let redirect_uri = match RedirectUrl::new(redirect_uri_raw) {
         Ok(r) => r,
-        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid redirect URI").into_response(),
+        Err(_) => return error_response(StatusCode::BAD_REQUEST, "OIDC redirect URI is invalid"),
     };
     let client = CoreClient::from_provider_metadata(
         provider_metadata,
@@ -384,7 +279,7 @@ async fn oidc_login(State(state): State<AppState>) -> axum::response::Response {
     .set_redirect_uri(redirect_uri);
 
     if client_id_raw.is_empty() {
-        return (StatusCode::BAD_GATEWAY, "OIDC discovery failed").into_response();
+        return error_response(StatusCode::BAD_GATEWAY, "OIDC discovery failed");
     }
     let state_token = random_token(32);
     let nonce_token = random_token(32);
@@ -431,23 +326,23 @@ async fn oidc_callback(
         .unwrap_or(false);
     let settings = match load_auth_settings(&state.db, &state.oidc).await {
         Ok(v) => v,
-        Err(_) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "auth settings unavailable",
-            )
-                .into_response()
-        }
+        Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Authentication settings are unavailable"),
     };
     if !settings.allow_oidc {
-        return (StatusCode::FORBIDDEN, "OIDC disabled").into_response();
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "OIDC login is disabled by the administrator",
+        );
     }
     let issuer_raw = settings.oidc_issuer.unwrap_or_default();
     let client_id_raw = settings.oidc_client_id.unwrap_or_default();
     let client_secret_raw = settings.oidc_client_secret.unwrap_or_default();
     let redirect_uri_raw = settings.oidc_redirect_uri.unwrap_or_default();
     if issuer_raw.is_empty() || client_id_raw.is_empty() || redirect_uri_raw.is_empty() {
-        return (StatusCode::BAD_REQUEST, "OIDC not configured").into_response();
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "OIDC is not configured yet. Contact an administrator",
+        );
     }
     let callback_state = query.state.clone().unwrap_or_default();
     let cookie_state = jar
@@ -455,7 +350,7 @@ async fn oidc_callback(
         .map(|c| c.value().to_string())
         .unwrap_or_default();
     if callback_state.is_empty() || callback_state != cookie_state {
-        return (StatusCode::UNAUTHORIZED, "Invalid OIDC state").into_response();
+        return error_response(StatusCode::UNAUTHORIZED, "OIDC login state is invalid or expired");
     }
 
     let row = sqlx::query("select nonce from oidc_states where state = $1")
@@ -464,24 +359,24 @@ async fn oidc_callback(
         .await;
     let nonce = match row {
         Ok(Some(r)) => r.get::<String, _>("nonce"),
-        _ => return (StatusCode::UNAUTHORIZED, "OIDC state not found").into_response(),
+        _ => return error_response(StatusCode::UNAUTHORIZED, "OIDC login state is missing"),
     };
 
     let issuer = match discovery_issuer(&issuer_raw) {
         Ok(i) => i,
-        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid OIDC issuer").into_response(),
+        Err(_) => return error_response(StatusCode::BAD_REQUEST, "OIDC issuer URL is invalid"),
     };
     let http_client = match reqwest::Client::builder().redirect(Policy::none()).build() {
         Ok(c) => c,
-        Err(_) => return (StatusCode::BAD_GATEWAY, "OIDC HTTP client failure").into_response(),
+        Err(_) => return error_response(StatusCode::BAD_GATEWAY, "Failed to initialize OIDC client"),
     };
     let provider_metadata = match CoreProviderMetadata::discover_async(issuer, &http_client).await {
         Ok(m) => m,
-        Err(_) => return (StatusCode::BAD_GATEWAY, "OIDC provider unavailable").into_response(),
+        Err(_) => return error_response(StatusCode::BAD_GATEWAY, "OIDC provider is unavailable"),
     };
     let redirect_uri = match RedirectUrl::new(redirect_uri_raw) {
         Ok(r) => r,
-        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid redirect URI").into_response(),
+        Err(_) => return error_response(StatusCode::BAD_REQUEST, "OIDC redirect URI is invalid"),
     };
     let client = CoreClient::from_provider_metadata(
         provider_metadata,
@@ -490,30 +385,24 @@ async fn oidc_callback(
     )
     .set_redirect_uri(redirect_uri);
     if client_id_raw.is_empty() {
-        return (StatusCode::BAD_GATEWAY, "OIDC provider unavailable").into_response();
+        return error_response(StatusCode::BAD_GATEWAY, "OIDC provider is unavailable");
     };
     let token_result = match client.exchange_code(AuthorizationCode::new(query.code.clone())) {
         Ok(token_request) => token_request.request_async(&http_client).await,
-        Err(_) => return (StatusCode::UNAUTHORIZED, "Invalid authorization code").into_response(),
+        Err(_) => return error_response(StatusCode::UNAUTHORIZED, "OIDC authorization code is invalid"),
     };
     let tokens = match token_result {
         Ok(t) => t,
-        Err(_) => return (StatusCode::UNAUTHORIZED, "OIDC token exchange failed").into_response(),
+        Err(_) => return error_response(StatusCode::UNAUTHORIZED, "OIDC token exchange failed"),
     };
     let id_token = match tokens.id_token() {
         Some(t) => t,
-        None => return (StatusCode::UNAUTHORIZED, "OIDC id_token missing").into_response(),
+        None => return error_response(StatusCode::UNAUTHORIZED, "OIDC ID token is missing"),
     };
     let id_token_verifier = client.id_token_verifier();
     let claims: CoreIdTokenClaims = match id_token.claims(&id_token_verifier, &Nonce::new(nonce)) {
         Ok(c) => c.clone(),
-        Err(_) => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                "OIDC id_token verification failed",
-            )
-                .into_response()
-        }
+        Err(_) => return error_response(StatusCode::UNAUTHORIZED, "OIDC ID token verification failed"),
     };
     let issuer = claims.issuer().url().to_string();
     let subject = claims.subject().as_str().to_string();
@@ -546,28 +435,8 @@ async fn oidc_callback(
     .await;
     let user_id = match user_row {
         Ok(r) => r.get::<Uuid, _>("id"),
-        Err(_) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to upsert user").into_response()
-        }
+        Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to provision user account"),
     };
-    if let Ok(org_row) = sqlx::query("select id from organizations order by created_at asc limit 1")
-        .fetch_optional(&state.db)
-        .await
-    {
-        if let Some(org) = org_row {
-            let org_id: Uuid = org.get("id");
-            let _ = sqlx::query(
-                "insert into organization_memberships (organization_id, user_id, joined_at)
-                 values ($1, $2, $3)
-                 on conflict (organization_id, user_id) do nothing",
-            )
-            .bind(org_id)
-            .bind(user_id)
-            .bind(Utc::now())
-            .execute(&state.db)
-            .await;
-        }
-    }
     let _ = sync_user_oidc_groups(&state.db, user_id, &oidc_groups).await;
     let _ = apply_project_group_roles(&state.db, user_id, &oidc_groups).await;
 
@@ -707,7 +576,10 @@ async fn issue_session_response(
     .execute(db)
     .await;
     if insert.is_err() {
-        return (StatusCode::INTERNAL_SERVER_ERROR, "failed to issue session").into_response();
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to issue session",
+        );
     }
     let session_cookie = Cookie::build(("typst_session", token.clone()))
         .path("/")
@@ -733,6 +605,21 @@ fn hash_password(raw: &str) -> Result<String, String> {
         .hash_password(raw.as_bytes(), &salt)
         .map(|h| h.to_string())
         .map_err(|e| e.to_string())
+}
+
+fn is_valid_email(email: &str) -> bool {
+    let bytes = email.as_bytes();
+    if email.len() < 3 || email.len() > 254 {
+        return false;
+    }
+    let Some(at_index) = bytes.iter().position(|b| *b == b'@') else {
+        return false;
+    };
+    if at_index == 0 || at_index + 1 >= bytes.len() {
+        return false;
+    }
+    let domain = &email[at_index + 1..];
+    domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.')
 }
 
 fn defaults_from_env(oidc: &OidcSettings) -> AuthSettings {
@@ -860,18 +747,29 @@ async fn create_personal_access_token(
     headers: HeaderMap,
     jar: CookieJar,
     Json(input): Json<CreatePatInput>,
-) -> Result<Json<CreatePatResponse>, StatusCode> {
-    let user_id = authenticated_user_id(&state.db, &headers, &jar).await?;
+) -> axum::response::Response {
+    let user_id = match authenticated_user_id(&state.db, &headers, &jar).await {
+        Ok(id) => id,
+        Err(_) => return error_response(StatusCode::UNAUTHORIZED, "Authentication required"),
+    };
     let label = input.label.trim();
     if label.is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
+        return error_response(StatusCode::BAD_REQUEST, "Token label is required");
     }
     let expires_at = if let Some(raw) = input.expires_at {
-        Some(
-            DateTime::parse_from_rfc3339(&raw)
-                .map_err(|_| StatusCode::BAD_REQUEST)?
-                .with_timezone(&Utc),
-        )
+        let parsed = match DateTime::parse_from_rfc3339(&raw) {
+            Ok(v) => v.with_timezone(&Utc),
+            Err(_) => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "Invalid expiry time format. Use RFC3339 timestamp",
+                )
+            }
+        };
+        if parsed <= Utc::now() {
+            return error_response(StatusCode::BAD_REQUEST, "Token expiry must be in the future");
+        }
+        Some(parsed)
     } else {
         None
     };
@@ -880,7 +778,7 @@ async fn create_personal_access_token(
     let plain = format!("tpat_{}", random_token(40));
     let token_prefix = plain.chars().take(12).collect::<String>();
     let token_hash = token_sha256(&plain);
-    sqlx::query(
+    if sqlx::query(
         "insert into personal_access_tokens (id, user_id, label, token_prefix, token_hash, created_at, expires_at, last_used_at, revoked_at)
          values ($1, $2, $3, $4, $5, $6, $7, null, null)",
     )
@@ -893,7 +791,13 @@ async fn create_personal_access_token(
     .bind(expires_at)
     .execute(&state.db)
     .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    .is_err()
+    {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to create personal access token",
+        );
+    }
 
     write_audit(
         &state.db,
@@ -903,14 +807,15 @@ async fn create_personal_access_token(
     )
     .await;
 
-    Ok(Json(CreatePatResponse {
+    Json(CreatePatResponse {
         id: token_id,
         label: label.to_string(),
         token: plain,
         token_prefix,
         created_at,
         expires_at,
-    }))
+    })
+    .into_response()
 }
 
 async fn revoke_personal_access_token(
@@ -918,8 +823,11 @@ async fn revoke_personal_access_token(
     headers: HeaderMap,
     jar: CookieJar,
     Path(token_id): Path<Uuid>,
-) -> Result<StatusCode, StatusCode> {
-    let user_id = authenticated_user_id(&state.db, &headers, &jar).await?;
+) -> axum::response::Response {
+    let user_id = match authenticated_user_id(&state.db, &headers, &jar).await {
+        Ok(id) => id,
+        Err(_) => return error_response(StatusCode::UNAUTHORIZED, "Authentication required"),
+    };
     let res = sqlx::query(
         "update personal_access_tokens
          set revoked_at = $3
@@ -930,9 +838,15 @@ async fn revoke_personal_access_token(
     .bind(Utc::now())
     .execute(&state.db)
     .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
+    let Ok(res) = res else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to revoke personal access token",
+        );
+    };
     if res.rows_affected() == 0 {
-        return Err(StatusCode::NOT_FOUND);
+        return error_response(StatusCode::NOT_FOUND, "Token not found or already revoked");
     }
     write_audit(
         &state.db,
@@ -941,6 +855,5 @@ async fn revoke_personal_access_token(
         serde_json::json!({"token_id": token_id}),
     )
     .await;
-    Ok(StatusCode::NO_CONTENT)
+    StatusCode::NO_CONTENT.into_response()
 }
-

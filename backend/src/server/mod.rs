@@ -39,8 +39,6 @@ use tower_http::trace::TraceLayer;
 use tracing::{error, info};
 use uuid::Uuid;
 
-const DEFAULT_ORG_ID: &str = "00000000-0000-0000-0000-000000000001";
-
 pub async fn run() {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt()

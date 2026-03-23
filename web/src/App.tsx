@@ -453,10 +453,10 @@ export function App() {
         setOrganizations(orgs.organizations);
         setError(null);
       })
-      .catch(() => {
+      .catch((err) => {
         setProjects([]);
         setOrganizations([]);
-        setError("Unable to load projects");
+        setError(err instanceof Error ? err.message : "Unable to load projects");
       });
   }, [authUser?.user_id]);
 
@@ -501,8 +501,8 @@ export function App() {
               const joined = await joinProjectShareLink(pendingShare);
               await refreshProjects();
               navigate(`/project/${joined.project_id}`, { replace: true });
-            } catch {
-              setError(t("share.joinFailed"));
+            } catch (err) {
+              setError(err instanceof Error ? err.message : t("share.joinFailed"));
             }
           }
         }}
@@ -2716,10 +2716,14 @@ function AdminPage({ t }: { t: (key: string) => string }) {
       setSettings(authSettings);
       setDiscoveryUrl(authSettings.oidc_issuer || "");
       setError(null);
-    } catch {
+    } catch (err) {
       setMappings([]);
       setSettings(null);
-      setError("Unable to load admin settings. Organization admin permission required.");
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unable to load admin settings. Organization admin permission required."
+      );
     }
   }
 
@@ -2893,9 +2897,9 @@ function ProfilePage({ t }: { t: (key: string) => string }) {
       const res = await listPersonalAccessTokens();
       setTokens(res.tokens);
       setError(null);
-    } catch {
+    } catch (err) {
       setTokens([]);
-      setError("Unable to load tokens");
+      setError(err instanceof Error ? err.message : "Unable to load tokens");
     }
   }
 

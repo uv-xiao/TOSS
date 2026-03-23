@@ -202,23 +202,55 @@ async fn user_is_org_member(db: &PgPool, user_id: Uuid, org_id: Uuid) -> Result<
     Ok(row.is_some())
 }
 
-async fn default_organization_id(db: &PgPool) -> Result<Uuid, StatusCode> {
-    if let Ok(parsed) = Uuid::parse_str(DEFAULT_ORG_ID) {
-        let row = sqlx::query("select id from organizations where id = $1")
-            .bind(parsed)
-            .fetch_optional(db)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        if row.is_some() {
-            return Ok(parsed);
-        }
+async fn resolve_project_organization_id(db: &PgPool, user_id: Uuid) -> Result<Uuid, StatusCode> {
+    if let Some(existing) = user_organization_ids(db, user_id).await?.into_iter().next() {
+        return Ok(existing);
     }
-    let row = sqlx::query("select id from organizations order by created_at asc limit 1")
-        .fetch_optional(db)
+
+    let mut tx = db.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let display_name = sqlx::query("select display_name from users where id = $1")
+        .bind(user_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map(|r| r.get::<String, _>("display_name"))
+        .unwrap_or_else(|| "User".to_string());
+
+    let now = Utc::now();
+    let org_id = Uuid::new_v4();
+    let org_name = format!("{display_name}'s Organization");
+    sqlx::query("insert into organizations (id, name, created_at) values ($1, $2, $3)")
+        .bind(org_id)
+        .bind(org_name)
+        .bind(now)
+        .execute(&mut *tx)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    row.map(|r| r.get("id"))
-        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)
+    sqlx::query(
+        "insert into organization_memberships (organization_id, user_id, joined_at)
+         values ($1, $2, $3)",
+    )
+    .bind(org_id)
+    .bind(user_id)
+    .bind(now)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    sqlx::query(
+        "insert into org_admins (organization_id, user_id, granted_at)
+         values ($1, $2, $3)",
+    )
+    .bind(org_id)
+    .bind(user_id)
+    .bind(now)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    tx.commit()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(org_id)
 }
 
 async fn create_project(
@@ -231,21 +263,7 @@ async fn create_project(
     };
     let id = Uuid::new_v4();
     let created_at = Utc::now();
-    let org_id = user_organization_ids(&state.db, actor)
-        .await?
-        .into_iter()
-        .next()
-        .unwrap_or(default_organization_id(&state.db).await?);
-    let _ = sqlx::query(
-        "insert into organization_memberships (organization_id, user_id, joined_at)
-         values ($1, $2, $3)
-         on conflict (organization_id, user_id) do nothing",
-    )
-    .bind(org_id)
-    .bind(actor)
-    .bind(created_at)
-    .execute(&state.db)
-    .await;
+    let org_id = resolve_project_organization_id(&state.db, actor).await?;
     let row = sqlx::query(
         "insert into projects (id, organization_id, owner_user_id, name, description, created_at)
          values ($1, $2, $3, $4, $5, $6)

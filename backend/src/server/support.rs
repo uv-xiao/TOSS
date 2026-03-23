@@ -1,3 +1,15 @@
+#[derive(Serialize)]
+struct ApiErrorResponse {
+    error: String,
+}
+
+fn error_response(status: StatusCode, message: impl Into<String>) -> axum::response::Response {
+    let payload = ApiErrorResponse {
+        error: message.into(),
+    };
+    (status, Json(payload)).into_response()
+}
+
 fn extract_groups_from_id_token(raw_id_token: String, claim_name: &str) -> Vec<String> {
     let mut groups = Vec::new();
     let claims = decode_jwt_claims(&raw_id_token);
