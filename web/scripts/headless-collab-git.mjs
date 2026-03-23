@@ -146,10 +146,18 @@ async function waitForCollaboratorName(page, expected, timeoutMs = 10000) {
   const start = Date.now();
   const uuidPattern = /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i;
   while (Date.now() - start < timeoutMs) {
-    const status = await page.locator(".panel-status").first().innerText();
-    if (status.includes(expected)) {
-      if (uuidPattern.test(status)) {
-        throw new Error(`collaborator status still shows UUID: ${status}`);
+    const info = await page.evaluate(() => {
+      const pills = Array.from(document.querySelectorAll(".panel-status .status-pill"));
+      const collab = pills.find((node) => (node.textContent || "").includes("👥"));
+      if (!collab) return { text: "", title: "" };
+      return {
+        text: collab.textContent || "",
+        title: collab.getAttribute("title") || ""
+      };
+    });
+    if (info.title.includes(expected) || info.text.includes(expected)) {
+      if (uuidPattern.test(info.title) || uuidPattern.test(info.text)) {
+        throw new Error(`collaborator status still shows UUID: ${info.title || info.text}`);
       }
       return;
     }
@@ -201,7 +209,6 @@ async function main() {
   const owner = await registerOrLogin(ownerEmail, ownerPassword, "Git Owner");
   const collaborator = await registerOrLogin(collaboratorEmail, collaboratorPassword, "Git Collaborator");
   const project = await bearerApi("POST", "/v1/projects", owner.sessionToken, {
-    organization_id: "00000000-0000-0000-0000-000000000001",
     name: `Git Test ${runId}`,
     description: "Headless collab git test project"
   });
@@ -247,8 +254,14 @@ async function main() {
     await login(pageB, collaborator.email, collaborator.password);
     await openWorkspace(pageA, projectId);
     await openWorkspace(pageB, projectId);
-    await pageA.getByText("Mode: Live").first().waitFor({ timeout: 30000 });
-    await pageB.getByText("Mode: Live").first().waitFor({ timeout: 30000 });
+    await pageA
+      .waitForFunction(() => (document.querySelector(".panel-status")?.textContent || "").includes("Live"), undefined, {
+        timeout: 30000
+      });
+    await pageB
+      .waitForFunction(() => (document.querySelector(".panel-status")?.textContent || "").includes("Live"), undefined, {
+        timeout: 30000
+      });
     await waitForCollaboratorName(pageA, "Git Collaborator", 15000);
     await waitForCanvas(pageA, 45000);
     await sleep(1200);

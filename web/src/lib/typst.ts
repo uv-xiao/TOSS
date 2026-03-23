@@ -26,6 +26,21 @@ type WorkerCompileResponse = {
   diagnostics?: CompileDiagnostic[];
 };
 
+type WorkerRuntimeStatus = {
+  kind: "runtime.status";
+  stage: "downloading-compiler" | "compiling" | "ready" | "idle";
+  loaded_bytes?: number;
+  total_bytes?: number;
+};
+
+type WorkerMessage = WorkerCompileResponse | WorkerRuntimeStatus;
+
+export type TypstRuntimeStatus = {
+  stage: "downloading-compiler" | "compiling" | "ready" | "idle";
+  loadedBytes?: number;
+  totalBytes?: number;
+};
+
 export type CompileOptions = {
   entryFilePath: string;
   documents: Array<{ path: string; content: string }>;
@@ -39,6 +54,7 @@ class TypstWorkerRuntime {
   private worker: Worker | null = null;
   private seq = 1;
   private pending = new Map<number, (response: WorkerCompileResponse) => void>();
+  private listeners = new Set<(status: TypstRuntimeStatus) => void>();
   private fatalError(response: WorkerCompileResponse) {
     return (
       !!response.errors &&
@@ -61,12 +77,22 @@ class TypstWorkerRuntime {
     this.worker = new Worker(new URL("./typst.worker.ts", import.meta.url), {
       type: "module"
     });
-    this.worker.onmessage = (event: MessageEvent<WorkerCompileResponse>) => {
+    this.worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
       const response = event.data;
-      const resolve = this.pending.get(response.id);
+      if (response && "kind" in response && response.kind === "runtime.status") {
+        const status: TypstRuntimeStatus = {
+          stage: response.stage,
+          loadedBytes: response.loaded_bytes,
+          totalBytes: response.total_bytes
+        };
+        this.notify(status);
+        return;
+      }
+      const compileResponse = response as WorkerCompileResponse;
+      const resolve = this.pending.get(compileResponse.id);
       if (!resolve) return;
-      this.pending.delete(response.id);
-      resolve(response);
+      this.pending.delete(compileResponse.id);
+      resolve(compileResponse);
     };
     this.worker.onerror = (event) => {
       const detail =
@@ -79,8 +105,21 @@ class TypstWorkerRuntime {
       this.pending.clear();
       this.worker?.terminate();
       this.worker = null;
+      this.notify({ stage: "idle" });
     };
     return this.worker;
+  }
+
+  private notify(status: TypstRuntimeStatus) {
+    for (const listener of this.listeners) listener(status);
+  }
+
+  subscribe(listener: (status: TypstRuntimeStatus) => void) {
+    this.listeners.add(listener);
+    listener({ stage: "idle" });
+    return () => {
+      this.listeners.delete(listener);
+    };
   }
 
   compile(options: CompileOptions): Promise<WorkerCompileResponse> {
@@ -93,6 +132,7 @@ class TypstWorkerRuntime {
       });
     }
     const id = this.seq++;
+    this.notify({ stage: "compiling" });
     return new Promise<WorkerCompileResponse>((resolve) => {
       this.pending.set(id, resolve);
       worker.postMessage({
@@ -170,6 +210,10 @@ export async function compileTypstClientSide(options: CompileOptions): Promise<C
   };
 }
 
+export function subscribeTypstRuntimeStatus(listener: (status: TypstRuntimeStatus) => void) {
+  return runtime.subscribe(listener);
+}
+
 export async function renderTypstVectorToCanvas(container: HTMLElement, vectorData: Uint8Array) {
   const version = ++renderVersion;
   renderQueue = renderQueue.catch(() => undefined).then(async () => {
@@ -202,8 +246,11 @@ export async function renderTypstVectorToCanvas(container: HTMLElement, vectorDa
       pageElement.dataset.baseHeight = `${baseHeight}`;
     }
     for (const canvas of Array.from(pages.querySelectorAll("canvas"))) {
-      const baseWidth = canvas.width > 0 ? canvas.width / 2 : canvas.clientWidth;
-      const baseHeight = canvas.height > 0 ? canvas.height / 2 : canvas.clientHeight;
+      const styleWidth = Number.parseFloat(canvas.style.width || "");
+      const styleHeight = Number.parseFloat(canvas.style.height || "");
+      const rect = canvas.getBoundingClientRect();
+      const baseWidth = Math.max(1, styleWidth || rect.width || canvas.clientWidth || canvas.width || 1);
+      const baseHeight = Math.max(1, styleHeight || rect.height || canvas.clientHeight || canvas.height || 1);
       canvas.dataset.baseWidth = `${Math.max(1, baseWidth)}`;
       canvas.dataset.baseHeight = `${Math.max(1, baseHeight)}`;
       canvas.style.width = `${Math.max(1, baseWidth)}px`;

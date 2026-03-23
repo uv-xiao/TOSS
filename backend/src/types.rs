@@ -29,6 +29,7 @@ pub struct AuthSettings {
     pub allow_local_login: bool,
     pub allow_local_registration: bool,
     pub allow_oidc: bool,
+    pub site_name: String,
     pub oidc_issuer: Option<String>,
     pub oidc_client_id: Option<String>,
     pub oidc_client_secret: Option<String>,
@@ -59,6 +60,7 @@ pub enum ProjectRole {
     Teacher,
     Student,
     TA,
+    Viewer,
 }
 
 impl ProjectRole {
@@ -68,6 +70,7 @@ impl ProjectRole {
             "Teacher" => Some(Self::Teacher),
             "Student" => Some(Self::Student),
             "TA" => Some(Self::TA),
+            "Viewer" => Some(Self::Viewer),
             _ => None,
         }
     }
@@ -85,6 +88,7 @@ pub struct Project {
     pub organization_id: Uuid,
     pub name: String,
     pub description: Option<String>,
+    pub my_role: String,
     pub created_at: DateTime<Utc>,
 }
 
@@ -95,7 +99,7 @@ pub struct ProjectListResponse {
 
 #[derive(Deserialize)]
 pub struct CreateProjectInput {
-    pub organization_id: Uuid,
+    pub organization_id: Option<Uuid>,
     pub name: String,
     pub description: Option<String>,
 }
@@ -177,6 +181,7 @@ pub struct UpsertAdminAuthSettingsInput {
     pub allow_local_login: bool,
     pub allow_local_registration: bool,
     pub allow_oidc: bool,
+    pub site_name: Option<String>,
     pub oidc_discovery_url: Option<String>,
     pub oidc_client_id: Option<String>,
     pub oidc_client_secret: Option<String>,
@@ -224,6 +229,7 @@ pub struct AuthConfigResponse {
     pub allow_local_login: bool,
     pub allow_local_registration: bool,
     pub allow_oidc: bool,
+    pub site_name: String,
     pub issuer: Option<String>,
     pub client_id: Option<String>,
     pub redirect_uri: Option<String>,
@@ -448,4 +454,34 @@ pub struct UpsertDocumentByPathInput {
 #[derive(Deserialize)]
 pub struct ListDocumentsQuery {
     pub path: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct ProjectShareLink {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub token_prefix: String,
+    pub permission: String,
+    pub created_by: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Deserialize)]
+pub struct CreateProjectShareLinkInput {
+    pub permission: String,
+    pub expires_at: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct CreateProjectShareLinkResponse {
+    pub link: ProjectShareLink,
+    pub token: String,
+}
+
+#[derive(Serialize)]
+pub struct JoinProjectShareLinkResponse {
+    pub project_id: Uuid,
+    pub role: String,
 }

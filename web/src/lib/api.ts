@@ -25,13 +25,15 @@ async function parseJsonOrThrow<T>(res: Response, message: string): Promise<T> {
   return (await res.json()) as T;
 }
 
-export type ProjectRole = "Owner" | "Teacher" | "Student" | "TA";
+export type ProjectRole = "Owner" | "Teacher" | "Student" | "TA" | "Viewer";
+export type SharePermission = "read" | "write";
 
 export type Project = {
   id: string;
   organization_id: string;
   name: string;
   description: string | null;
+  my_role: ProjectRole | "Viewer";
   created_at: string;
 };
 
@@ -135,6 +137,7 @@ export type AuthConfig = {
   allow_local_login: boolean;
   allow_local_registration: boolean;
   allow_oidc: boolean;
+  site_name: string;
   issuer: string | null;
   client_id: string | null;
   redirect_uri: string | null;
@@ -152,12 +155,34 @@ export type AdminAuthSettings = {
   allow_local_login: boolean;
   allow_local_registration: boolean;
   allow_oidc: boolean;
+  site_name: string;
   oidc_issuer: string | null;
   oidc_client_id: string | null;
   oidc_client_secret: string | null;
   oidc_redirect_uri: string | null;
   oidc_groups_claim: string;
   updated_at: string;
+};
+
+export type ProjectShareLink = {
+  id: string;
+  project_id: string;
+  token_prefix: string;
+  permission: SharePermission;
+  created_by: string | null;
+  created_at: string;
+  expires_at: string | null;
+  revoked_at: string | null;
+};
+
+export type CreateProjectShareLinkResponse = {
+  link: ProjectShareLink;
+  token: string;
+};
+
+export type JoinProjectShareLinkResponse = {
+  project_id: string;
+  role: ProjectRole | "Viewer";
 };
 
 export async function getAuthConfig() {
@@ -225,7 +250,6 @@ export async function listProjects() {
 }
 
 export async function createProject(input: {
-  organization_id: string;
   name: string;
   description?: string | null;
 }) {
@@ -468,6 +492,7 @@ export async function upsertAdminAuthSettings(input: {
   allow_local_login: boolean;
   allow_local_registration: boolean;
   allow_oidc: boolean;
+  site_name?: string | null;
   oidc_discovery_url?: string | null;
   oidc_client_id?: string | null;
   oidc_client_secret?: string | null;
@@ -485,4 +510,44 @@ export async function upsertAdminAuthSettings(input: {
     "Unable to save auth settings"
   );
   return parsed.settings;
+}
+
+export async function listProjectShareLinks(projectId: string) {
+  const res = await fetch(apiUrl(`/v1/projects/${projectId}/share-links`), {
+    cache: "no-store",
+    credentials: authCredentials(),
+    headers: authHeaders()
+  });
+  return parseJsonOrThrow<ProjectShareLink[]>(res, "Unable to list share links");
+}
+
+export async function createProjectShareLink(
+  projectId: string,
+  input: { permission: SharePermission; expires_at?: string | null }
+) {
+  const res = await fetch(apiUrl(`/v1/projects/${projectId}/share-links`), {
+    method: "POST",
+    credentials: authCredentials(),
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify(input)
+  });
+  return parseJsonOrThrow<CreateProjectShareLinkResponse>(res, "Unable to create share link");
+}
+
+export async function revokeProjectShareLink(projectId: string, shareLinkId: string) {
+  const res = await fetch(apiUrl(`/v1/projects/${projectId}/share-links/${shareLinkId}`), {
+    method: "DELETE",
+    credentials: authCredentials(),
+    headers: authHeaders()
+  });
+  if (!res.ok) throw new Error("Unable to revoke share link");
+}
+
+export async function joinProjectShareLink(token: string) {
+  const res = await fetch(apiUrl(`/v1/share/${encodeURIComponent(token)}/join`), {
+    method: "POST",
+    credentials: authCredentials(),
+    headers: authHeaders()
+  });
+  return parseJsonOrThrow<JoinProjectShareLinkResponse>(res, "Unable to join shared project");
 }

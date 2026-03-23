@@ -24,6 +24,8 @@ export type PresencePeer = {
   column?: number;
 };
 
+export type RealtimeStatus = "connecting" | "connected" | "disconnected";
+
 type CursorPayload = {
   line: number;
   column: number;
@@ -38,6 +40,7 @@ export function bindRealtimeYDoc(params: {
   userName?: string;
   sessionToken?: string;
   onPresenceChange?: (users: PresencePeer[]) => void;
+  onStatusChange?: (status: RealtimeStatus) => void;
 }) {
   const userId = params.userId ?? crypto.randomUUID();
   const userName = params.userName?.trim() || `User-${userId.slice(0, 8)}`;
@@ -52,6 +55,7 @@ export function bindRealtimeYDoc(params: {
   const safeDocId = encodeURIComponent(params.docId);
   const url = `${params.wsBaseUrl.replace(/^http/, "ws").replace(/\/$/, "")}/v1/realtime/ws/${safeDocId}?${query.toString()}`;
   const ws = new WebSocket(url);
+  params.onStatusChange?.("connecting");
   const origin = `client-${crypto.randomUUID()}`;
   const peers = new Map<string, PresencePeer>();
   peers.set(userId, { id: userId, name: userName });
@@ -75,6 +79,7 @@ export function bindRealtimeYDoc(params: {
   params.ydoc.on("update", onLocalUpdate);
 
   ws.addEventListener("open", () => {
+    params.onStatusChange?.("connected");
     const snapshot = Y.encodeStateAsUpdate(params.ydoc);
     notifyPresence();
     ws.send(
@@ -158,6 +163,14 @@ export function bindRealtimeYDoc(params: {
     }
   });
 
+  ws.addEventListener("error", () => {
+    params.onStatusChange?.("disconnected");
+  });
+
+  ws.addEventListener("close", () => {
+    params.onStatusChange?.("disconnected");
+  });
+
   const sendCursor = (cursor: CursorPayload) => {
     if (ws.readyState !== WebSocket.OPEN) return;
     ws.send(
@@ -177,6 +190,7 @@ export function bindRealtimeYDoc(params: {
     peers.clear();
     notifyPresence();
     ws.close();
+    params.onStatusChange?.("disconnected");
   };
 
   return { close, sendCursor };

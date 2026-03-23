@@ -107,6 +107,20 @@ async function openWorkspace(page, projectId) {
   await page.locator(".tree-label", { hasText: "main.typ" }).first().waitFor({ timeout: 30000 });
 }
 
+async function waitForActiveFile(page, filePath, timeoutMs = 10000) {
+  await page.waitForFunction(
+    (path) => {
+      const firstPill = document.querySelector(".panel-status .status-pill");
+      if (!firstPill) return false;
+      const title = firstPill.getAttribute("title") || "";
+      const text = firstPill.textContent || "";
+      return title === path || text.includes(path.split("/").filter(Boolean).pop() || path);
+    },
+    filePath,
+    { timeout: timeoutMs }
+  );
+}
+
 async function canvasChecksum(page) {
   return page.evaluate(() => {
     const canvas = document.querySelector(".pdf-frame canvas");
@@ -349,6 +363,10 @@ try {
   await login(pageB, collaborator.email, collaborator.password);
   await openWorkspace(pageA, projectId);
   await openWorkspace(pageB, projectId);
+  await pageA
+    .locator(".preview-runtime-status", { hasText: "Preparing Typst compiler in browser" })
+    .first()
+    .waitFor({ timeout: 15000 });
   await waitForCanvas(pageA, 60000);
   await assertWorkspaceLayout(pageA);
 
@@ -363,10 +381,10 @@ try {
     return { files, editor, preview };
   });
   if ((await pageA.locator(".panel-preview").count()) === 0) {
-    await pageA.getByRole("button", { name: "Toggle Preview Panel" }).click();
+    await pageA.getByRole("button", { name: "Preview" }).click();
   }
   if ((await pageA.locator(".panel-files").count()) === 0) {
-    await pageA.getByRole("button", { name: "Toggle Files Panel" }).click();
+    await pageA.getByRole("button", { name: "Files" }).click();
   }
   const filesHandle = pageA.locator(".workspace-stage > .panel-resizer").first();
   const splitHandle = pageA.locator(".center-split > .panel-resizer").first();
@@ -419,7 +437,7 @@ try {
     () => pageA.locator(".context-menu-floating .mini", { hasText: "New File" }).first().click(),
     contextCreatedPath
   );
-  await pageA.getByText(`File: ${contextCreatedPath}`).waitFor({ timeout: 10000 });
+  await waitForActiveFile(pageA, contextCreatedPath, 10000);
   await ensureDirectoryExpanded(pageA, "chapters");
   await pageA
     .locator(".tree-label", { hasText: path.basename(contextCreatedPath) })
@@ -433,7 +451,7 @@ try {
       pageA.locator(".context-menu-floating .mini", { hasText: "Rename" }).first().click(),
     contextRenamedPath
   );
-  await pageA.getByText(`File: ${contextRenamedPath}`).waitFor({ timeout: 10000 });
+  await waitForActiveFile(pageA, contextRenamedPath, 10000);
   await pageA
     .locator(".tree-label", { hasText: path.basename(contextRenamedPath) })
     .first()
@@ -471,7 +489,7 @@ try {
   }
 
   const archiveDownloadPromise = pageA.waitForEvent("download");
-  await pageA.getByRole("button", { name: "Download Archive" }).click();
+  await pageA.getByRole("button", { name: "Download ZIP" }).click();
   const archiveDownload = await archiveDownloadPromise;
   const archivePath = path.join(outDir, "archive.zip");
   await archiveDownload.saveAs(archivePath);
@@ -480,20 +498,20 @@ try {
     throw new Error("Archive download is unexpectedly small");
   }
 
-  await pageA.getByRole("button", { name: "Toggle Project Settings Panel" }).click();
+  await pageA.getByRole("button", { name: "Settings" }).click();
   await pageA.getByText("Git Access URL").waitFor({ timeout: 10000 });
-  await pageA.getByRole("button", { name: "Toggle Revision Panel" }).click();
+  await pageA.getByRole("button", { name: "Revisions" }).click();
   const historyCount = await pageA.locator(".history-item").count();
   if (historyCount < 1) throw new Error("No revisions available");
   await pageA.locator(".history-item").first().click();
   await pageA.waitForFunction(
-    () => (document.querySelector(".panel-status")?.textContent || "").includes("Mode: Revision"),
+    () => (document.querySelector(".panel-status")?.textContent || "").includes("Revision"),
     undefined,
     { timeout: 10000 }
   );
-  await pageA.getByRole("button", { name: "Toggle Revision Panel" }).click();
+  await pageA.getByRole("button", { name: "Revisions" }).click();
   await pageA.waitForFunction(
-    () => (document.querySelector(".panel-status")?.textContent || "").includes("Mode: Live"),
+    () => (document.querySelector(".panel-status")?.textContent || "").includes("Live"),
     undefined,
     { timeout: 10000 }
   );

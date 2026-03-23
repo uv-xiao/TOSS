@@ -53,7 +53,7 @@ body {
 }
 
 .topbar.workspace {
-  grid-template-columns: auto minmax(320px, 1fr) auto;
+  grid-template-columns: auto auto minmax(320px, 1fr) auto;
 }
 
 .topbar-brand {
@@ -89,6 +89,15 @@ body {
   font-size: 12px;
   color: var(--muted);
   justify-content: flex-end;
+}
+
+.meta select {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 6px;
+  font: inherit;
+  color: var(--muted);
+  background: #fff;
 }
 
 .error-banner {
@@ -332,11 +341,36 @@ body {
   overflow: hidden;
 }
 
+.panel-status.compact {
+  gap: 6px;
+}
+
 .panel-status span {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 200px;
+}
+
+.status-pill {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: #fff;
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.status-pill.ok {
+  border-color: #b8d4bf;
+  color: #1f6d3f;
+  background: #ecf8f0;
+}
+
+.status-pill.warn {
+  border-color: #efc4c6;
+  color: #962b2e;
+  background: #fff1f2;
 }
 
 .panel-content {
@@ -681,7 +715,7 @@ body {
 
 .file-preview.file-preview-asset {
   grid-template-rows: minmax(0, 1fr) auto;
-  gap: 10px;
+  gap: 12px;
   align-items: stretch;
 }
 
@@ -689,12 +723,14 @@ body {
   min-height: 0;
   display: grid;
   place-items: center;
+  padding: 8px;
 }
 
 .file-preview-meta {
   display: grid;
-  gap: 6px;
+  gap: 8px;
   justify-items: center;
+  padding-bottom: 8px;
 }
 
 .file-preview.empty {
@@ -748,6 +784,11 @@ body {
   object-fit: contain;
 }
 
+.file-preview-media .file-icon {
+  width: 52px;
+  height: 64px;
+}
+
 .file-preview-pdf {
   width: 100%;
   height: 100%;
@@ -780,6 +821,22 @@ body {
   padding: 8px 10px;
   border-top: 1px solid #efc4c6;
   background: #fff4f4;
+}
+
+.connection-warning {
+  font-weight: 600;
+}
+
+.preview-runtime-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  background: #ecf4ff;
+  color: #274f74;
+  font-size: 12px;
 }
 
 .panel-inline-error.diagnostics {
@@ -870,8 +927,10 @@ label {
   }
 
   .topbar.workspace {
+    grid-template-columns: 1fr auto;
     grid-template-areas:
-      "back meta"
+      "brand meta"
+      "back back"
       "controls controls";
   }
 

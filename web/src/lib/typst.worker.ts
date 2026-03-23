@@ -27,6 +27,13 @@ type CompileResponse = {
   diagnostics?: CompileDiagnostic[];
 };
 
+type RuntimeStatusMessage = {
+  kind: "runtime.status";
+  stage: "downloading-compiler" | "compiling" | "ready" | "idle";
+  loaded_bytes?: number;
+  total_bytes?: number;
+};
+
 type CompileDiagnostic = {
   severity: "error" | "warning" | "info";
   message: string;
@@ -120,7 +127,34 @@ async function fetchArrayBufferWithContext(url: string, label: string) {
   if (!response.ok) {
     throw new Error(`${label} fetch failed at ${url}: status ${response.status}`);
   }
-  return response.arrayBuffer();
+  const totalHeader = response.headers.get("content-length");
+  const totalBytes = totalHeader ? Number.parseInt(totalHeader, 10) : NaN;
+  const reader = response.body?.getReader();
+  if (!reader) {
+    return response.arrayBuffer();
+  }
+  const chunks: Uint8Array[] = [];
+  let loadedBytes = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value || value.length === 0) continue;
+    chunks.push(value);
+    loadedBytes += value.length;
+    self.postMessage({
+      kind: "runtime.status",
+      stage: "downloading-compiler",
+      loaded_bytes: loadedBytes,
+      total_bytes: Number.isFinite(totalBytes) ? totalBytes : undefined
+    } satisfies RuntimeStatusMessage);
+  }
+  const merged = new Uint8Array(loadedBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return merged.buffer;
 }
 
 async function getTypst(coreApiUrl: string, fontData: Uint8Array[], appOrigin: string) {
@@ -144,8 +178,18 @@ async function getTypst(coreApiUrl: string, fontData: Uint8Array[], appOrigin: s
           disableDefaultFontAssets(),
           loadFonts(fontData)
         ],
-        getModule: async () =>
-          fetchArrayBufferWithContext(compilerWasmUrl(appOrigin), "compiler wasm")
+        getModule: async () => {
+          self.postMessage({
+            kind: "runtime.status",
+            stage: "downloading-compiler"
+          } satisfies RuntimeStatusMessage);
+          const buffer = await fetchArrayBufferWithContext(compilerWasmUrl(appOrigin), "compiler wasm");
+          self.postMessage({
+            kind: "runtime.status",
+            stage: "ready"
+          } satisfies RuntimeStatusMessage);
+          return buffer;
+        }
       });
       return typst;
     })();
@@ -167,6 +211,10 @@ async function handleCompile(eventData: CompileRequest) {
   const appOrigin = eventData.appOrigin ?? self.location.origin;
   const entryFilePath = normalizeWorkspacePath(eventData.entryFilePath || "main.typ");
   try {
+    self.postMessage({
+      kind: "runtime.status",
+      stage: "compiling"
+    } satisfies RuntimeStatusMessage);
     const typst = await getTypst(coreApiUrl, fontData, appOrigin);
     if (!accessModel) throw new Error("Compiler access model missing");
     await typst.resetShadow();
@@ -228,6 +276,10 @@ async function handleCompile(eventData: CompileRequest) {
           : diagnostics.map((item) => item.raw),
       diagnostics
     } satisfies CompileResponse);
+    self.postMessage({
+      kind: "runtime.status",
+      stage: "ready"
+    } satisfies RuntimeStatusMessage);
     return;
   } catch (err) {
     const message =
@@ -241,6 +293,10 @@ async function handleCompile(eventData: CompileRequest) {
       ok: false,
       errors: [message || "Typst compile failed"]
     } satisfies CompileResponse);
+    self.postMessage({
+      kind: "runtime.status",
+      stage: "idle"
+    } satisfies RuntimeStatusMessage);
     if (/memory access out of bounds|unreachable|RuntimeError/i.test(message)) {
       resetCompilerState();
     }

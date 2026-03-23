@@ -14,11 +14,18 @@ import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } fr
 import * as Y from "yjs";
 import { EditorPane, type EditorChange } from "@/components/EditorPane";
 import { HistoryPanel } from "@/components/HistoryPanel";
-import { bindRealtimeYDoc, type PresencePeer } from "@/lib/realtime";
-import { compileTypstClientSide, renderTypstVectorToCanvas, type CompileDiagnostic } from "@/lib/typst";
+import { bindRealtimeYDoc, type PresencePeer, type RealtimeStatus } from "@/lib/realtime";
+import {
+  compileTypstClientSide,
+  renderTypstVectorToCanvas,
+  subscribeTypstRuntimeStatus,
+  type CompileDiagnostic,
+  type TypstRuntimeStatus
+} from "@/lib/typst";
 import {
   createPersonalAccessToken,
   createProject,
+  createProjectShareLink,
   createProjectFile,
   downloadProjectArchive,
   deleteOrgGroupRoleMapping,
@@ -35,20 +42,25 @@ import {
   listOrgGroupRoleMappings,
   listPersonalAccessTokens,
   listProjectAssets,
+  listProjectShareLinks,
   listProjects,
   listRevisions,
+  joinProjectShareLink,
   localLogin,
   localRegister,
   logout,
   oidcLoginUrl,
+  revokeProjectShareLink,
   revokePersonalAccessToken,
   type AdminAuthSettings,
   type AuthConfig,
   type AuthUser,
+  type CreateProjectShareLinkResponse,
   type OrgGroupRoleMapping,
   type PersonalAccessTokenInfo,
   type Project,
   type ProjectRole,
+  type ProjectShareLink,
   type Revision,
   moveProjectFile,
   upsertAdminAuthSettings,
@@ -57,8 +69,7 @@ import {
   upsertProjectSettings,
   uploadProjectAsset
 } from "@/lib/api";
-
-const DEFAULT_ORG_ID = "00000000-0000-0000-0000-000000000001";
+import { DEFAULT_LOCALE, readStoredLocale, storeLocale, translate, type UiLocale } from "@/lib/i18n";
 
 type ProjectTreeNodeView = {
   name: string;
@@ -160,6 +171,12 @@ function isTextFile(path: string) {
   return /\.(typ|txt|md|json|toml|yaml|yml|csv|xml|html|css|js|ts|tsx|jsx)$/i.test(path);
 }
 
+function editorLanguageForPath(path: string): "typst" | "markdown" | "plain" {
+  if (/\.typ$/i.test(path)) return "typst";
+  if (/\.md$/i.test(path)) return "markdown";
+  return "plain";
+}
+
 function isFontFile(path: string) {
   return /\.(ttf|otf|woff|woff2)$/i.test(path);
 }
@@ -184,9 +201,9 @@ function inferContentType(path: string, contentType?: string) {
 }
 
 function previewSurfaces(pages: HTMLElement): HTMLElement[] {
-  const canvases = Array.from(pages.querySelectorAll("canvas")) as HTMLElement[];
-  if (canvases.length > 0) return canvases;
-  return Array.from(pages.querySelectorAll(".typst-page")) as HTMLElement[];
+  const pageNodes = Array.from(pages.querySelectorAll(".typst-page")) as HTMLElement[];
+  if (pageNodes.length > 0) return pageNodes;
+  return Array.from(pages.querySelectorAll("canvas")) as HTMLElement[];
 }
 
 function previewSurfaceBaseSize(node: HTMLElement) {
@@ -194,9 +211,12 @@ function previewSurfaceBaseSize(node: HTMLElement) {
   const storedHeight = Number(node.dataset.baseHeight);
   if (storedWidth > 0 && storedHeight > 0) return { width: storedWidth, height: storedHeight };
   if (node instanceof HTMLCanvasElement) {
+    const rect = node.getBoundingClientRect();
+    const styleWidth = Number.parseFloat(node.style.width || "");
+    const styleHeight = Number.parseFloat(node.style.height || "");
     return {
-      width: Math.max(1, node.width / 2 || node.clientWidth || 1),
-      height: Math.max(1, node.height / 2 || node.clientHeight || 1)
+      width: Math.max(1, styleWidth || rect.width || node.clientWidth || node.width || 1),
+      height: Math.max(1, styleHeight || rect.height || node.clientHeight || node.height || 1)
     };
   }
   const styleWidth = Number.parseFloat(node.style.width || "");
@@ -312,14 +332,29 @@ function projectTreeFromFlat(nodes: { path: string; kind: "file" | "directory" }
 }
 
 export function App() {
+  const navigate = useNavigate();
   const location = useLocation();
   const [authLoading, setAuthLoading] = useState(true);
   const [authConfig, setAuthConfig] = useState<AuthConfig | null>(null);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [locale, setLocale] = useState<UiLocale>(() => readStoredLocale());
   const [projects, setProjects] = useState<Project[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [workspaceTopbar, setWorkspaceTopbar] = useState<ReactNode | null>(null);
   const onWorkspaceRoute = location.pathname.startsWith("/project/");
+  const shareTokenFromPath = location.pathname.startsWith("/share/")
+    ? decodeURIComponent(location.pathname.replace("/share/", ""))
+    : null;
+  const t = useMemo(() => (key: string) => translate(locale, key), [locale]);
+
+  useEffect(() => {
+    storeLocale(locale);
+  }, [locale]);
+
+  useEffect(() => {
+    if (!shareTokenFromPath) return;
+    window.sessionStorage.setItem("share.token.pending", shareTokenFromPath);
+  }, [shareTokenFromPath]);
 
   useEffect(() => {
     Promise.all([getAuthConfig(), getAuthMe()])
@@ -357,6 +392,7 @@ export function App() {
   }, [onWorkspaceRoute, workspaceTopbar]);
 
   const firstProject = projects[0]?.id;
+  const siteName = authConfig?.site_name?.trim() || t("brand.name");
 
   async function handleLogout() {
     await logout();
@@ -376,10 +412,22 @@ export function App() {
     return (
       <SignInPage
         config={authConfig}
+        t={t}
         onSignedIn={async () => {
           const me = await getAuthMe();
           setAuthUser(me);
           await refreshProjects();
+          const pendingShare = shareTokenFromPath || window.sessionStorage.getItem("share.token.pending");
+          if (pendingShare) {
+            window.sessionStorage.removeItem("share.token.pending");
+            try {
+              const joined = await joinProjectShareLink(pendingShare);
+              await refreshProjects();
+              navigate(`/project/${joined.project_id}`, { replace: true });
+            } catch {
+              setError(t("share.joinFailed"));
+            }
+          }
         }}
       />
     );
@@ -388,18 +436,21 @@ export function App() {
   return (
     <main className="app-shell">
       <header className={`topbar ${onWorkspaceRoute ? "workspace" : ""}`}>
-        {onWorkspaceRoute ? (
+        <strong className="topbar-brand">{siteName}</strong>
+        {onWorkspaceRoute && (
           <Link className="tab" to="/projects">
-            Back to projects
+            {t("nav.backToProjects")}
           </Link>
-        ) : (
-          <strong className="topbar-brand">Typst Collaboration</strong>
         )}
         <div className="topbar-workspace-slot">{onWorkspaceRoute ? workspaceTopbar : null}</div>
         <div className="meta">
+          <select value={locale} onChange={(e) => setLocale(e.target.value === "zh-CN" ? "zh-CN" : "en")}>
+            <option value="en">EN</option>
+            <option value="zh-CN">中文</option>
+          </select>
           <span>{authUser.display_name}</span>
           <button className="button" onClick={handleLogout}>
-            Logout
+            {t("nav.logout")}
           </button>
         </div>
       </header>
@@ -410,11 +461,18 @@ export function App() {
             <Route path="/" element={<Navigate to={firstProject ? `/project/${firstProject}` : "/projects"} replace />} />
             <Route
               path="/projects"
-              element={<ProjectsPage projects={projects} refreshProjects={refreshProjects} />}
+              element={<ProjectsPage projects={projects} refreshProjects={refreshProjects} t={t} />}
             />
-            <Route path="/project/:projectId" element={<WorkspacePage projects={projects} authUser={authUser} />} />
-            <Route path="/admin" element={<AdminPage />} />
-            <Route path="/profile" element={<ProfilePage />} />
+            <Route
+              path="/project/:projectId"
+              element={<WorkspacePage projects={projects} authUser={authUser} t={t} />}
+            />
+            <Route
+              path="/share/:token"
+              element={<ShareJoinPage t={t} onJoin={async (token) => joinProjectShareLink(token)} />}
+            />
+            <Route path="/admin" element={<AdminPage t={t} />} />
+            <Route path="/profile" element={<ProfilePage t={t} />} />
           </Routes>
         </WorkspaceTopbarContext.Provider>
       </section>
@@ -424,9 +482,11 @@ export function App() {
 
 function SignInPage({
   config,
+  t,
   onSignedIn
 }: {
   config: AuthConfig | null;
+  t: (key: string) => string;
   onSignedIn: () => Promise<void>;
 }) {
   const [mode, setMode] = useState<"login" | "register">("login");
@@ -457,20 +517,20 @@ function SignInPage({
   return (
     <section className="auth-shell">
       <div className="auth-card">
-        <h2>Sign In</h2>
-        <p>Use local account credentials or your OpenID Connect provider.</p>
+        <h2>{t("auth.signIn")}</h2>
+        <p>{t("auth.subtitle")}</p>
         <div className="toolbar">
           <button className={`button ${mode === "login" ? "filled" : ""}`} onClick={() => setMode("login")}>
-            Local Login
+            {t("auth.localLogin")}
           </button>
           {config?.allow_local_registration && (
             <button className={`button ${mode === "register" ? "filled" : ""}`} onClick={() => setMode("register")}>
-              Register
+              {t("auth.register")}
             </button>
           )}
           {config?.allow_oidc && (
             <a className="button" href={oidcLoginUrl()}>
-              OIDC Login
+              {t("auth.oidcLogin")}
             </a>
           )}
         </div>
@@ -490,7 +550,7 @@ function SignInPage({
             />
           )}
           <button className="button filled" onClick={submit} disabled={!email || !password}>
-            Continue
+            {t("auth.continue")}
           </button>
         </div>
         {error && <div className="error">{error}</div>}
@@ -501,19 +561,21 @@ function SignInPage({
 
 function ProjectsPage({
   projects,
-  refreshProjects
+  refreshProjects,
+  t
 }: {
   projects: Project[];
   refreshProjects: () => Promise<void>;
+  t: (key: string) => string;
 }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [error, setError] = useState<string | null>(null);
   return (
     <section className="page">
-      <h2>Projects</h2>
+      <h2>{t("projects.title")}</h2>
       <div className="card create-card">
-        <strong>Create Project</strong>
+        <strong>{t("projects.createTitle")}</strong>
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Project name" />
         <input
           value={description}
@@ -527,7 +589,6 @@ function ProjectsPage({
             try {
               setError(null);
               await createProject({
-                organization_id: DEFAULT_ORG_ID,
                 name: name.trim(),
                 description: description.trim() || null
               });
@@ -540,7 +601,7 @@ function ProjectsPage({
             }
           }}
         >
-          Create
+          {t("projects.createAction")}
         </button>
         {error && <div className="error">{error}</div>}
       </div>
@@ -557,7 +618,15 @@ function ProjectsPage({
   );
 }
 
-function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: AuthUser }) {
+function WorkspacePage({
+  projects,
+  authUser,
+  t
+}: {
+  projects: Project[];
+  authUser: AuthUser;
+  t: (key: string) => string;
+}) {
   const setWorkspaceTopbar = useContext(WorkspaceTopbarContext);
   const { projectId = "" } = useParams();
   const navigate = useNavigate();
@@ -608,6 +677,11 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [filesDropActive, setFilesDropActive] = useState(false);
   const [bundledFonts, setBundledFonts] = useState<Uint8Array[]>([]);
+  const [shareLinks, setShareLinks] = useState<ProjectShareLink[]>([]);
+  const [newShareLinks, setNewShareLinks] = useState<CreateProjectShareLinkResponse[]>([]);
+  const [typstRuntimeStatus, setTypstRuntimeStatus] = useState<TypstRuntimeStatus>({ stage: "idle" });
+  const [apiReachable, setApiReachable] = useState(true);
+  const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>("connecting");
 
   const tree = useMemo(() => projectTreeFromFlat(nodes), [nodes]);
   const isRevisionMode = !!activeRevisionId;
@@ -663,18 +737,25 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
   const activeAssetType = inferContentType(activePath, activeAsset?.contentType);
   const assetDataUrl = activeAssetBase64 ? `data:${activeAssetType};base64,${activeAssetBase64}` : "";
   const project = projects.find((p) => p.id === projectId);
+  const canWrite = project?.my_role !== "Viewer";
+  const canManageProject = project?.my_role === "Owner" || project?.my_role === "Teacher";
   const previewPercent = Math.round(previewZoom * 100);
+  const activeFileName = activePath.split("/").filter(Boolean).at(-1) || activePath;
+  const realtimeRequired = isActiveTextDoc && !isRevisionMode;
+  const serverReachable = apiReachable && (!realtimeRequired || realtimeStatus !== "disconnected");
 
   const refreshProjectData = async () => {
     if (!projectId) return;
     setWorkspaceLoaded(false);
-    let [treeRes, settings, git, docsRes, revisionsRes, assetsRes] = await Promise.all([
+    const sharePromise = canManageProject ? listProjectShareLinks(projectId).catch(() => []) : Promise.resolve([]);
+    let [treeRes, settings, git, docsRes, revisionsRes, assetsRes, shareRes] = await Promise.all([
       getProjectTree(projectId),
       getProjectSettings(projectId).catch(() => ({ entry_file_path: "main.typ" })),
       getGitRepoLink(projectId).catch(() => ({ repo_url: "" })),
       listDocuments(projectId),
       listRevisions(projectId).catch(() => ({ revisions: [] })),
-      listProjectAssets(projectId).catch(() => ({ assets: [] }))
+      listProjectAssets(projectId).catch(() => ({ assets: [] })),
+      sharePromise
     ]);
     if (!treeRes.nodes.some((node) => node.kind === "file")) {
       await createProjectFile(projectId, {
@@ -690,6 +771,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
     setEntryFilePath(settings.entry_file_path || treeRes.entry_file_path || "main.typ");
     setGitRepoUrl(git.repo_url || "");
     setRevisions(revisionsRes.revisions || []);
+    setShareLinks(shareRes);
 
     const nextDocs: Record<string, string> = {};
     for (const doc of docsRes.documents) nextDocs[doc.path] = doc.content;
@@ -722,8 +804,14 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
       setActivePath(target);
       setExpandedDirs((prev) => expandAncestors(target, prev));
     }
+    setApiReachable(true);
     setWorkspaceLoaded(true);
   };
+
+  useEffect(() => {
+    const unsub = subscribeTypstRuntimeStatus((status) => setTypstRuntimeStatus(status));
+    return () => unsub();
+  }, []);
 
   useEffect(() => {
     const stored = readWorkspaceLayoutPrefs();
@@ -758,9 +846,32 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
     refreshProjectData().catch((err) => {
       const message = err instanceof Error ? err.message : "Unable to load workspace";
       setWorkspaceError(message);
+      setApiReachable(false);
       setWorkspaceLoaded(true);
     });
   }, [projectId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const response = await fetch("/health", { cache: "no-store", credentials: "include" });
+        if (cancelled) return;
+        setApiReachable(response.ok);
+      } catch {
+        if (cancelled) return;
+        setApiReachable(false);
+      }
+    };
+    run().catch(() => undefined);
+    const timer = window.setInterval(() => {
+      run().catch(() => undefined);
+    }, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   useEffect(() => {
     if (showRevisionPanel) return;
@@ -817,6 +928,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
     if (!hasActiveDoc) {
       setPresence([]);
       setDocText("");
+      setRealtimeStatus("disconnected");
       return;
     }
     const fileContent = docs[activePath] ?? "";
@@ -844,7 +956,8 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
       ydoc,
       userId: effectiveUserId,
       userName: effectiveUserName,
-      onPresenceChange: setPresence
+      onPresenceChange: setPresence,
+      onStatusChange: setRealtimeStatus
     });
     realtimeRef.current = realtime;
     return () => {
@@ -855,6 +968,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
       ytextRef.current = null;
       realtimeRef.current = null;
       setPresence([]);
+      setRealtimeStatus("disconnected");
     };
   }, [
     activePath,
@@ -871,6 +985,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
     const timer = window.setInterval(() => {
       listDocuments(projectId)
         .then((response) => {
+          setApiReachable(true);
           const incomingByPath: Record<string, string> = {};
           for (const doc of response.documents) incomingByPath[doc.path] = doc.content;
           setDocs((previous) => {
@@ -893,7 +1008,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
             return changed ? next : previous;
           });
         })
-        .catch(() => undefined);
+        .catch(() => setApiReachable(false));
     }, 2200);
     return () => window.clearInterval(timer);
   }, [activePath, isRevisionMode, projectId, workspaceLoaded]);
@@ -902,8 +1017,11 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
     if (!projectId || !workspaceLoaded) return;
     const timer = window.setInterval(() => {
       listRevisions(projectId)
-        .then((res) => setRevisions(res.revisions || []))
-        .catch(() => undefined);
+        .then((res) => {
+          setApiReachable(true);
+          setRevisions(res.revisions || []);
+        })
+        .catch(() => setApiReachable(false));
     }, 8000);
     return () => window.clearInterval(timer);
   }, [projectId, workspaceLoaded]);
@@ -916,11 +1034,15 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
     const timer = window.setTimeout(() => {
       upsertDocumentByPath(projectId, activePath, docText)
         .then((saved) => {
+          setApiReachable(true);
           lastSavedDocRef.current = saved.content;
           setDocs((prev) => ({ ...prev, [saved.path]: saved.content }));
           setSaveState("saved");
         })
-        .catch(() => setSaveState("error"));
+        .catch(() => {
+          setApiReachable(false);
+          setSaveState("error");
+        });
     }, 320);
     return () => window.clearTimeout(timer);
   }, [activePath, docText, hasActiveDoc, isRevisionMode, projectId, workspaceLoaded]);
@@ -1050,7 +1172,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
   }, [contextMenu]);
 
   function applyDocumentDeltas(changes: EditorChange[]) {
-    if (isRevisionMode || changes.length === 0) return;
+    if (isRevisionMode || !canWrite || changes.length === 0) return;
     const ydoc = ydocRef.current;
     const ytext = ytextRef.current;
     if (!ydoc || !ytext) return;
@@ -1068,7 +1190,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
   }
 
   async function addPath(kind: "file" | "directory", parentPath = "") {
-    if (!projectId) return;
+    if (!projectId || !canWrite) return;
     const placeholder = kind === "file" ? "untitled.typ" : "folder";
     const suggested = joinProjectPath(parentPath, placeholder);
     const raw = window.prompt(kind === "file" ? "New file path" : "New directory path", suggested);
@@ -1094,7 +1216,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
   }
 
   async function renamePath(path: string) {
-    if (!projectId) return;
+    if (!projectId || !canWrite) return;
     const to = window.prompt("Rename to", path);
     if (!to) return;
     let normalizedTo = normalizePath(to);
@@ -1116,7 +1238,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
   }
 
   async function removePath(path: string) {
-    if (!projectId) return;
+    if (!projectId || !canWrite) return;
     if (!window.confirm(`Delete ${path}?`)) return;
     try {
       await deleteProjectFile(projectId, path);
@@ -1136,7 +1258,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
   };
 
   async function commitUploads(items: UploadCandidate[], parentPath = "") {
-    if (!projectId || items.length === 0) return;
+    if (!projectId || items.length === 0 || !canWrite) return;
     try {
       setContextMenu(null);
       for (const item of items) {
@@ -1164,6 +1286,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
   }
 
   function uploadFromPicker(parentPath = "") {
+    if (!canWrite) return;
     const picker = document.createElement("input");
     picker.type = "file";
     picker.multiple = true;
@@ -1240,6 +1363,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
   async function onTreeDrop(event: ReactDragEvent<HTMLDivElement>) {
     event.preventDefault();
     setFilesDropActive(false);
+    if (!canWrite) return;
     const items = await collectDragFiles(event.dataTransfer);
     await commitUploads(items, "");
   }
@@ -1257,6 +1381,33 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
       setWorkspaceError(null);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unable to download archive";
+      setWorkspaceError(message);
+    }
+  }
+
+  async function createShare(permission: "read" | "write") {
+    if (!projectId) return;
+    try {
+      const created = await createProjectShareLink(projectId, { permission });
+      setNewShareLinks((prev) => [created, ...prev].slice(0, 6));
+      const latest = await listProjectShareLinks(projectId);
+      setShareLinks(latest);
+      setWorkspaceError(null);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to create share link";
+      setWorkspaceError(message);
+    }
+  }
+
+  async function revokeShare(shareLinkId: string) {
+    if (!projectId) return;
+    try {
+      await revokeProjectShareLink(projectId, shareLinkId);
+      const latest = await listProjectShareLinks(projectId);
+      setShareLinks(latest);
+      setWorkspaceError(null);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to revoke share link";
       setWorkspaceError(message);
     }
   }
@@ -1368,7 +1519,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
   const workspaceTopbarControls = useMemo(
     () => (
       <div className="workspace-topbar-controls">
-        <label className="workspace-project-picker workspace-topbar-project" aria-label="Project">
+        <label className="workspace-project-picker workspace-topbar-project" aria-label={t("nav.projects")}>
           <select value={projectId} onChange={(e) => navigate(`/project/${e.target.value}`)}>
             {projects.map((item) => (
               <option value={item.id} key={item.id}>
@@ -1380,39 +1531,39 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
         <div className="workspace-icon-toggles">
           <button
             className={`icon-toggle ${showFilesPanel ? "active" : ""}`}
-            aria-label="Toggle Files Panel"
-            title="Toggle Files Panel"
+            aria-label={t("workspace.files")}
+            title={t("workspace.files")}
             onClick={() => setShowFilesPanel((v) => !v)}
           >
             <span aria-hidden>☰</span>
-            <span>Files</span>
+            <span>{t("workspace.files")}</span>
           </button>
           <button
             className={`icon-toggle ${showPreviewPanel ? "active" : ""}`}
-            aria-label="Toggle Preview Panel"
-            title="Toggle Preview Panel"
+            aria-label={t("workspace.preview")}
+            title={t("workspace.preview")}
             onClick={() => setShowPreviewPanel((v) => !v)}
           >
             <span aria-hidden>▭</span>
-            <span>Preview</span>
+            <span>{t("workspace.preview")}</span>
           </button>
           <button
             className={`icon-toggle ${showProjectSettingsPanel ? "active" : ""}`}
-            aria-label="Toggle Project Settings Panel"
-            title="Toggle Project Settings Panel"
+            aria-label={t("workspace.settings")}
+            title={t("workspace.settings")}
             onClick={() => setShowProjectSettingsPanel((v) => !v)}
           >
             <span aria-hidden>⚙</span>
-            <span>Settings</span>
+            <span>{t("workspace.settings")}</span>
           </button>
           <button
             className={`icon-toggle ${showRevisionPanel ? "active" : ""}`}
-            aria-label="Toggle Revision Panel"
-            title="Toggle Revision Panel"
+            aria-label={t("workspace.revisions")}
+            title={t("workspace.revisions")}
             onClick={toggleRevisionPanel}
           >
             <span aria-hidden>↺</span>
-            <span>Revisions</span>
+            <span>{t("workspace.revisions")}</span>
           </button>
         </div>
       </div>
@@ -1424,7 +1575,8 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
       showFilesPanel,
       showPreviewPanel,
       showProjectSettingsPanel,
-      showRevisionPanel
+      showRevisionPanel,
+      t
     ]
   );
 
@@ -1445,7 +1597,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
           <>
             <aside className="panel panel-files" style={{ width: filesPanelWidth }}>
               <div className="panel-header">
-                <h2>Files</h2>
+                <h2>{t("workspace.files")}</h2>
               </div>
               <div
                 className={`panel-content ${filesDropActive ? "drop-active" : ""}`}
@@ -1463,14 +1615,14 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
                 onDrop={onTreeDrop}
               >
                 <div className="toolbar compact-left">
-                  <button className="button" onClick={() => addPath("file")}>
-                    New File
+                  <button className="button" onClick={() => addPath("file")} disabled={!canWrite}>
+                    {t("workspace.newFile")}
                   </button>
-                  <button className="button" onClick={() => addPath("directory")}>
-                    New Folder
+                  <button className="button" onClick={() => addPath("directory")} disabled={!canWrite}>
+                    {t("workspace.newFolder")}
                   </button>
-                  <button className="button" onClick={() => uploadFromPicker()}>
-                    Upload
+                  <button className="button" onClick={() => uploadFromPicker()} disabled={!canWrite}>
+                    {t("workspace.upload")}
                   </button>
                 </div>
                 <div className="tree">
@@ -1482,6 +1634,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
                       expanded={expandedDirs}
                       setExpanded={setExpandedDirs}
                       onOpen={openTreePath}
+                      canManage={canWrite}
                       onRequestContextMenu={requestContextMenu}
                     />
                   ))}
@@ -1510,18 +1663,26 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
             }
           >
             <div className="panel-header">
-              <h2>Editor</h2>
-              <div className="panel-status">
-                <span>File: {activePath}</span>
-                <span>Mode: {isRevisionMode ? "Revision" : "Live"}</span>
-                <span>Save: {saveState}</span>
-                <span>Compiled: {compiledAt ? new Date(compiledAt).toLocaleTimeString() : "n/a"}</span>
+              <h2>{t("workspace.editor")}</h2>
+              <div className="panel-status compact">
+                <span className="status-pill" title={activePath}>
+                  {activeFileName}
+                </span>
+                <span className="status-pill">
+                  {isRevisionMode ? t("status.modeRevision") : t("status.modeLive")}
+                </span>
+                <span className="status-pill">{t(`status.save${saveState.charAt(0).toUpperCase()}${saveState.slice(1)}`)}</span>
+                <span className="status-pill">
+                  {compiledAt ? new Date(compiledAt).toLocaleTimeString() : "n/a"}
+                </span>
                 <button className="inline-toggle" onClick={() => setLineWrapEnabled((value) => !value)}>
-                  Wrap: {lineWrapEnabled ? "On" : "Off"}
+                  {lineWrapEnabled ? t("status.wrapOn") : t("status.wrapOff")}
                 </button>
-                <span>
-                  Collaborators:{" "}
-                  {remoteCursors.length > 0 ? remoteCursors.map((user) => user.name).join(", ") : "none"}
+                <span className="status-pill" title={remoteCursors.map((user) => user.name).join(", ")}>
+                  {`👥 ${remoteCursors.length}`}
+                </span>
+                <span className={`status-pill ${serverReachable ? "ok" : "warn"}`}>
+                  {serverReachable ? "Online" : "Offline"}
                 </span>
               </div>
             </div>
@@ -1532,8 +1693,9 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
                     value={docText}
                     onDelta={applyDocumentDeltas}
                     onCursorChange={(cursor) => realtimeRef.current?.sendCursor(cursor)}
-                    readOnly={isRevisionMode}
+                    readOnly={isRevisionMode || !canWrite}
                     lineWrap={lineWrapEnabled}
+                    language={editorLanguageForPath(activePath)}
                     remoteCursors={remoteCursors}
                     jumpTo={jumpTarget}
                     onJumpHandled={() => setJumpTarget(null)}
@@ -1546,15 +1708,24 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
                   isImage={isImageAsset(activePath, activeAssetType)}
                   isPdf={isPdfAsset(activePath, activeAssetType)}
                   dataUrl={assetDataUrl}
+                  t={t}
                 />
               )}
               {!isActiveTextDoc && (
                 <div className="error panel-inline-error">
-                  This file is not editable in web editor. Edit offline and sync with Git.
+                  {t("workspace.notEditable")}
                 </div>
               )}
               {isRevisionMode && !Object.prototype.hasOwnProperty.call(revisionDocs, activePath) && (
                 <div className="error panel-inline-error">This file did not exist in this revision snapshot.</div>
+              )}
+              {!serverReachable && (
+                <div className="error panel-inline-error connection-warning">{t("workspace.connectionLost")}</div>
+              )}
+              {realtimeRequired && serverReachable && realtimeStatus === "connecting" && (
+                <div className="error panel-inline-error connection-warning">
+                  {t("workspace.connectionReconnecting")}
+                </div>
               )}
               {workspaceError && <div className="error panel-inline-error">{workspaceError}</div>}
             </div>
@@ -1577,7 +1748,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
           {showPreviewPanel && (
             <aside className="panel panel-preview" style={{ flex: `${1 - editorRatio} 1 0`, minWidth: 280 }}>
               <div className="panel-header">
-                <h2>Preview</h2>
+                <h2>{t("workspace.preview")}</h2>
                 <div className="toolbar compact">
                   <button
                     className={`icon-button ${previewFitMode === "page" ? "filled" : ""}`}
@@ -1614,8 +1785,8 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
                   </button>
                   <button
                     className="icon-button"
-                    title="Download PDF (Client)"
-                    aria-label="Download PDF (Client)"
+                    title={t("preview.downloadPdf")}
+                    aria-label={t("preview.downloadPdf")}
                     onClick={downloadCompiledPdf}
                     disabled={!pdfData}
                   >
@@ -1623,8 +1794,8 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
                   </button>
                   <button
                     className="icon-button"
-                    title="Download Archive"
-                    aria-label="Download Archive"
+                    title={t("preview.downloadZip")}
+                    aria-label={t("preview.downloadZip")}
                     onClick={downloadArchive}
                   >
                     ↓ZIP
@@ -1632,6 +1803,25 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
                 </div>
               </div>
               <div className="panel-content flush">
+                {(typstRuntimeStatus.stage === "downloading-compiler" ||
+                  (typstRuntimeStatus.stage === "compiling" && !vectorData)) && (
+                  <div className="preview-runtime-status">
+                    <strong>
+                      {typstRuntimeStatus.stage === "downloading-compiler"
+                        ? t("preview.loadingCompiler")
+                        : t("preview.compiling")}
+                    </strong>
+                    {typstRuntimeStatus.stage === "downloading-compiler" && (
+                      <span>
+                        {typstRuntimeStatus.totalBytes && typstRuntimeStatus.totalBytes > 0
+                          ? `${Math.round(
+                              (100 * (typstRuntimeStatus.loadedBytes || 0)) / typstRuntimeStatus.totalBytes
+                            )}%`
+                          : `${Math.round((typstRuntimeStatus.loadedBytes || 0) / 1024)} KB`}
+                      </span>
+                    )}
+                  </div>
+                )}
                 <div ref={canvasPreviewRef} className="pdf-frame" />
                 {compileDiagnostics.length > 0 && (
                   <div className="panel-inline-error diagnostics">
@@ -1674,7 +1864,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
             />
             <aside className="panel panel-settings" style={{ width: settingsPanelWidth }}>
               <div className="panel-header">
-                <h2>Project Settings</h2>
+                <h2>{t("workspace.settings")}</h2>
               </div>
               <div className="panel-content">
                 <div className="git-box">
@@ -1687,6 +1877,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
                         const updated = await upsertProjectSettings(projectId, next);
                         setEntryFilePath(updated.entry_file_path);
                       }}
+                      disabled={!canManageProject}
                     >
                       {Object.keys(docs)
                         .filter((path) => path.endsWith(".typ"))
@@ -1702,6 +1893,62 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
                     <code>{gitRepoUrl || "Loading..."}</code>
                     <small>Use PAT as HTTP password. Force push is rejected.</small>
                   </div>
+                </div>
+                <div className="git-box">
+                  <strong>{t("share.title")}</strong>
+                  <div className="toolbar compact-left">
+                    <button className="button" onClick={() => createShare("read")} disabled={!canManageProject}>
+                      {t("share.createRead")}
+                    </button>
+                    <button className="button" onClick={() => createShare("write")} disabled={!canManageProject}>
+                      {t("share.createWrite")}
+                    </button>
+                  </div>
+                  {newShareLinks.length > 0 && (
+                    <div className="card-list">
+                      {newShareLinks.map((created) => {
+                        const url = `${window.location.origin}/share/${created.token}`;
+                        return (
+                          <div className="card" key={created.link.id}>
+                            <strong>{created.link.permission === "write" ? "Write" : "Read"} Link</strong>
+                            <code>{url}</code>
+                            <button
+                              className="button"
+                              onClick={async () => {
+                                await navigator.clipboard.writeText(url);
+                              }}
+                            >
+                              {t("share.copy")}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {shareLinks.length > 0 ? (
+                    <div className="card-list">
+                      {shareLinks.map((link) => (
+                        <div className="card" key={link.id}>
+                          <strong>{link.permission === "write" ? "Write" : "Read"} link</strong>
+                          <span>{`Prefix: ${link.token_prefix}`}</span>
+                          <span>{new Date(link.created_at).toLocaleString()}</span>
+                          {!link.revoked_at ? (
+                            <button
+                              className="button"
+                              onClick={() => revokeShare(link.id)}
+                              disabled={!canManageProject}
+                            >
+                              {t("share.revoke")}
+                            </button>
+                          ) : (
+                            <span>Revoked</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <small>{t("share.none")}</small>
+                  )}
                 </div>
               </div>
             </aside>
@@ -1723,7 +1970,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
             />
             <aside className="panel panel-revisions" style={{ width: revisionsPanelWidth }}>
               <div className="panel-header">
-                <h2>Revisions</h2>
+                <h2>{t("workspace.revisions")}</h2>
               </div>
               <div className="panel-content">
                 <HistoryPanel
@@ -1745,24 +1992,24 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
         )}
       </section>
 
-      {contextMenu && (
+      {contextMenu && canWrite && (
         <div
           className="context-menu context-menu-floating"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
           {contextMenu.kind === "directory" && (
             <button className="mini" onClick={() => addPath("file", contextMenu.path)}>
-              New File
+              {t("workspace.newFile")}
             </button>
           )}
           {contextMenu.kind === "directory" && (
             <button className="mini" onClick={() => addPath("directory", contextMenu.path)}>
-              New Folder
+              {t("workspace.newFolder")}
             </button>
           )}
           {contextMenu.kind === "directory" && (
             <button className="mini" onClick={() => uploadFromPicker(contextMenu.path)}>
-              Upload
+              {t("workspace.upload")}
             </button>
           )}
           <button className="mini" onClick={() => renamePath(contextMenu.path)}>
@@ -1777,67 +2024,89 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
   );
 }
 
+function ShareJoinPage({
+  t,
+  onJoin
+}: {
+  t: (key: string) => string;
+  onJoin: (token: string) => Promise<{ project_id: string }>;
+}) {
+  const { token = "" } = useParams();
+  const navigate = useNavigate();
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    onJoin(token)
+      .then((joined) => {
+        if (cancelled) return;
+        navigate(`/project/${joined.project_id}`, { replace: true });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : t("share.joinFailed"));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [navigate, onJoin, t, token]);
+
+  return (
+    <section className="page">
+      <div className="card">
+        <strong>{t("share.joining")}</strong>
+        {error && <div className="error">{error}</div>}
+      </div>
+    </section>
+  );
+}
+
 function UnsupportedFilePane({
   path,
   hasData,
   isImage,
   isPdf,
-  dataUrl
+  dataUrl,
+  t
 }: {
   path: string;
   hasData: boolean;
   isImage: boolean;
   isPdf: boolean;
   dataUrl: string;
+  t: (key: string) => string;
 }) {
   const downloadName = path.split("/").filter(Boolean).pop() || path;
+  const media = isImage ? (
+    <img src={dataUrl} alt={path} className="file-preview-image" />
+  ) : isPdf ? (
+    <iframe title={path} src={dataUrl} className="file-preview-pdf" />
+  ) : (
+    <div className="file-icon" aria-hidden />
+  );
 
   if (!hasData) {
     return (
-      <div className="file-preview empty">
-        <div className="file-icon" aria-hidden />
-        <div className="file-preview-name">{path}</div>
-        <small>File content is loading.</small>
-      </div>
-    );
-  }
-  if (isImage) {
-    return (
       <div className="file-preview file-preview-asset">
         <div className="file-preview-media">
-          <img src={dataUrl} alt={path} className="file-preview-image" />
+          <div className="file-icon" aria-hidden />
         </div>
         <div className="file-preview-meta">
           <div className="file-preview-name">{path}</div>
-          <a className="button button-small" href={dataUrl} download={downloadName}>
-            Download
-          </a>
-        </div>
-      </div>
-    );
-  }
-  if (isPdf) {
-    return (
-      <div className="file-preview file-preview-asset">
-        <div className="file-preview-media">
-          <iframe title={path} src={dataUrl} className="file-preview-pdf" />
-        </div>
-        <div className="file-preview-meta">
-          <div className="file-preview-name">{path}</div>
-          <a className="button button-small" href={dataUrl} download={downloadName}>
-            Download
-          </a>
+          <small>File content is loading.</small>
         </div>
       </div>
     );
   }
   return (
-    <div className="file-preview empty">
-      <div className="file-icon" aria-hidden />
-      <div className="file-preview-name">{path}</div>
-      <a className="button button-small" href={dataUrl} download={downloadName}>
-        Download
-      </a>
+    <div className="file-preview file-preview-asset">
+      <div className="file-preview-media">{media}</div>
+      <div className="file-preview-meta">
+        <div className="file-preview-name">{path}</div>
+        <a className="button button-small" href={dataUrl} download={downloadName}>
+          {t("workspace.download")}
+        </a>
+      </div>
     </div>
   );
 }
@@ -1848,6 +2117,7 @@ function TreeNodeRow({
   expanded,
   setExpanded,
   onOpen,
+  canManage,
   onRequestContextMenu
 }: {
   node: ProjectTreeNodeView;
@@ -1855,6 +2125,7 @@ function TreeNodeRow({
   expanded: Set<string>;
   setExpanded: (next: Set<string>) => void;
   onOpen: (path: string) => void;
+  canManage: boolean;
   onRequestContextMenu: (menu: ContextMenuState) => void;
 }) {
   const isExpanded = expanded.has(node.path);
@@ -1871,6 +2142,7 @@ function TreeNodeRow({
       <div
         className={`tree-node ${isActive ? "active" : ""}`}
         onContextMenu={(event) => {
+          if (!canManage) return;
           event.preventDefault();
           onRequestContextMenu({
             path: node.path,
@@ -1894,21 +2166,23 @@ function TreeNodeRow({
           <span className={`tree-kind ${node.kind}`}>{node.kind === "directory" ? "Dir" : "File"}</span>
           <span className="tree-name">{node.name}</span>
         </button>
-        <button
-          className="mini"
-          onClick={(event) => {
-            event.stopPropagation();
-            const rect = (event.currentTarget as HTMLButtonElement).getBoundingClientRect();
-            onRequestContextMenu({
-              path: node.path,
-              kind: node.kind,
-              x: Math.round(rect.left),
-              y: Math.round(rect.bottom + 4)
-            });
-          }}
-        >
-          ⋮
-        </button>
+        {canManage && (
+          <button
+            className="mini"
+            onClick={(event) => {
+              event.stopPropagation();
+              const rect = (event.currentTarget as HTMLButtonElement).getBoundingClientRect();
+              onRequestContextMenu({
+                path: node.path,
+                kind: node.kind,
+                x: Math.round(rect.left),
+                y: Math.round(rect.bottom + 4)
+              });
+            }}
+          >
+            ⋮
+          </button>
+        )}
       </div>
       {node.kind === "directory" && isExpanded && node.children.length > 0 && (
         <div className="tree-children">
@@ -1920,6 +2194,7 @@ function TreeNodeRow({
               expanded={expanded}
               setExpanded={setExpanded}
               onOpen={onOpen}
+              canManage={canManage}
               onRequestContextMenu={onRequestContextMenu}
             />
           ))}
@@ -1929,14 +2204,16 @@ function TreeNodeRow({
   );
 }
 
-function AdminPage() {
+function AdminPage({ t }: { t: (key: string) => string }) {
+  const defaultOrgId = "00000000-0000-0000-0000-000000000001";
   const roleOptions: Array<{ value: ProjectRole; label: string }> = [
     { value: "Owner", label: "Owner" },
     { value: "Teacher", label: "Manager" },
     { value: "TA", label: "Maintainer" },
-    { value: "Student", label: "Contributor" }
+    { value: "Student", label: "Contributor" },
+    { value: "Viewer", label: "Viewer" }
   ];
-  const [orgId, setOrgId] = useState(DEFAULT_ORG_ID);
+  const [orgId, setOrgId] = useState(defaultOrgId);
   const [mappings, setMappings] = useState<OrgGroupRoleMapping[]>([]);
   const [groupName, setGroupName] = useState("");
   const [role, setRole] = useState<ProjectRole>("Student");
@@ -1967,12 +2244,17 @@ function AdminPage() {
 
   return (
     <section className="page">
-      <h2>Admin Panel</h2>
+      <h2>{t("admin.title")}</h2>
       <div className="card-list">
         <div className="card">
-          <strong>Authentication Settings</strong>
+          <strong>{t("admin.authSettings")}</strong>
           {settings ? (
             <>
+              <input
+                value={settings.site_name || ""}
+                onChange={(e) => setSettings({ ...settings, site_name: e.target.value })}
+                placeholder={t("admin.siteName")}
+              />
               <label>
                 <input
                   type="checkbox"
@@ -2032,6 +2314,7 @@ function AdminPage() {
                     allow_local_login: settings.allow_local_login,
                     allow_local_registration: settings.allow_local_registration,
                     allow_oidc: settings.allow_oidc,
+                    site_name: settings.site_name || null,
                     oidc_discovery_url: discoveryUrl || null,
                     oidc_client_id: settings.oidc_client_id || null,
                     oidc_client_secret: settings.oidc_client_secret || null,
@@ -2101,7 +2384,7 @@ function AdminPage() {
   );
 }
 
-function ProfilePage() {
+function ProfilePage({ t }: { t: (key: string) => string }) {
   const [tokens, setTokens] = useState<PersonalAccessTokenInfo[]>([]);
   const [tokenLabel, setTokenLabel] = useState("CLI token");
   const [tokenExpiresAt, setTokenExpiresAt] = useState("");
@@ -2145,7 +2428,7 @@ function ProfilePage() {
 
   return (
     <section className="page">
-      <h2>Profile Security</h2>
+      <h2>{t("profile.title")}</h2>
       <div className="panel-content">
         <div className="toolbar">
           <input value={tokenLabel} onChange={(e) => setTokenLabel(e.target.value)} placeholder="Token label" />

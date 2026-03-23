@@ -1,6 +1,8 @@
 import CodeMirror from "@uiw/react-codemirror";
 import { StateEffect, Transaction } from "@codemirror/state";
 import { markdown } from "@codemirror/lang-markdown";
+import { StreamLanguage } from "@codemirror/language";
+import { stex } from "@codemirror/legacy-modes/mode/stex";
 import {
   Decoration,
   EditorView,
@@ -112,6 +114,7 @@ type Props = {
   onCursorChange?: (cursor: { line: number; column: number }) => void;
   readOnly?: boolean;
   lineWrap?: boolean;
+  language?: "typst" | "markdown" | "plain";
   remoteCursors?: RemoteCursor[];
   jumpTo?: { line: number; column: number; token: number } | null;
   onJumpHandled?: () => void;
@@ -124,6 +127,7 @@ export function EditorPane({
   onCursorChange,
   readOnly,
   lineWrap = true,
+  language = "plain",
   remoteCursors = [],
   jumpTo,
   onJumpHandled
@@ -171,10 +175,16 @@ export function EditorPane({
   );
 
   const extensions = useMemo(() => {
-    const base = [markdown(), cursorListener, changeListener, remoteCursorPlugin];
+    const languageExtension =
+      language === "typst"
+        ? StreamLanguage.define(stex)
+        : language === "markdown"
+          ? markdown()
+          : [];
+    const base = [languageExtension, cursorListener, changeListener, remoteCursorPlugin];
     if (lineWrap) base.push(EditorView.lineWrapping);
     return base;
-  }, [changeListener, cursorListener, lineWrap]);
+  }, [changeListener, cursorListener, language, lineWrap]);
 
   useEffect(() => {
     const view = editorRef.current;

@@ -39,6 +39,8 @@ use tower_http::trace::TraceLayer;
 use tracing::{error, info};
 use uuid::Uuid;
 
+const DEFAULT_ORG_ID: &str = "00000000-0000-0000-0000-000000000001";
+
 pub async fn run() {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt()
@@ -102,6 +104,14 @@ pub async fn run() {
         .route("/v1/projects/{project_id}/roles", get(list_roles).post(upsert_role))
         .route("/v1/projects/{project_id}/settings", get(get_project_settings).put(upsert_project_settings))
         .route(
+            "/v1/projects/{project_id}/share-links",
+            get(list_project_share_links).post(create_project_share_link),
+        )
+        .route(
+            "/v1/projects/{project_id}/share-links/{share_link_id}",
+            delete(revoke_project_share_link),
+        )
+        .route(
             "/v1/projects/{project_id}/group-roles",
             get(list_group_roles).post(upsert_group_role),
         )
@@ -159,6 +169,7 @@ pub async fn run() {
         .route("/v1/git/sync/pull/{project_id}", post(git_pull))
         .route("/v1/git/sync/push/{project_id}", post(git_push))
         .route("/v1/git/repo/{project_id}/{*rest}", any(git_http_backend))
+        .route("/v1/share/{token}/join", post(join_project_share_link))
         .route(
             "/v1/admin/orgs/{org_id}/oidc-group-role-mappings",
             get(list_org_group_role_mappings).post(upsert_org_group_role_mapping),
@@ -194,7 +205,7 @@ async fn run_migrations(pool: &PgPool) {
 }
 
 async fn seed_default_data(pool: &PgPool) {
-    let org_id = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+    let org_id = Uuid::parse_str(DEFAULT_ORG_ID).unwrap();
     let project_id = Uuid::parse_str("00000000-0000-0000-0000-000000000010").unwrap();
     let admin_id = Uuid::parse_str("00000000-0000-0000-0000-000000000100").unwrap();
     let legacy_member_id = Uuid::parse_str("00000000-0000-0000-0000-000000000101").unwrap();
@@ -348,6 +359,7 @@ async fn auth_config(State(state): State<AppState>) -> Json<AuthConfigResponse> 
         allow_local_login: settings.allow_local_login,
         allow_local_registration: settings.allow_local_registration,
         allow_oidc: settings.allow_oidc,
+        site_name: settings.site_name,
         issuer: settings.oidc_issuer,
         client_id: settings.oidc_client_id,
         redirect_uri: settings.oidc_redirect_uri,
@@ -826,10 +838,16 @@ fn hash_password(raw: &str) -> Result<String, String> {
 }
 
 fn defaults_from_env(oidc: &OidcSettings) -> AuthSettings {
+    let env_site_name = env::var("SITE_NAME")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "Typst Collaboration".to_string());
     AuthSettings {
         allow_local_login: true,
         allow_local_registration: true,
         allow_oidc: true,
+        site_name: env_site_name,
         oidc_issuer: if oidc.issuer.trim().is_empty() {
             None
         } else {
@@ -872,7 +890,7 @@ fn discovery_issuer(input: &str) -> Result<IssuerUrl, ()> {
 
 async fn load_auth_settings(db: &PgPool, defaults: &OidcSettings) -> Result<AuthSettings, StatusCode> {
     let row = sqlx::query(
-        "select allow_local_login, allow_local_registration, allow_oidc,
+        "select allow_local_login, allow_local_registration, allow_oidc, site_name,
                 oidc_issuer, oidc_client_id, oidc_client_secret, oidc_redirect_uri, oidc_groups_claim, updated_at
          from auth_settings where id = 1",
     )
@@ -884,6 +902,7 @@ async fn load_auth_settings(db: &PgPool, defaults: &OidcSettings) -> Result<Auth
             allow_local_login: r.get("allow_local_login"),
             allow_local_registration: r.get("allow_local_registration"),
             allow_oidc: r.get("allow_oidc"),
+            site_name: r.get("site_name"),
             oidc_issuer: r.get("oidc_issuer"),
             oidc_client_id: r.get("oidc_client_id"),
             oidc_client_secret: r.get("oidc_client_secret"),
@@ -1032,7 +1051,7 @@ async fn list_projects(
         return Err(StatusCode::UNAUTHORIZED);
     };
     let rows = sqlx::query(
-        "select p.id, p.organization_id, p.name, p.description, p.created_at
+        "select p.id, p.organization_id, p.name, p.description, p.created_at, pr.role as my_role
          from projects p
          join project_roles pr on pr.project_id = p.id
          where pr.user_id = $1
@@ -1050,11 +1069,30 @@ async fn list_projects(
             organization_id: r.get("organization_id"),
             name: r.get("name"),
             description: r.get("description"),
+            my_role: r.get("my_role"),
             created_at: r.get("created_at"),
         })
         .collect();
 
     Ok(Json(ProjectListResponse { projects }))
+}
+
+async fn default_organization_id(db: &PgPool) -> Result<Uuid, StatusCode> {
+    if let Ok(parsed) = Uuid::parse_str(DEFAULT_ORG_ID) {
+        let row = sqlx::query("select id from organizations where id = $1")
+            .bind(parsed)
+            .fetch_optional(db)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if row.is_some() {
+            return Ok(parsed);
+        }
+    }
+    let row = sqlx::query("select id from organizations order by created_at asc limit 1")
+        .fetch_optional(db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    row.map(|r| r.get("id")).ok_or(StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 async fn create_project(
@@ -1067,12 +1105,17 @@ async fn create_project(
     };
     let id = Uuid::new_v4();
     let created_at = Utc::now();
+    let org_id = if let Some(org_id) = input.organization_id {
+        org_id
+    } else {
+        default_organization_id(&state.db).await?
+    };
     let row = sqlx::query(
         "insert into projects (id, organization_id, name, description, created_at) values ($1, $2, $3, $4, $5)
          returning id, organization_id, name, description, created_at",
     )
     .bind(id)
-    .bind(input.organization_id)
+    .bind(org_id)
     .bind(input.name)
     .bind(input.description)
     .bind(created_at)
@@ -1132,7 +1175,250 @@ async fn create_project(
         organization_id: row.get("organization_id"),
         name: row.get("name"),
         description: row.get("description"),
+        my_role: "Owner".to_string(),
         created_at: row.get("created_at"),
+    }))
+}
+
+fn normalized_share_permission(raw: &str) -> Option<&'static str> {
+    let lowered = raw.trim().to_ascii_lowercase();
+    match lowered.as_str() {
+        "read" | "readonly" | "viewer" => Some("read"),
+        "write" | "writable" | "edit" | "editor" => Some("write"),
+        _ => None,
+    }
+}
+
+fn grant_role_from_share_permission(permission: &str) -> &'static str {
+    if permission == "write" {
+        "Student"
+    } else {
+        "Viewer"
+    }
+}
+
+async fn list_project_share_links(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+) -> Result<Json<Vec<ProjectShareLink>>, StatusCode> {
+    ensure_project_role(&state.db, &headers, project_id, AccessNeed::Manage).await?;
+    let rows = sqlx::query(
+        "select id, project_id, token_prefix, permission, created_by, created_at, expires_at, revoked_at
+         from project_share_links
+         where project_id = $1
+         order by created_at desc",
+    )
+    .bind(project_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let items = rows
+        .into_iter()
+        .map(|row| ProjectShareLink {
+            id: row.get("id"),
+            project_id: row.get("project_id"),
+            token_prefix: row.get("token_prefix"),
+            permission: row.get("permission"),
+            created_by: row.get("created_by"),
+            created_at: row.get("created_at"),
+            expires_at: row.get("expires_at"),
+            revoked_at: row.get("revoked_at"),
+        })
+        .collect();
+    Ok(Json(items))
+}
+
+async fn create_project_share_link(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Json(input): Json<CreateProjectShareLinkInput>,
+) -> Result<Json<CreateProjectShareLinkResponse>, StatusCode> {
+    let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Manage).await?;
+    let permission =
+        normalized_share_permission(&input.permission).ok_or(StatusCode::BAD_REQUEST)?;
+    let expires_at = if let Some(raw) = input.expires_at {
+        Some(
+            DateTime::parse_from_rfc3339(&raw)
+                .map_err(|_| StatusCode::BAD_REQUEST)?
+                .with_timezone(&Utc),
+        )
+    } else {
+        None
+    };
+    if let Some(expires_at) = expires_at {
+        if expires_at <= Utc::now() {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    }
+    let token = format!("psh_{}", random_token(36));
+    let token_prefix = token.chars().take(12).collect::<String>();
+    let id = Uuid::new_v4();
+    let created_at = Utc::now();
+    let row = sqlx::query(
+        "insert into project_share_links
+         (id, project_id, token_prefix, token_hash, permission, created_by, created_at, expires_at, revoked_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, null)
+         returning id, project_id, token_prefix, permission, created_by, created_at, expires_at, revoked_at",
+    )
+    .bind(id)
+    .bind(project_id)
+    .bind(&token_prefix)
+    .bind(token_sha256(&token))
+    .bind(permission)
+    .bind(actor)
+    .bind(created_at)
+    .bind(expires_at)
+    .fetch_one(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    write_audit(
+        &state.db,
+        Some(actor),
+        "project.share_link.create",
+        serde_json::json!({
+            "project_id": project_id,
+            "share_link_id": id,
+            "permission": permission,
+            "expires_at": expires_at
+        }),
+    )
+    .await;
+
+    Ok(Json(CreateProjectShareLinkResponse {
+        link: ProjectShareLink {
+            id: row.get("id"),
+            project_id: row.get("project_id"),
+            token_prefix: row.get("token_prefix"),
+            permission: row.get("permission"),
+            created_by: row.get("created_by"),
+            created_at: row.get("created_at"),
+            expires_at: row.get("expires_at"),
+            revoked_at: row.get("revoked_at"),
+        },
+        token,
+    }))
+}
+
+async fn revoke_project_share_link(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, share_link_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, StatusCode> {
+    let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Manage).await?;
+    let result = sqlx::query(
+        "update project_share_links
+         set revoked_at = $3
+         where id = $1 and project_id = $2 and revoked_at is null",
+    )
+    .bind(share_link_id)
+    .bind(project_id)
+    .bind(Utc::now())
+    .execute(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if result.rows_affected() == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    write_audit(
+        &state.db,
+        Some(actor),
+        "project.share_link.revoke",
+        serde_json::json!({"project_id": project_id, "share_link_id": share_link_id}),
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn join_project_share_link(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(token): Path<String>,
+) -> Result<Json<JoinProjectShareLinkResponse>, StatusCode> {
+    let Some(actor) = request_user_id(&state.db, &headers).await else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+    let token = token.trim();
+    if token.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let row = sqlx::query(
+        "select id, project_id, permission, created_by
+         from project_share_links
+         where token_hash = $1
+           and revoked_at is null
+           and (expires_at is null or expires_at > now())",
+    )
+    .bind(token_sha256(token))
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let Some(row) = row else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    let project_id: Uuid = row.get("project_id");
+    let permission: String = row.get("permission");
+    let target_role = grant_role_from_share_permission(&permission).to_string();
+    let granted_at = Utc::now();
+    let existing = sqlx::query(
+        "select role from project_roles where project_id = $1 and user_id = $2",
+    )
+    .bind(project_id)
+    .bind(actor)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let final_role = if let Some(existing) = existing {
+        let existing_role: String = existing.get("role");
+        if role_rank(&existing_role) >= role_rank(&target_role) {
+            existing_role
+        } else {
+            sqlx::query(
+                "update project_roles
+                 set role = $3, granted_at = $4
+                 where project_id = $1 and user_id = $2",
+            )
+            .bind(project_id)
+            .bind(actor)
+            .bind(&target_role)
+            .bind(granted_at)
+            .execute(&state.db)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            target_role.clone()
+        }
+    } else {
+        sqlx::query(
+            "insert into project_roles (project_id, user_id, role, granted_at)
+             values ($1, $2, $3, $4)",
+        )
+        .bind(project_id)
+        .bind(actor)
+        .bind(&target_role)
+        .bind(granted_at)
+        .execute(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        target_role.clone()
+    };
+
+    write_audit(
+        &state.db,
+        Some(actor),
+        "project.share_link.join",
+        serde_json::json!({
+            "project_id": project_id,
+            "granted_role": final_role,
+            "permission": permission
+        }),
+    )
+    .await;
+
+    Ok(Json(JoinProjectShareLinkResponse {
+        project_id,
+        role: final_role,
     }))
 }
 
@@ -1825,15 +2111,23 @@ async fn upsert_admin_auth_settings(
         .filter(|v| !v.is_empty())
         .unwrap_or("groups")
         .to_string();
+    let site_name = input
+        .site_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or("Typst Collaboration")
+        .to_string();
     sqlx::query(
         "insert into auth_settings
-         (id, allow_local_login, allow_local_registration, allow_oidc,
+         (id, allow_local_login, allow_local_registration, allow_oidc, site_name,
           oidc_issuer, oidc_client_id, oidc_client_secret, oidc_redirect_uri, oidc_groups_claim, updated_at)
-         values (1, $1, $2, $3, $4, $5, $6, $7, $8, $9)
+         values (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          on conflict (id) do update
          set allow_local_login = excluded.allow_local_login,
              allow_local_registration = excluded.allow_local_registration,
              allow_oidc = excluded.allow_oidc,
+             site_name = excluded.site_name,
              oidc_issuer = excluded.oidc_issuer,
              oidc_client_id = excluded.oidc_client_id,
              oidc_client_secret = excluded.oidc_client_secret,
@@ -1844,6 +2138,7 @@ async fn upsert_admin_auth_settings(
     .bind(input.allow_local_login)
     .bind(input.allow_local_registration)
     .bind(input.allow_oidc)
+    .bind(site_name)
     .bind(discovery_url)
     .bind(input.oidc_client_id.map(|v| v.trim().to_string()).filter(|v| !v.is_empty()))
     .bind(
@@ -1866,7 +2161,8 @@ async fn upsert_admin_auth_settings(
         serde_json::json!({
             "allow_local_login": input.allow_local_login,
             "allow_local_registration": input.allow_local_registration,
-            "allow_oidc": input.allow_oidc
+            "allow_oidc": input.allow_oidc,
+            "site_name": input.site_name
         }),
     )
     .await;
@@ -3261,10 +3557,11 @@ async fn sync_user_oidc_groups(
 
 fn role_rank(role: &str) -> i32 {
     match role {
-        "Owner" => 4,
-        "Teacher" => 3,
-        "TA" => 2,
-        "Student" => 1,
+        "Owner" => 5,
+        "Teacher" => 4,
+        "TA" => 3,
+        "Student" => 2,
+        "Viewer" => 1,
         _ => 0,
     }
 }
