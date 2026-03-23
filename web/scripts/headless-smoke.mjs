@@ -182,11 +182,11 @@ async function waitForEditorContains(page, snippet, timeoutMs = 15000) {
   throw new Error(`editor missing snippet: ${snippet}`);
 }
 
-async function openContextMenu(page, name) {
+async function openContextMenu(page, name, method = "button") {
   const row = treeNode(page, name);
-  await row.locator("button.mini").first().click();
-  await row.locator(".context-menu").waitFor({ timeout: 10000 });
-  return row;
+  if (method === "right") await row.click({ button: "right" });
+  else await row.locator("button.mini").first().click();
+  await page.locator(".context-menu-floating").first().waitFor({ timeout: 10000 });
 }
 
 await fs.mkdir(outDir, { recursive: true });
@@ -308,10 +308,10 @@ try {
     throw new Error("Preview did not update after realtime edit");
   }
 
-  await openContextMenu(pageA, "chapters");
+  await openContextMenu(pageA, "chapters", "right");
   await acceptPrompt(
     pageA,
-    () => treeNode(pageA, "chapters").locator(".context-menu button", { hasText: "New File" }).click(),
+    () => pageA.locator(".context-menu-floating .mini", { hasText: "New File" }).first().click(),
     contextCreatedPath
   );
   await pageA.getByText(`File: ${contextCreatedPath}`).waitFor({ timeout: 10000 });
@@ -325,9 +325,7 @@ try {
   await acceptPrompt(
     pageA,
     () =>
-      treeNode(pageA, path.basename(contextCreatedPath))
-        .locator(".context-menu button", { hasText: "Rename" })
-        .click(),
+      pageA.locator(".context-menu-floating .mini", { hasText: "Rename" }).first().click(),
     contextRenamedPath
   );
   await pageA.getByText(`File: ${contextRenamedPath}`).waitFor({ timeout: 10000 });
@@ -356,9 +354,7 @@ try {
   await acceptConfirm(
     pageA,
     () =>
-      treeNode(pageA, path.basename(uploadPath))
-        .locator(".context-menu button", { hasText: "Delete" })
-        .click()
+      pageA.locator(".context-menu-floating .mini", { hasText: "Delete" }).first().click()
   );
   await pageA
     .locator(".tree-label", { hasText: path.basename(uploadPath) })
@@ -375,9 +371,9 @@ try {
     throw new Error("Archive download is unexpectedly small");
   }
 
-  await pageA.getByRole("button", { name: "Show Project Settings" }).click();
+  await pageA.getByRole("button", { name: "Project Settings" }).click();
   await pageA.getByText("Git Access URL").waitFor({ timeout: 10000 });
-  await pageA.getByRole("button", { name: "Show Revisions" }).click();
+  await pageA.getByRole("button", { name: "Revisions" }).click();
   const historyCount = await pageA.locator(".history-item").count();
   if (historyCount < 1) throw new Error("No revisions available");
 

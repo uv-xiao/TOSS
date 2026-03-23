@@ -1,9 +1,8 @@
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 import * as Y from "yjs";
-import { EditorPane } from "@/components/EditorPane";
+import { EditorPane, type EditorChange } from "@/components/EditorPane";
 import { HistoryPanel } from "@/components/HistoryPanel";
-import { PresenceBar } from "@/components/PresenceBar";
 import { bindRealtimeYDoc, type PresencePeer } from "@/lib/realtime";
 import { compileTypstClientSide, renderTypstVectorToCanvas } from "@/lib/typst";
 import {
@@ -57,6 +56,18 @@ type ProjectTreeNodeView = {
   children: ProjectTreeNodeView[];
 };
 
+type AssetMeta = {
+  id: string;
+  contentType: string;
+};
+
+type ContextMenuState = {
+  path: string;
+  kind: "file" | "directory";
+  x: number;
+  y: number;
+};
+
 function normalizePath(path: string) {
   return path.trim().replace(/^\/+/, "");
 }
@@ -82,6 +93,53 @@ function isTextFile(path: string) {
 
 function isFontFile(path: string) {
   return /\.(ttf|otf|woff|woff2)$/i.test(path);
+}
+
+function isImageFile(path: string) {
+  return /\.(png|jpe?g|gif|bmp|webp|svg)$/i.test(path);
+}
+
+function isPdfFile(path: string) {
+  return /\.pdf$/i.test(path);
+}
+
+function inferContentType(path: string, contentType?: string) {
+  if (contentType && contentType.trim()) return contentType;
+  if (isPdfFile(path)) return "application/pdf";
+  if (/\.svg$/i.test(path)) return "image/svg+xml";
+  if (/\.png$/i.test(path)) return "image/png";
+  if (/\.jpe?g$/i.test(path)) return "image/jpeg";
+  if (/\.gif$/i.test(path)) return "image/gif";
+  if (/\.webp$/i.test(path)) return "image/webp";
+  return "application/octet-stream";
+}
+
+function isImageAsset(path: string, contentType?: string) {
+  return (contentType || "").startsWith("image/") || isImageFile(path);
+}
+
+function isPdfAsset(path: string, contentType?: string) {
+  return (contentType || "").toLowerCase() === "application/pdf" || isPdfFile(path);
+}
+
+function presenceColor(userId: string) {
+  const palette = ["#1f5f8c", "#156f43", "#7e3b9f", "#8e5a17", "#8a234b"];
+  let hash = 0;
+  for (let i = 0; i < userId.length; i += 1) hash = (hash * 31 + userId.charCodeAt(i)) >>> 0;
+  return palette[hash % palette.length];
+}
+
+function expandAncestors(path: string, previous: Set<string>) {
+  const next = new Set(previous);
+  next.add("");
+  const clean = normalizePath(path);
+  const parts = clean.split("/").filter(Boolean);
+  let acc = "";
+  for (const part of parts.slice(0, -1)) {
+    acc = acc ? `${acc}/${part}` : part;
+    next.add(acc);
+  }
+  return next;
 }
 
 function projectTreeFromFlat(nodes: { path: string; kind: "file" | "directory" }[]) {
@@ -390,6 +448,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
   const [activePath, setActivePath] = useState("main.typ");
   const [docs, setDocs] = useState<Record<string, string>>({});
   const [assetBase64, setAssetBase64] = useState<Record<string, string>>({});
+  const [assetMeta, setAssetMeta] = useState<Record<string, AssetMeta>>({});
   const [docText, setDocText] = useState("");
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [presence, setPresence] = useState<PresencePeer[]>([]);
@@ -403,15 +462,19 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
   const [revisions, setRevisions] = useState<Revision[]>([]);
   const [activeRevisionId, setActiveRevisionId] = useState<string | null>(null);
   const [revisionDocs, setRevisionDocs] = useState<Record<string, string>>({});
+  const [showFilesPanel, setShowFilesPanel] = useState(true);
   const [showRevisionPanel, setShowRevisionPanel] = useState(false);
-  const [showProjectSettings, setShowProjectSettings] = useState(false);
+  const [showProjectSettingsPanel, setShowProjectSettingsPanel] = useState(false);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set([""]));
-  const [contextPath, setContextPath] = useState<string | null>(null);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [bundledFonts, setBundledFonts] = useState<Uint8Array[]>([]);
 
   const tree = useMemo(() => projectTreeFromFlat(nodes), [nodes]);
   const isRevisionMode = !!activeRevisionId;
   const hasActiveDoc = Object.prototype.hasOwnProperty.call(docs, activePath);
+  const isActiveTextDoc = isRevisionMode
+    ? Object.prototype.hasOwnProperty.call(revisionDocs, activePath)
+    : hasActiveDoc;
   const sourceDocs = isRevisionMode ? revisionDocs : docs;
   const compileDocuments = useMemo(() => {
     const baseDocs = { ...sourceDocs };
@@ -437,8 +500,33 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
     [assetBase64]
   );
   const fontData = useMemo(() => [...bundledFonts, ...assetFontData], [assetFontData, bundledFonts]);
-
+  const remoteCursors = useMemo(
+    () =>
+      presence
+        .filter((peer) => peer.id !== effectiveUserId)
+        .map((peer) => ({
+          id: peer.id,
+          name: peer.name,
+          color: presenceColor(peer.id),
+          line: peer.line,
+          column: peer.column
+        })),
+    [effectiveUserId, presence]
+  );
+  const activeAsset = assetMeta[activePath];
+  const activeAssetBase64 = assetBase64[activePath];
+  const activeAssetType = inferContentType(activePath, activeAsset?.contentType);
+  const assetDataUrl = activeAssetBase64 ? `data:${activeAssetType};base64,${activeAssetBase64}` : "";
   const project = projects.find((p) => p.id === projectId);
+  const workspaceColumns = useMemo(() => {
+    const cols: string[] = [];
+    if (showFilesPanel) cols.push("minmax(270px, 0.95fr)");
+    cols.push("minmax(440px, 1.4fr)");
+    cols.push("minmax(320px, 1fr)");
+    if (showProjectSettingsPanel) cols.push("minmax(260px, 0.75fr)");
+    if (showRevisionPanel) cols.push("minmax(260px, 0.75fr)");
+    return cols.join(" ");
+  }, [showFilesPanel, showProjectSettingsPanel, showRevisionPanel]);
 
   const refreshProjectData = async () => {
     if (!projectId) return;
@@ -471,6 +559,13 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
     setDocs(nextDocs);
 
     const nextAssets: Record<string, string> = {};
+    const nextAssetMeta: Record<string, AssetMeta> = {};
+    for (const asset of assetsRes.assets) {
+      nextAssetMeta[asset.path] = {
+        id: asset.id,
+        contentType: asset.content_type
+      };
+    }
     await Promise.all(
       assetsRes.assets.map(async (asset) => {
         try {
@@ -481,11 +576,14 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
         }
       })
     );
+    setAssetMeta(nextAssetMeta);
     setAssetBase64(nextAssets);
 
     if (!activePath || !treeRes.nodes.some((node) => node.path === activePath)) {
       const firstFile = treeRes.nodes.find((n) => n.kind === "file")?.path || settings.entry_file_path;
-      setActivePath(firstFile || "main.typ");
+      const target = firstFile || "main.typ";
+      setActivePath(target);
+      setExpandedDirs((prev) => expandAncestors(target, prev));
     }
     setWorkspaceLoaded(true);
   };
@@ -499,12 +597,17 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
     setCompiledAt(null);
     setPresence([]);
     setDocText("");
+    setContextMenu(null);
     refreshProjectData().catch((err) => {
       const message = err instanceof Error ? err.message : "Unable to load workspace";
       setWorkspaceError(message);
       setWorkspaceLoaded(true);
     });
   }, [projectId]);
+
+  useEffect(() => {
+    setExpandedDirs((prev) => expandAncestors(activePath, prev));
+  }, [activePath]);
 
   useEffect(() => {
     let cancelled = false;
@@ -521,19 +624,18 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
   }, []);
 
   useEffect(() => {
-    if (isRevisionMode) {
-      const content = revisionDocs[activePath] ?? "";
-      setDocText(content);
-      return;
-    }
+    if (!isRevisionMode) return;
+    setDocText(revisionDocs[activePath] ?? "");
+  }, [activePath, isRevisionMode, revisionDocs]);
+
+  useEffect(() => {
+    if (isRevisionMode) return;
     if (!projectId || !activePath) {
       setDocText("");
       return;
     }
-    const existing = docs[activePath];
-    if (typeof existing === "string") setDocText(existing);
-    else setDocText("");
-  }, [activePath, docs, isRevisionMode, projectId, revisionDocs]);
+    setDocText(docs[activePath] ?? "");
+  }, [activePath, isRevisionMode, projectId]);
 
   useEffect(() => {
     if (!projectId || !activePath || isRevisionMode || !workspaceLoaded) return;
@@ -548,7 +650,6 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
     ydocRef.current = ydoc;
     ytextRef.current = ytext;
     const baselineDoc = new Y.Doc();
-    // Build a deterministic baseline update so peers do not duplicate initial text on first sync.
     baselineDoc.clientID = 1;
     baselineDoc.getText("main").insert(0, fileContent);
     Y.applyUpdate(ydoc, Y.encodeStateAsUpdate(baselineDoc), "bootstrap");
@@ -580,7 +681,57 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
       realtimeRef.current = null;
       setPresence([]);
     };
-  }, [activePath, effectiveUserId, effectiveUserName, hasActiveDoc, isRevisionMode, projectId, workspaceLoaded]);
+  }, [
+    activePath,
+    effectiveUserId,
+    effectiveUserName,
+    hasActiveDoc,
+    isRevisionMode,
+    projectId,
+    workspaceLoaded
+  ]);
+
+  useEffect(() => {
+    if (!projectId || !workspaceLoaded || isRevisionMode) return;
+    const timer = window.setInterval(() => {
+      listDocuments(projectId)
+        .then((response) => {
+          const incomingByPath: Record<string, string> = {};
+          for (const doc of response.documents) incomingByPath[doc.path] = doc.content;
+          setDocs((previous) => {
+            let changed = false;
+            const next = { ...previous };
+            for (const [path, content] of Object.entries(incomingByPath)) {
+              if (path === activePath) continue;
+              if (next[path] !== content) {
+                next[path] = content;
+                changed = true;
+              }
+            }
+            for (const path of Object.keys(next)) {
+              if (path === activePath) continue;
+              if (!(path in incomingByPath)) {
+                delete next[path];
+                changed = true;
+              }
+            }
+            return changed ? next : previous;
+          });
+        })
+        .catch(() => undefined);
+    }, 2200);
+    return () => window.clearInterval(timer);
+  }, [activePath, isRevisionMode, projectId, workspaceLoaded]);
+
+  useEffect(() => {
+    if (!projectId || !workspaceLoaded) return;
+    const timer = window.setInterval(() => {
+      listRevisions(projectId)
+        .then((res) => setRevisions(res.revisions || []))
+        .catch(() => undefined);
+    }, 8000);
+    return () => window.clearInterval(timer);
+  }, [projectId, workspaceLoaded]);
 
   useEffect(() => {
     if (!projectId || !activePath || isRevisionMode || !workspaceLoaded) return;
@@ -595,7 +746,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
           setSaveState("saved");
         })
         .catch(() => setSaveState("error"));
-    }, 700);
+    }, 320);
     return () => window.clearTimeout(timer);
   }, [activePath, docText, hasActiveDoc, isRevisionMode, projectId, workspaceLoaded]);
 
@@ -645,46 +796,37 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
   }, [vectorData]);
 
   useEffect(() => {
-    if (!contextPath) return;
+    if (!contextMenu) return;
     const closeMenu = (event: MouseEvent) => {
       const target = event.target as HTMLElement | null;
       if (!target) return;
       if (target.closest(".context-menu")) return;
-      if (target.closest(".mini")) return;
-      setContextPath(null);
+      setContextMenu(null);
     };
-    window.addEventListener("click", closeMenu);
-    return () => window.removeEventListener("click", closeMenu);
-  }, [contextPath]);
+    const closeOnScroll = () => setContextMenu(null);
+    window.addEventListener("click", closeMenu, true);
+    window.addEventListener("scroll", closeOnScroll, true);
+    return () => {
+      window.removeEventListener("click", closeMenu, true);
+      window.removeEventListener("scroll", closeOnScroll, true);
+    };
+  }, [contextMenu]);
 
-  function updateDocumentViaYjs(nextValue: string) {
-    if (isRevisionMode) return;
+  function applyDocumentDeltas(changes: EditorChange[]) {
+    if (isRevisionMode || changes.length === 0) return;
     const ydoc = ydocRef.current;
     const ytext = ytextRef.current;
-    if (!ydoc || !ytext) {
-      setDocText(nextValue);
-      return;
-    }
-    const current = ytext.toString();
-    if (nextValue === current) return;
-    let prefix = 0;
-    const minLength = Math.min(current.length, nextValue.length);
-    while (prefix < minLength && current.charCodeAt(prefix) === nextValue.charCodeAt(prefix)) {
-      prefix += 1;
-    }
-    let suffix = 0;
-    while (
-      suffix < current.length - prefix &&
-      suffix < nextValue.length - prefix &&
-      current.charCodeAt(current.length - 1 - suffix) === nextValue.charCodeAt(nextValue.length - 1 - suffix)
-    ) {
-      suffix += 1;
-    }
-    const deleteCount = current.length - prefix - suffix;
-    const insertText = nextValue.slice(prefix, nextValue.length - suffix);
+    if (!ydoc || !ytext) return;
     ydoc.transact(() => {
-      if (deleteCount > 0) ytext.delete(prefix, deleteCount);
-      if (insertText) ytext.insert(prefix, insertText);
+      let offset = 0;
+      for (const change of changes) {
+        const from = Math.max(0, change.from + offset);
+        const to = Math.max(from, change.to + offset);
+        const deleteCount = to - from;
+        if (deleteCount > 0) ytext.delete(from, deleteCount);
+        if (change.insert) ytext.insert(from, change.insert);
+        offset += change.insert.length - deleteCount;
+      }
     });
   }
 
@@ -692,17 +834,14 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
     if (!projectId) return;
     const placeholder = kind === "file" ? "untitled.typ" : "folder";
     const suggested = joinProjectPath(parentPath, placeholder);
-    const raw = window.prompt(
-      kind === "file" ? "New file path" : "New directory path",
-      suggested
-    );
+    const raw = window.prompt(kind === "file" ? "New file path" : "New directory path", suggested);
     if (!raw) return;
     let normalized = normalizePath(raw);
     if (parentPath && !normalized.includes("/")) {
       normalized = joinProjectPath(parentPath, normalized);
     }
     try {
-      setContextPath(null);
+      setContextMenu(null);
       await createProjectFile(projectId, {
         path: normalized,
         kind,
@@ -729,7 +868,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
     if (normalizedTo === path) return;
     try {
       await moveProjectFile(projectId, path, normalizedTo);
-      setContextPath(null);
+      setContextMenu(null);
       await refreshProjectData();
       if (activePath === path) setActivePath(normalizedTo);
       setWorkspaceError(null);
@@ -744,7 +883,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
     if (!window.confirm(`Delete ${path}?`)) return;
     try {
       await deleteProjectFile(projectId, path);
-      setContextPath(null);
+      setContextMenu(null);
       if (activePath === path) setActivePath(entryFilePath);
       await refreshProjectData();
       setWorkspaceError(null);
@@ -754,18 +893,28 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
     }
   }
 
-  async function uploadFiles(parentPath = "") {
+  async function uploadFiles(parentPath = "", options?: { directory?: boolean }) {
     if (!projectId) return;
+    const directoryMode = !!options?.directory;
     const picker = document.createElement("input");
     picker.type = "file";
     picker.multiple = true;
+    if (directoryMode) {
+      const input = picker as HTMLInputElement & { webkitdirectory?: boolean };
+      input.webkitdirectory = true;
+    }
     picker.onchange = async () => {
       const files = Array.from(picker.files || []);
       try {
-        setContextPath(null);
+        setContextMenu(null);
         for (const file of files) {
-          const defaultPath = joinProjectPath(parentPath, file.name);
-          const target = window.prompt(`Target path for ${file.name}`, defaultPath);
+          const relative = directoryMode
+            ? (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name
+            : file.name;
+          const defaultPath = joinProjectPath(parentPath, relative);
+          const target = directoryMode
+            ? defaultPath
+            : window.prompt(`Target path for ${file.name}`, defaultPath);
           if (!target) continue;
           let path = normalizePath(target);
           if (parentPath && !path.includes("/")) {
@@ -824,8 +973,6 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
     for (const doc of response.documents) map[doc.path] = doc.content;
     setRevisionDocs(map);
     setActiveRevisionId(revisionId);
-    const first = Object.keys(map)[0];
-    if (first) setActivePath(first);
   }
 
   function downloadCompiledPdf() {
@@ -840,165 +987,307 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
     URL.revokeObjectURL(url);
   }
 
+  function openTreePath(path: string) {
+    setActivePath(path);
+    setExpandedDirs((prev) => expandAncestors(path, prev));
+  }
+
+  function requestContextMenu(next: ContextMenuState) {
+    setContextMenu(next);
+  }
+
   if (!projectId) return <Navigate to="/projects" replace />;
   if (!project && projects.length > 0) {
     return <Navigate to={`/project/${projects[0].id}`} replace />;
   }
 
   return (
-    <section className="workspace-grid">
-      <aside className="panel left">
-        <h2>Projects & Files</h2>
-        <div className="panel-content">
-          <div className="project-list">
-            {projects.map((p) => (
-              <button
-                key={p.id}
-                className={`project-pill ${p.id === projectId ? "active" : ""}`}
-                onClick={() => navigate(`/project/${p.id}`)}
-              >
-                {p.name}
-              </button>
-            ))}
-          </div>
-          <div className="toolbar">
-            <button className="button" onClick={() => addPath("file")}>
-              New File
-            </button>
-            <button className="button" onClick={() => addPath("directory")}>
-              New Folder
-            </button>
-            <button className="button" onClick={() => uploadFiles()}>
-              Upload Files
-            </button>
-          </div>
-          <div className="tree">
-            {tree.map((node) => (
-              <TreeNodeRow
-                key={node.path}
-                node={node}
-                activePath={activePath}
-                expanded={expandedDirs}
-                setExpanded={setExpandedDirs}
-                contextPath={contextPath}
-                setContextPath={setContextPath}
-                onOpen={(path) => setActivePath(path)}
-                onRename={renamePath}
-                onDelete={removePath}
-                onCreateFile={(path) => addPath("file", path)}
-                onCreateFolder={(path) => addPath("directory", path)}
-                onUpload={uploadFiles}
-              />
-            ))}
-          </div>
-        </div>
-      </aside>
+    <section className="workspace-shell">
+      <div className="workspace-toolbar">
+        <button
+          className={`button ${showFilesPanel ? "filled" : ""}`}
+          onClick={() => setShowFilesPanel((v) => !v)}
+        >
+          Files
+        </button>
+        <button
+          className={`button ${showProjectSettingsPanel ? "filled" : ""}`}
+          onClick={() => setShowProjectSettingsPanel((v) => !v)}
+        >
+          Project Settings
+        </button>
+        <button
+          className={`button ${showRevisionPanel ? "filled" : ""}`}
+          onClick={() => setShowRevisionPanel((v) => !v)}
+        >
+          Revisions
+        </button>
+      </div>
 
-      <article className="panel middle">
-        <h2>Editor</h2>
-        <div className="panel-content">
-          <div className="meta">
-            <span>Project: {project?.name ?? projectId}</span>
-            <span>File: {activePath}</span>
-            <span>Mode: {isRevisionMode ? "Revision (read-only)" : "Live"}</span>
-            <span>Save: {saveState}</span>
-            <span>Workspace: {workspaceLoaded ? "ready" : "loading"}</span>
-            <span>Compiled: {compiledAt ? new Date(compiledAt).toLocaleTimeString() : "n/a"}</span>
-          </div>
-          <PresenceBar
-            users={presence
-              .filter((peer) => peer.id !== effectiveUserId)
-              .map((peer, index) => ({
-                id: peer.id,
-                name: peer.name,
-                color: ["#1f5f8c", "#156f43", "#7e3b9f", "#8e5a17"][index % 4],
-                line: peer.line,
-                column: peer.column
-              }))}
-          />
-          <EditorPane
-            value={docText}
-            onChange={updateDocumentViaYjs}
-            onCursorChange={(cursor) => realtimeRef.current?.sendCursor(cursor)}
-            readOnly={isRevisionMode || !(activePath in docs)}
-          />
-          {!(activePath in docs) && (
-            <div className="error">
-              This is a binary/non-editable file in the web editor. Edit it offline and sync via Git if needed.
+      <section className="workspace-grid" style={{ gridTemplateColumns: workspaceColumns }}>
+        {showFilesPanel && (
+          <aside className="panel left">
+            <div className="panel-header">
+              <h2>Projects & Files</h2>
             </div>
-          )}
-          {compileErrors.length > 0 && <div className="error">{compileErrors.join("; ")}</div>}
-          {workspaceError && <div className="error">{workspaceError}</div>}
-        </div>
-      </article>
-
-      <aside className="panel right">
-        <h2>Preview & Revisions</h2>
-        <div className="panel-content">
-          <div ref={canvasPreviewRef} className="pdf-frame" />
-          <div className="toolbar">
-            <button className="button" onClick={downloadCompiledPdf} disabled={!pdfData}>
-              Download PDF (Client)
-            </button>
-            <button className="button" onClick={downloadArchive}>
-              Download Archive
-            </button>
-          </div>
-
-          <button className="button" onClick={() => setShowProjectSettings((v) => !v)}>
-            {showProjectSettings ? "Hide Project Settings" : "Show Project Settings"}
-          </button>
-          {showProjectSettings && (
-            <div className="git-box">
-              <strong>Project Settings</strong>
+            <div className="panel-content">
               <label>
-                Entry file
+                Project
                 <select
-                  value={entryFilePath}
-                  onChange={async (e) => {
-                    const next = e.target.value;
-                    const updated = await upsertProjectSettings(projectId, next);
-                    setEntryFilePath(updated.entry_file_path);
-                  }}
+                  value={projectId}
+                  onChange={(e) => navigate(`/project/${e.target.value}`)}
                 >
-                  {Object.keys(docs)
-                    .filter((path) => path.endsWith(".typ"))
-                    .map((path) => (
-                      <option value={path} key={path}>
-                        {path}
-                      </option>
-                    ))}
+                  {projects.map((item) => (
+                    <option value={item.id} key={item.id}>
+                      {item.name}
+                    </option>
+                  ))}
                 </select>
               </label>
-              <div>
-                <strong>Git Access URL</strong>
-                <code>{gitRepoUrl || "Loading..."}</code>
-                <small>Use Personal Access Token as HTTP password. Force push is rejected.</small>
+              <div className="toolbar">
+                <button className="button" onClick={() => addPath("file")}>
+                  New File
+                </button>
+                <button className="button" onClick={() => addPath("directory")}>
+                  New Folder
+                </button>
+                <button className="button" onClick={() => uploadFiles()}>
+                  Upload Files
+                </button>
+                <button className="button" onClick={() => uploadFiles("", { directory: true })}>
+                  Upload Folder
+                </button>
+              </div>
+              <div className="tree">
+                {tree.map((node) => (
+                  <TreeNodeRow
+                    key={node.path}
+                    node={node}
+                    activePath={activePath}
+                    expanded={expandedDirs}
+                    setExpanded={setExpandedDirs}
+                    onOpen={openTreePath}
+                    onRequestContextMenu={requestContextMenu}
+                  />
+                ))}
               </div>
             </div>
-          )}
+          </aside>
+        )}
 
-          <button className="button" onClick={() => setShowRevisionPanel((v) => !v)}>
-            {showRevisionPanel ? "Hide Revisions" : "Show Revisions"}
-          </button>
-          {showRevisionPanel && (
-            <HistoryPanel
-              revisions={revisions.map((revision) => ({
-                id: revision.id,
-                summary: revision.summary,
-                createdAt: revision.created_at,
-                author:
-                  revision.authors.length > 0
-                    ? revision.authors.map((author) => author.display_name).join(", ")
-                    : revision.actor_user_id || "Unknown"
-              }))}
-              selectedId={activeRevisionId}
-              onSelect={openRevision}
-            />
+        <article className="panel middle">
+          <div className="panel-header">
+            <h2>Editor</h2>
+            <div className="panel-status">
+              <span>File: {activePath}</span>
+              <span>Mode: {isRevisionMode ? "Revision" : "Live"}</span>
+              <span>Save: {saveState}</span>
+              <span>Compiled: {compiledAt ? new Date(compiledAt).toLocaleTimeString() : "n/a"}</span>
+              <span>
+                Collaborators:{" "}
+                {remoteCursors.length > 0 ? remoteCursors.map((user) => user.name).join(", ") : "none"}
+              </span>
+            </div>
+          </div>
+          <div className="panel-content editor-panel-content">
+            {isActiveTextDoc ? (
+              <div className="editor-surface">
+                <EditorPane
+                  value={docText}
+                  onDelta={applyDocumentDeltas}
+                  onCursorChange={(cursor) => realtimeRef.current?.sendCursor(cursor)}
+                  readOnly={isRevisionMode}
+                  remoteCursors={remoteCursors}
+                />
+              </div>
+            ) : (
+              <UnsupportedFilePane
+                path={activePath}
+                hasData={!!activeAssetBase64}
+                isImage={isImageAsset(activePath, activeAssetType)}
+                isPdf={isPdfAsset(activePath, activeAssetType)}
+                dataUrl={assetDataUrl}
+              />
+            )}
+            {!isActiveTextDoc && (
+              <div className="error">
+                This file is not editable in the web editor. Use Git/offline tools for changes.
+              </div>
+            )}
+            {isRevisionMode && !Object.prototype.hasOwnProperty.call(revisionDocs, activePath) && (
+              <div className="error">This file did not exist in the selected revision snapshot.</div>
+            )}
+            {workspaceError && <div className="error">{workspaceError}</div>}
+          </div>
+        </article>
+
+        <aside className="panel right">
+          <div className="panel-header">
+            <h2>Preview</h2>
+            <div className="toolbar compact">
+              <button
+                className="icon-button"
+                title="Download PDF (Client)"
+                aria-label="Download PDF (Client)"
+                onClick={downloadCompiledPdf}
+                disabled={!pdfData}
+              >
+                ↓ PDF
+              </button>
+              <button
+                className="icon-button"
+                title="Download Archive"
+                aria-label="Download Archive"
+                onClick={downloadArchive}
+              >
+                ↓ ZIP
+              </button>
+            </div>
+          </div>
+          <div className="panel-content">
+            <div ref={canvasPreviewRef} className="pdf-frame" />
+            {compileErrors.length > 0 && <div className="error">{compileErrors.join("; ")}</div>}
+          </div>
+        </aside>
+
+        {showProjectSettingsPanel && (
+          <aside className="panel">
+            <div className="panel-header">
+              <h2>Project Settings</h2>
+            </div>
+            <div className="panel-content">
+              <div className="git-box">
+                <label>
+                  Entry file
+                  <select
+                    value={entryFilePath}
+                    onChange={async (e) => {
+                      const next = e.target.value;
+                      const updated = await upsertProjectSettings(projectId, next);
+                      setEntryFilePath(updated.entry_file_path);
+                    }}
+                  >
+                    {Object.keys(docs)
+                      .filter((path) => path.endsWith(".typ"))
+                      .map((path) => (
+                        <option value={path} key={path}>
+                          {path}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+                <div>
+                  <strong>Git Access URL</strong>
+                  <code>{gitRepoUrl || "Loading..."}</code>
+                  <small>Use PAT as HTTP password. Force push is rejected.</small>
+                </div>
+              </div>
+            </div>
+          </aside>
+        )}
+
+        {showRevisionPanel && (
+          <aside className="panel">
+            <div className="panel-header">
+              <h2>Revisions</h2>
+            </div>
+            <div className="panel-content">
+              <HistoryPanel
+                revisions={revisions.map((revision) => ({
+                  id: revision.id,
+                  summary: revision.summary,
+                  createdAt: revision.created_at,
+                  author:
+                    revision.authors.length > 0
+                      ? revision.authors.map((author) => author.display_name).join(", ")
+                      : revision.actor_user_id || "Unknown"
+                }))}
+                selectedId={activeRevisionId}
+                onSelect={openRevision}
+              />
+            </div>
+          </aside>
+        )}
+      </section>
+
+      {contextMenu && (
+        <div
+          className="context-menu context-menu-floating"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+        >
+          {contextMenu.kind === "directory" && (
+            <button className="mini" onClick={() => addPath("file", contextMenu.path)}>
+              New File
+            </button>
           )}
+          {contextMenu.kind === "directory" && (
+            <button className="mini" onClick={() => addPath("directory", contextMenu.path)}>
+              New Folder
+            </button>
+          )}
+          {contextMenu.kind === "directory" && (
+            <button className="mini" onClick={() => uploadFiles(contextMenu.path)}>
+              Upload Files
+            </button>
+          )}
+          {contextMenu.kind === "directory" && (
+            <button className="mini" onClick={() => uploadFiles(contextMenu.path, { directory: true })}>
+              Upload Folder
+            </button>
+          )}
+          <button className="mini" onClick={() => renamePath(contextMenu.path)}>
+            Rename
+          </button>
+          <button className="mini" onClick={() => removePath(contextMenu.path)}>
+            Delete
+          </button>
         </div>
-      </aside>
+      )}
     </section>
+  );
+}
+
+function UnsupportedFilePane({
+  path,
+  hasData,
+  isImage,
+  isPdf,
+  dataUrl
+}: {
+  path: string;
+  hasData: boolean;
+  isImage: boolean;
+  isPdf: boolean;
+  dataUrl: string;
+}) {
+  if (!hasData) {
+    return (
+      <div className="file-preview empty">
+        <div className="file-icon">[FILE]</div>
+        <div>{path}</div>
+        <small>File content is loading.</small>
+      </div>
+    );
+  }
+  if (isImage) {
+    return (
+      <div className="file-preview">
+        <img src={dataUrl} alt={path} className="file-preview-image" />
+      </div>
+    );
+  }
+  if (isPdf) {
+    return (
+      <div className="file-preview">
+        <iframe title={path} src={dataUrl} className="file-preview-pdf" />
+      </div>
+    );
+  }
+  return (
+    <div className="file-preview empty">
+      <div className="file-icon">[FILE]</div>
+      <div>{path}</div>
+    </div>
   );
 }
 
@@ -1007,49 +1296,50 @@ function TreeNodeRow({
   activePath,
   expanded,
   setExpanded,
-  contextPath,
-  setContextPath,
   onOpen,
-  onRename,
-  onDelete,
-  onCreateFile,
-  onCreateFolder,
-  onUpload
+  onRequestContextMenu
 }: {
   node: ProjectTreeNodeView;
   activePath: string;
   expanded: Set<string>;
   setExpanded: (next: Set<string>) => void;
-  contextPath: string | null;
-  setContextPath: (path: string | null) => void;
   onOpen: (path: string) => void;
-  onRename: (path: string) => Promise<void>;
-  onDelete: (path: string) => Promise<void>;
-  onCreateFile: (path: string) => Promise<void>;
-  onCreateFolder: (path: string) => Promise<void>;
-  onUpload: (path: string) => Promise<void>;
+  onRequestContextMenu: (menu: ContextMenuState) => void;
 }) {
   const isExpanded = expanded.has(node.path);
   const isActive = activePath === node.path;
+  const toggleDirectory = () => {
+    if (node.kind !== "directory") return;
+    const next = new Set(expanded);
+    if (isExpanded) next.delete(node.path);
+    else next.add(node.path);
+    setExpanded(next);
+  };
   return (
     <div className="tree-branch">
-      <div className={`tree-node ${isActive ? "active" : ""}`}>
+      <div
+        className={`tree-node ${isActive ? "active" : ""}`}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          onRequestContextMenu({
+            path: node.path,
+            kind: node.kind,
+            x: event.clientX,
+            y: event.clientY
+          });
+        }}
+      >
         {node.kind === "directory" ? (
-          <button
-            className="tree-toggle"
-            onClick={() => {
-              const next = new Set(expanded);
-              if (isExpanded) next.delete(node.path);
-              else next.add(node.path);
-              setExpanded(next);
-            }}
-          >
+          <button className="tree-toggle" onClick={toggleDirectory}>
             {isExpanded ? "▾" : "▸"}
           </button>
         ) : (
           <span className="tree-toggle tree-placeholder" />
         )}
-        <button className="tree-label" onClick={() => (node.kind === "file" ? onOpen(node.path) : undefined)}>
+        <button
+          className="tree-label"
+          onClick={() => (node.kind === "file" ? onOpen(node.path) : toggleDirectory())}
+        >
           <span className={`tree-kind ${node.kind}`}>{node.kind === "directory" ? "Dir" : "File"}</span>
           <span className="tree-name">{node.name}</span>
         </button>
@@ -1057,36 +1347,17 @@ function TreeNodeRow({
           className="mini"
           onClick={(event) => {
             event.stopPropagation();
-            setContextPath(contextPath === node.path ? null : node.path);
+            const rect = (event.currentTarget as HTMLButtonElement).getBoundingClientRect();
+            onRequestContextMenu({
+              path: node.path,
+              kind: node.kind,
+              x: Math.round(rect.left),
+              y: Math.round(rect.bottom + 4)
+            });
           }}
         >
           ⋮
         </button>
-        {contextPath === node.path && (
-          <div className="context-menu" onClick={(event) => event.stopPropagation()}>
-            {node.kind === "directory" && (
-              <button className="mini" onClick={() => onCreateFile(node.path)}>
-                New File
-              </button>
-            )}
-            {node.kind === "directory" && (
-              <button className="mini" onClick={() => onCreateFolder(node.path)}>
-                New Folder
-              </button>
-            )}
-            {node.kind === "directory" && (
-              <button className="mini" onClick={() => onUpload(node.path)}>
-                Upload Here
-              </button>
-            )}
-            <button className="mini" onClick={() => onRename(node.path)}>
-              Rename
-            </button>
-            <button className="mini" onClick={() => onDelete(node.path)}>
-              Delete
-            </button>
-          </div>
-        )}
       </div>
       {node.kind === "directory" && isExpanded && node.children.length > 0 && (
         <div className="tree-children">
@@ -1097,14 +1368,8 @@ function TreeNodeRow({
               activePath={activePath}
               expanded={expanded}
               setExpanded={setExpanded}
-              contextPath={contextPath}
-              setContextPath={setContextPath}
               onOpen={onOpen}
-              onRename={onRename}
-              onDelete={onDelete}
-              onCreateFile={onCreateFile}
-              onCreateFolder={onCreateFolder}
-              onUpload={onUpload}
+              onRequestContextMenu={onRequestContextMenu}
             />
           ))}
         </div>

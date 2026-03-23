@@ -19,6 +19,34 @@ function run(cmd, cwd) {
   return execSync(cmd, { cwd, stdio: "pipe" }).toString("utf8").trim();
 }
 
+function countOccurrences(text, snippet) {
+  if (!snippet) return 0;
+  return text.split(snippet).length - 1;
+}
+
+function pushMainStrict(repo) {
+  try {
+    run("git push origin HEAD:main", repo);
+    return;
+  } catch {
+    let recovered = false;
+    try {
+      run("git pull --rebase origin main", repo);
+      recovered = true;
+    } catch {
+      run("git rebase --abort || true", repo);
+      try {
+        run("git pull --no-rebase origin main", repo);
+        recovered = true;
+      } catch {
+        recovered = false;
+      }
+    }
+    if (!recovered) throw new Error("strict sync recovery failed");
+    run("git push origin HEAD:main", repo);
+  }
+}
+
 async function parseJson(res) {
   if (res.status === 204) return null;
   const text = await res.text();
@@ -194,8 +222,8 @@ async function main() {
     await login(pageB, collaborator.email, collaborator.password);
     await openWorkspace(pageA, projectId);
     await openWorkspace(pageB, projectId);
-    await pageA.getByText("Workspace: ready").waitFor({ timeout: 30000 });
-    await pageB.getByText("Workspace: ready").waitFor({ timeout: 30000 });
+    await pageA.getByText("Mode: Live").first().waitFor({ timeout: 30000 });
+    await pageB.getByText("Mode: Live").first().waitFor({ timeout: 30000 });
     await waitForCanvas(pageA, 45000);
     await sleep(1200);
     const beforeChecksum = await canvasChecksum(pageA);
@@ -205,6 +233,15 @@ async function main() {
     await pageA.keyboard.type("Owner live edit.\n", { delay: 4 });
     await sleep(1200);
     await waitForEditorContains(pageB, "Owner live edit.");
+    const ownerText = await editorText(pageA);
+    const collaboratorText = await editorText(pageB);
+    const occurrenceA = countOccurrences(ownerText, "Owner live edit.");
+    const occurrenceB = countOccurrences(collaboratorText, "Owner live edit.");
+    if (occurrenceA !== 1 || occurrenceB !== 1) {
+      throw new Error(
+        `realtime duplicate insertion detected (owner=${occurrenceA}, collaborator=${occurrenceB})`
+      );
+    }
     let updated = false;
     for (let i = 0; i < 50; i += 1) {
       const next = await canvasChecksum(pageA);
@@ -236,7 +273,7 @@ async function main() {
     await fs.writeFile(path.join(offline, "notes.typ"), `= Offline Notes\n\nRemote update ${stamp}.\n`, "utf8");
     run("git add notes.typ", offline);
     run("git commit -m 'offline remote update'", offline);
-    run("git push origin HEAD:main", offline);
+    pushMainStrict(offline);
 
     await pageA.locator(".cm-content").click();
     await pageA.keyboard.press("End");

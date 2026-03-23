@@ -3602,7 +3602,7 @@ async fn mark_project_dirty(db: &PgPool, project_id: Uuid, actor_user_id: Option
         .ok()
         .and_then(|v| v.parse::<i64>().ok())
         .filter(|v| *v >= 10)
-        .unwrap_or(120);
+        .unwrap_or(30);
     let recent = sqlx::query(
         "select created_at from revisions where project_id = $1 order by created_at desc limit 1",
     )
