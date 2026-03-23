@@ -12,8 +12,10 @@ const ownerEmail = `owner-${runId}@example.com`;
 const ownerPassword = "Owner1234!";
 const collaboratorEmail = `collab-${runId}@example.com`;
 const collaboratorPassword = "Collab1234!";
-const contextCreatedPath = `chapters/from-context-${runId}.typ`;
-const contextRenamedPath = `chapters/renamed-${runId}.typ`;
+const contextCreatedName = `from-context-${runId}.typ`;
+const contextCreatedPath = `chapters/${contextCreatedName}`;
+const contextRenamedName = `renamed-${runId}.typ`;
+const contextRenamedPath = `chapters/${contextRenamedName}`;
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const fontPath =
   process.env.FONT_FILE_PATH ??
@@ -435,7 +437,7 @@ try {
   await acceptPrompt(
     pageA,
     () => pageA.locator(".context-menu-floating .mini", { hasText: "New File" }).first().click(),
-    contextCreatedPath
+    contextCreatedName
   );
   await waitForActiveFile(pageA, contextCreatedPath, 10000);
   await ensureDirectoryExpanded(pageA, "chapters");
@@ -449,7 +451,7 @@ try {
     pageA,
     () =>
       pageA.locator(".context-menu-floating .mini", { hasText: "Rename" }).first().click(),
-    contextRenamedPath
+    contextRenamedName
   );
   await waitForActiveFile(pageA, contextRenamedPath, 10000);
   await pageA
