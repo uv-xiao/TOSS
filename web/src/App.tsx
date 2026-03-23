@@ -414,6 +414,9 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [workspaceTopbar, setWorkspaceTopbar] = useState<ReactNode | null>(null);
   const onWorkspaceRoute = location.pathname.startsWith("/project/");
+  const onProjectsRoute = location.pathname === "/projects" || location.pathname === "/";
+  const onProfileRoute = location.pathname.startsWith("/profile");
+  const onAdminRoute = location.pathname.startsWith("/admin");
   const shareTokenFromPath = location.pathname.startsWith("/share/")
     ? decodeURIComponent(location.pathname.replace("/share/", ""))
     : null;
@@ -519,10 +522,13 @@ export function App() {
         <div className="meta">
           {!onWorkspaceRoute && (
             <>
-              <Link className="tab" to="/profile">
+              <Link className={`tab ${onProjectsRoute ? "active" : ""}`} to="/projects">
+                {t("nav.projects")}
+              </Link>
+              <Link className={`tab ${onProfileRoute ? "active" : ""}`} to="/profile">
                 {t("nav.profile")}
               </Link>
-              <Link className="tab" to="/admin">
+              <Link className={`tab ${onAdminRoute ? "active" : ""}`} to="/admin">
                 {t("nav.admin")}
               </Link>
             </>
