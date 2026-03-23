@@ -25,13 +25,14 @@ async fn list_projects(
                   coalesce((select max(r.created_at) from revisions r where r.project_id = p.id), p.created_at),
                   coalesce((select max(a.created_at) from project_assets a where a.project_id = p.id), p.created_at)
                 ) as last_edited_at,
-                p.archived_at,
+                pua.archived_at as user_archived_at,
                 pr.role as my_role
          from projects p
          join project_roles pr on pr.project_id = p.id
          left join users owner on owner.id = p.owner_user_id
+         left join project_user_archives pua on pua.project_id = p.id and pua.user_id = $1
          where pr.user_id = $1
-           and ($2::boolean = true or p.archived_at is null)
+           and ($2::boolean = true or pua.archived_at is null)
            and ($3::text is null or p.name ilike $3)",
     )
     .bind(actor)
@@ -56,16 +57,18 @@ async fn list_projects(
                       coalesce((select max(r.created_at) from revisions r where r.project_id = p.id), p.created_at),
                       coalesce((select max(a.created_at) from project_assets a where a.project_id = p.id), p.created_at)
                     ) as last_edited_at,
-                    p.archived_at,
+                    pua.archived_at as user_archived_at,
                     poa.permission
              from projects p
              join project_organization_access poa on poa.project_id = p.id
              left join users owner on owner.id = p.owner_user_id
+             left join project_user_archives pua on pua.project_id = p.id and pua.user_id = $2
              where poa.organization_id = any($1::uuid[])
-               and ($2::boolean = true or p.archived_at is null)
-               and ($3::text is null or p.name ilike $3)",
+               and ($3::boolean = true or pua.archived_at is null)
+               and ($4::text is null or p.name ilike $4)",
         )
         .bind(&org_ids)
+        .bind(actor)
         .bind(include_archived)
         .bind(search.as_deref())
         .fetch_all(&state.db)
@@ -85,8 +88,10 @@ async fn list_projects(
                 my_role: row.get("my_role"),
                 created_at: row.get("created_at"),
                 last_edited_at: row.get("last_edited_at"),
-                archived: row.get::<Option<DateTime<Utc>>, _>("archived_at").is_some(),
-                archived_at: row.get("archived_at"),
+                archived: row
+                    .get::<Option<DateTime<Utc>>, _>("user_archived_at")
+                    .is_some(),
+                archived_at: row.get("user_archived_at"),
             },
         );
     }
@@ -114,8 +119,10 @@ async fn list_projects(
                 my_role: derived_role,
                 created_at: row.get("created_at"),
                 last_edited_at: row.get("last_edited_at"),
-                archived: row.get::<Option<DateTime<Utc>>, _>("archived_at").is_some(),
-                archived_at: row.get("archived_at"),
+                archived: row
+                    .get::<Option<DateTime<Utc>>, _>("user_archived_at")
+                    .is_some(),
+                archived_at: row.get("user_archived_at"),
             },
         );
     }
@@ -242,7 +249,7 @@ async fn create_project(
     let row = sqlx::query(
         "insert into projects (id, organization_id, owner_user_id, name, description, created_at)
          values ($1, $2, $3, $4, $5, $6)
-         returning id, name, created_at, owner_user_id, archived_at",
+         returning id, name, created_at, owner_user_id",
     )
     .bind(id)
     .bind(org_id)
@@ -319,7 +326,7 @@ async fn create_project(
         created_at: row.get("created_at"),
         last_edited_at: row.get("created_at"),
         archived: false,
-        archived_at: row.get("archived_at"),
+        archived_at: None,
     }))
 }
 
@@ -1629,4 +1636,3 @@ async fn upsert_admin_auth_settings(
     let settings = load_auth_settings(&state.db, &state.oidc).await?;
     Ok(Json(AdminAuthSettingsResponse { settings }))
 }
-

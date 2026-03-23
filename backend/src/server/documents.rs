@@ -858,28 +858,27 @@ async fn update_project_archived(
     Path(project_id): Path<Uuid>,
     Json(input): Json<UpdateProjectArchivedInput>,
 ) -> Result<StatusCode, StatusCode> {
-    let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Manage).await?;
-    let changed = if input.archived {
+    let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
+    if input.archived {
         sqlx::query(
-            "update projects
-             set archived_at = coalesce(archived_at, $1), archived_by = $2
-             where id = $3",
+            "insert into project_user_archives (project_id, user_id, archived_at)
+             values ($1, $2, $3)
+             on conflict (project_id, user_id)
+             do update set archived_at = excluded.archived_at",
         )
-        .bind(Utc::now())
-        .bind(actor)
         .bind(project_id)
+        .bind(actor)
+        .bind(Utc::now())
         .execute(&state.db)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     } else {
-        sqlx::query("update projects set archived_at = null, archived_by = null where id = $1")
+        sqlx::query("delete from project_user_archives where project_id = $1 and user_id = $2")
             .bind(project_id)
+            .bind(actor)
             .execute(&state.db)
             .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-    };
-    if changed.rows_affected() == 0 {
-        return Err(StatusCode::NOT_FOUND);
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     }
     write_audit(
         &state.db,
@@ -987,4 +986,3 @@ async fn download_latest_project_pdf_artifact(
     );
     Ok(resp)
 }
-
