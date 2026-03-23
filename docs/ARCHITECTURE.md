@@ -2,8 +2,8 @@
 
 ## Runtime Topology
 
-- `apps/web`: static Vite React SPA bundle
-- `services/core-api`: Rust/Axum monolith
+- `web/`: static Vite React SPA bundle
+- `backend/`: Rust/Axum monolith
   - serves static SPA assets
   - serves REST APIs
   - serves realtime WebSocket endpoint

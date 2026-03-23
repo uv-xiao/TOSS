@@ -2,11 +2,13 @@ import * as Y from "yjs";
 
 const CORE_API = process.env.CORE_API_URL ?? "http://127.0.0.1:18080";
 const REALTIME_WS = process.env.REALTIME_WS_URL ?? "ws://127.0.0.1:18080";
-const PROJECT_ID = process.env.PROJECT_ID ?? "00000000-0000-0000-0000-000000000010";
+const ORG_ID = process.env.DEFAULT_ORG_ID ?? "00000000-0000-0000-0000-000000000001";
+const runId = Date.now().toString();
+const ownerEmail = `rt-owner-${runId}@example.com`;
+const ownerPassword = "Owner1234!";
+const collabEmail = `rt-collab-${runId}@example.com`;
+const collabPassword = "Collab1234!";
 const DOC_PATH = "main.typ";
-const DOC_ID = `${PROJECT_ID}:${DOC_PATH}`;
-const USER_A = "00000000-0000-0000-0000-000000000100";
-const USER_B = "00000000-0000-0000-0000-000000000101";
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -18,6 +20,26 @@ function fromBase64(value) {
   return new Uint8Array(Buffer.from(value, "base64"));
 }
 
+async function parseJson(res) {
+  if (res.status === 204) return null;
+  const text = await res.text();
+  if (!text.trim()) return null;
+  return JSON.parse(text);
+}
+
+async function authJson(method, route, body) {
+  const response = await fetch(`${CORE_API}${route}`, {
+    method,
+    headers: { "content-type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  const payload = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(`${method} ${route} failed: ${response.status} ${JSON.stringify(payload)}`);
+  }
+  return payload;
+}
+
 async function api(method, path, userId, body) {
   const response = await fetch(`${CORE_API}${path}`, {
     method,
@@ -27,21 +49,44 @@ async function api(method, path, userId, body) {
     },
     body: body ? JSON.stringify(body) : undefined
   });
+  const payload = await parseJson(response);
   if (!response.ok) {
-    throw new Error(`${method} ${path} failed: ${response.status} ${await response.text()}`);
+    throw new Error(`${method} ${path} failed: ${response.status} ${JSON.stringify(payload)}`);
   }
-  if (response.status === 204) return null;
-  return response.json();
+  return payload;
 }
 
-function connectClient(userId) {
+async function registerOrLogin(email, password, displayName) {
+  const registerRes = await fetch(`${CORE_API}/v1/auth/local/register`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      email,
+      password,
+      display_name: displayName
+    })
+  });
+  if (registerRes.ok) {
+    const payload = await parseJson(registerRes);
+    return { userId: payload.user_id, email, password };
+  }
+  if (registerRes.status !== 403 && registerRes.status !== 409) {
+    const payload = await parseJson(registerRes);
+    throw new Error(`register ${email} failed: ${registerRes.status} ${JSON.stringify(payload)}`);
+  }
+  const login = await authJson("POST", "/v1/auth/local/login", { email, password });
+  return { userId: login.user_id, email, password };
+}
+
+function connectClient(projectId, userId) {
+  const docId = `${projectId}:${DOC_PATH}`;
   const ydoc = new Y.Doc();
   const ytext = ydoc.getText("main");
   const query = new URLSearchParams({
-    project_id: PROJECT_ID,
+    project_id: projectId,
     user_id: userId
   });
-  const wsUrl = `${REALTIME_WS}/v1/realtime/ws/${encodeURIComponent(DOC_ID)}?${query.toString()}`;
+  const wsUrl = `${REALTIME_WS}/v1/realtime/ws/${encodeURIComponent(docId)}?${query.toString()}`;
   const ws = new WebSocket(wsUrl);
   const origin = `test-${userId}`;
   const presence = new Set([userId]);
@@ -101,17 +146,33 @@ async function waitFor(predicate, timeoutMs, label) {
 }
 
 async function main() {
+  const owner = await registerOrLogin(ownerEmail, ownerPassword, "Realtime Owner");
+  const collaborator = await registerOrLogin(collabEmail, collabPassword, "Realtime Collaborator");
+  const project = await api("POST", "/v1/projects", owner.userId, {
+    organization_id: ORG_ID,
+    name: `Realtime QA ${runId}`,
+    description: "Realtime API test project"
+  });
+  const projectId = project.id;
+  await api("POST", `/v1/projects/${projectId}/roles`, owner.userId, {
+    user_id: collaborator.userId,
+    role: "Student"
+  });
   await api(
     "PUT",
-    `/v1/projects/${PROJECT_ID}/documents/by-path/${encodeURIComponent(DOC_PATH)}`,
-    USER_A,
+    `/v1/projects/${projectId}/documents/by-path/${encodeURIComponent(DOC_PATH)}`,
+    owner.userId,
     { content: "= Realtime QA\n\nSeed.\n" }
   );
 
-  const a = connectClient(USER_A);
-  const b = connectClient(USER_B);
+  const a = connectClient(projectId, owner.userId);
+  const b = connectClient(projectId, collaborator.userId);
 
-  await waitFor(() => a.ws.readyState === WebSocket.OPEN && b.ws.readyState === WebSocket.OPEN, 5000, "socket open");
+  await waitFor(
+    () => a.ws.readyState === WebSocket.OPEN && b.ws.readyState === WebSocket.OPEN,
+    5000,
+    "socket open"
+  );
   await wait(400);
 
   a.ydoc.transact(() => {
@@ -132,12 +193,17 @@ async function main() {
 
   b.ws.close();
   await wait(300);
-  const b2 = connectClient(USER_B);
+  const b2 = connectClient(projectId, collaborator.userId);
   await waitFor(() => b2.ws.readyState === WebSocket.OPEN, 5000, "B reconnect open");
-  await waitFor(() => b2.ytext.toString().includes("Edited by A.") && b2.ytext.toString().includes("Edited by B."), 5000, "B reconnect state sync");
+  await waitFor(
+    () => b2.ytext.toString().includes("Edited by A.") && b2.ytext.toString().includes("Edited by B."),
+    5000,
+    "B reconnect state sync"
+  );
 
   const result = {
     ok: true,
+    project_id: projectId,
     userA_presence: Array.from(a.presence),
     userB_presence: Array.from(b2.presence),
     final_text: b2.ytext.toString()

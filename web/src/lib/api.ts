@@ -1,5 +1,3 @@
-import { resolveDevUserId } from "@/lib/dev-auth";
-
 const API_BASE = (import.meta.env.VITE_CORE_API_URL as string | undefined)?.trim() ?? "";
 
 function apiUrl(path: string) {
@@ -7,20 +5,19 @@ function apiUrl(path: string) {
   return `${API_BASE.replace(/\/$/, "")}${path}`;
 }
 
-function devUserId() {
-  return resolveDevUserId();
-}
-
 function authCredentials(): RequestCredentials {
-  if (devUserId()) return "omit";
   return "include";
 }
 
 function authHeaders(extra?: Record<string, string>) {
-  const headers: Record<string, string> = { ...(extra ?? {}) };
-  const id = devUserId();
-  if (id) headers["x-user-id"] = id;
-  return headers;
+  return { ...(extra ?? {}) };
+}
+
+function encodePathPreservingSlashes(path: string) {
+  return path
+    .split("/")
+    .map((part) => encodeURIComponent(part))
+    .join("/");
 }
 
 async function parseJsonOrThrow<T>(res: Response, message: string): Promise<T> {
@@ -274,7 +271,7 @@ export async function moveProjectFile(projectId: string, fromPath: string, toPat
 }
 
 export async function deleteProjectFile(projectId: string, path: string) {
-  const safePath = encodeURIComponent(path);
+  const safePath = encodePathPreservingSlashes(path);
   const res = await fetch(apiUrl(`/v1/projects/${projectId}/files/${safePath}`), {
     method: "DELETE",
     credentials: authCredentials(),
@@ -385,6 +382,15 @@ export function projectArchiveUrl(projectId: string) {
   return apiUrl(`/v1/projects/${projectId}/archive`);
 }
 
+export async function downloadProjectArchive(projectId: string) {
+  const res = await fetch(apiUrl(`/v1/projects/${projectId}/archive`), {
+    credentials: authCredentials(),
+    headers: authHeaders()
+  });
+  if (!res.ok) throw new Error(`Unable to download archive (${res.status})`);
+  return res.blob();
+}
+
 export async function listPersonalAccessTokens() {
   const res = await fetch(apiUrl("/v1/profile/security/tokens"), {
     cache: "no-store",
@@ -480,4 +486,3 @@ export async function upsertAdminAuthSettings(input: {
   );
   return parsed.settings;
 }
-

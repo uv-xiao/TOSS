@@ -18,17 +18,17 @@ if [[ -d "/opt/homebrew/opt/rustup/bin" ]]; then
   export PATH="/opt/homebrew/opt/rustup/bin:$PATH"
 fi
 
-echo "[ci] cargo check (core-api)"
-(cd services/core-api && cargo check)
+echo "[ci] cargo check (backend)"
+(cd backend && cargo check)
 
 echo "[ci] npm ci + build (web)"
-(cd apps/web && npm ci)
-(cd apps/web && npm run build)
+(cd web && npm ci)
+(cd web && npm run build)
 
-echo "[ci] start core-api monolith"
-(cd services/core-api && DATABASE_URL="$DB_URL" CORE_API_PORT="$CORE_API_PORT" GIT_STORAGE_PATH="/tmp/typst-git" AUTH_DEV_HEADER_ENABLED=1 WEB_STATIC_DIR="../../apps/web/dist" cargo run >/tmp/typst-core.log 2>&1) &
+echo "[ci] start backend monolith"
+(cd backend && DATABASE_URL="$DB_URL" CORE_API_PORT="$CORE_API_PORT" GIT_STORAGE_PATH="/tmp/typst-git" AUTH_DEV_HEADER_ENABLED=1 WEB_STATIC_DIR="../web/dist" cargo run >/tmp/typst-core.log 2>&1) &
 CORE_PID=$!
-for _ in $(seq 1 60); do
+for _ in $(seq 1 180); do
   if curl -fsS "$CORE_API_URL/health" >/dev/null 2>&1; then
     break
   fi
@@ -37,11 +37,11 @@ done
 curl -fsS "$CORE_API_URL/health" >/dev/null
 
 echo "[ci] run API-level collaboration and git checks"
-node apps/web/scripts/realtime-multiuser-test.mjs
-bash apps/web/scripts/git-multiuser-test.sh
+node web/scripts/realtime-multiuser-test.mjs
+bash web/scripts/git-multiuser-test.sh
 
 echo "[ci] run headless browser checks"
-WEB_BASE_URL="$CORE_API_URL" node apps/web/scripts/headless-smoke.mjs
-WEB_BASE_URL="$CORE_API_URL" CORE_API_URL="$CORE_API_URL" node apps/web/scripts/headless-collab-git.mjs
+WEB_BASE_URL="$CORE_API_URL" node web/scripts/headless-smoke.mjs
+WEB_BASE_URL="$CORE_API_URL" CORE_API_URL="$CORE_API_URL" node web/scripts/headless-collab-git.mjs
 
 echo "[ci] all checks passed"

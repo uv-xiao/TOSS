@@ -5,12 +5,12 @@ import { EditorPane } from "@/components/EditorPane";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { PresenceBar } from "@/components/PresenceBar";
 import { bindRealtimeYDoc, type PresencePeer } from "@/lib/realtime";
-import { resolveDevUserId } from "@/lib/dev-auth";
 import { compileTypstClientSide, renderTypstVectorToCanvas } from "@/lib/typst";
 import {
   createPersonalAccessToken,
   createProject,
   createProjectFile,
+  downloadProjectArchive,
   deleteOrgGroupRoleMapping,
   deleteProjectFile,
   getAdminAuthSettings,
@@ -31,7 +31,6 @@ import {
   localRegister,
   logout,
   oidcLoginUrl,
-  projectArchiveUrl,
   revokePersonalAccessToken,
   type AdminAuthSettings,
   type AuthConfig,
@@ -60,6 +59,21 @@ type ProjectTreeNodeView = {
 
 function normalizePath(path: string) {
   return path.trim().replace(/^\/+/, "");
+}
+
+function joinProjectPath(base: string, leaf: string) {
+  const cleanBase = normalizePath(base);
+  const cleanLeaf = normalizePath(leaf);
+  if (!cleanBase) return cleanLeaf;
+  if (!cleanLeaf) return cleanBase;
+  return `${cleanBase}/${cleanLeaf}`;
+}
+
+function parentProjectPath(path: string) {
+  const clean = normalizePath(path);
+  const idx = clean.lastIndexOf("/");
+  if (idx < 0) return "";
+  return clean.slice(0, idx);
 }
 
 function isTextFile(path: string) {
@@ -167,7 +181,7 @@ export function App() {
 
   if (authLoading) return <main className="loading">Loading...</main>;
 
-  if (!authUser && !resolveDevUserId()) {
+  if (!authUser) {
     return (
       <SignInPage
         config={authConfig}
@@ -204,7 +218,7 @@ export function App() {
           )}
         </nav>
         <div className="meta">
-          <span>{authUser?.display_name || "User"}</span>
+          <span>{authUser.display_name}</span>
           <button className="button" onClick={handleLogout}>
             Logout
           </button>
@@ -360,12 +374,11 @@ function ProjectsPage({
   );
 }
 
-function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: AuthUser | null }) {
+function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: AuthUser }) {
   const { projectId = "" } = useParams();
   const navigate = useNavigate();
-  const devUserId = resolveDevUserId();
-  const effectiveUserId = (authUser?.user_id ?? devUserId) || "local-user";
-  const effectiveUserName = authUser?.display_name || "Developer";
+  const effectiveUserId = authUser.user_id;
+  const effectiveUserName = authUser.display_name || "User";
   const ydocRef = useRef<Y.Doc | null>(null);
   const ytextRef = useRef<Y.Text | null>(null);
   const realtimeRef = useRef<{ close: () => void; sendCursor: (cursor: { line: number; column: number }) => void } | null>(null);
@@ -398,11 +411,15 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
 
   const tree = useMemo(() => projectTreeFromFlat(nodes), [nodes]);
   const isRevisionMode = !!activeRevisionId;
+  const hasActiveDoc = Object.prototype.hasOwnProperty.call(docs, activePath);
   const sourceDocs = isRevisionMode ? revisionDocs : docs;
-  const compileDocuments = useMemo(
-    () => Object.entries(sourceDocs).map(([path, content]) => ({ path, content })),
-    [sourceDocs]
-  );
+  const compileDocuments = useMemo(() => {
+    const baseDocs = { ...sourceDocs };
+    if (!isRevisionMode && activePath && activePath in baseDocs) {
+      baseDocs[activePath] = docText;
+    }
+    return Object.entries(baseDocs).map(([path, content]) => ({ path, content }));
+  }, [activePath, docText, isRevisionMode, sourceDocs]);
   const compileAssets = useMemo(
     () => Object.entries(assetBase64).map(([path, contentBase64]) => ({ path, contentBase64 })),
     [assetBase64]
@@ -426,7 +443,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
   const refreshProjectData = async () => {
     if (!projectId) return;
     setWorkspaceLoaded(false);
-    const [treeRes, settings, git, docsRes, revisionsRes, assetsRes] = await Promise.all([
+    let [treeRes, settings, git, docsRes, revisionsRes, assetsRes] = await Promise.all([
       getProjectTree(projectId),
       getProjectSettings(projectId).catch(() => ({ entry_file_path: "main.typ" })),
       getGitRepoLink(projectId).catch(() => ({ repo_url: "" })),
@@ -434,6 +451,16 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
       listRevisions(projectId).catch(() => ({ revisions: [] })),
       listProjectAssets(projectId).catch(() => ({ assets: [] }))
     ]);
+    if (!treeRes.nodes.some((node) => node.kind === "file")) {
+      await createProjectFile(projectId, {
+        path: "main.typ",
+        kind: "file",
+        content: ""
+      }).catch(() => undefined);
+      const [nextTree, nextDocs] = await Promise.all([getProjectTree(projectId), listDocuments(projectId)]);
+      treeRes = nextTree;
+      docsRes = nextDocs;
+    }
     setNodes(treeRes.nodes);
     setEntryFilePath(settings.entry_file_path || treeRes.entry_file_path || "main.typ");
     setGitRepoUrl(git.repo_url || "");
@@ -510,7 +537,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
 
   useEffect(() => {
     if (!projectId || !activePath || isRevisionMode || !workspaceLoaded) return;
-    if (!(activePath in docs)) {
+    if (!hasActiveDoc) {
       setPresence([]);
       setDocText("");
       return;
@@ -532,7 +559,6 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
     const observer = (event: Y.YTextEvent) => {
       const next = event.target.toString();
       setDocText(next);
-      setDocs((prev) => ({ ...prev, [activePath]: next }));
     };
     ytext.observe(observer);
     const realtime = bindRealtimeYDoc({
@@ -554,23 +580,24 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
       realtimeRef.current = null;
       setPresence([]);
     };
-  }, [activePath, docs, effectiveUserId, effectiveUserName, isRevisionMode, projectId, workspaceLoaded]);
+  }, [activePath, effectiveUserId, effectiveUserName, hasActiveDoc, isRevisionMode, projectId, workspaceLoaded]);
 
   useEffect(() => {
     if (!projectId || !activePath || isRevisionMode || !workspaceLoaded) return;
-    if (!(activePath in docs)) return;
+    if (!hasActiveDoc) return;
     if (docText === lastSavedDocRef.current) return;
     setSaveState("saving");
     const timer = window.setTimeout(() => {
       upsertDocumentByPath(projectId, activePath, docText)
         .then((saved) => {
           lastSavedDocRef.current = saved.content;
+          setDocs((prev) => ({ ...prev, [saved.path]: saved.content }));
           setSaveState("saved");
         })
         .catch(() => setSaveState("error"));
     }, 700);
     return () => window.clearTimeout(timer);
-  }, [activePath, docText, isRevisionMode, projectId, workspaceLoaded]);
+  }, [activePath, docText, hasActiveDoc, isRevisionMode, projectId, workspaceLoaded]);
 
   useEffect(() => {
     if (!projectId || !workspaceLoaded) return;
@@ -618,33 +645,6 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
   }, [vectorData]);
 
   useEffect(() => {
-    if (!projectId || isRevisionMode || !workspaceLoaded) return;
-    const timer = window.setInterval(() => {
-      listDocuments(projectId)
-        .then((res) => {
-          setDocs((prev) => {
-            const next: Record<string, string> = { ...prev };
-            const incoming = new Set<string>();
-            for (const doc of res.documents) {
-              incoming.add(doc.path);
-              if (doc.path === activePath && docText !== lastSavedDocRef.current) {
-                continue;
-              }
-              next[doc.path] = doc.content;
-            }
-            for (const path of Object.keys(next)) {
-              if (path === activePath) continue;
-              if (!incoming.has(path)) delete next[path];
-            }
-            return next;
-          });
-        })
-        .catch(() => undefined);
-    }, 2000);
-    return () => window.clearInterval(timer);
-  }, [activePath, docText, isRevisionMode, projectId, workspaceLoaded]);
-
-  useEffect(() => {
     if (!contextPath) return;
     const closeMenu = (event: MouseEvent) => {
       const target = event.target as HTMLElement | null;
@@ -688,67 +688,128 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
     });
   }
 
-  async function addPath(kind: "file" | "directory") {
+  async function addPath(kind: "file" | "directory", parentPath = "") {
     if (!projectId) return;
-    const raw = window.prompt(kind === "file" ? "New file path" : "New directory path");
+    const placeholder = kind === "file" ? "untitled.typ" : "folder";
+    const suggested = joinProjectPath(parentPath, placeholder);
+    const raw = window.prompt(
+      kind === "file" ? "New file path" : "New directory path",
+      suggested
+    );
     if (!raw) return;
-    await createProjectFile(projectId, {
-      path: normalizePath(raw),
-      kind,
-      content: kind === "file" ? "" : undefined
-    });
-    await refreshProjectData();
-    if (kind === "file") setActivePath(normalizePath(raw));
+    let normalized = normalizePath(raw);
+    if (parentPath && !normalized.includes("/")) {
+      normalized = joinProjectPath(parentPath, normalized);
+    }
+    try {
+      setContextPath(null);
+      await createProjectFile(projectId, {
+        path: normalized,
+        kind,
+        content: kind === "file" ? "" : undefined
+      });
+      await refreshProjectData();
+      if (kind === "file") setActivePath(normalized);
+      setWorkspaceError(null);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to create path";
+      setWorkspaceError(message);
+    }
   }
 
   async function renamePath(path: string) {
     if (!projectId) return;
     const to = window.prompt("Rename to", path);
-    if (!to || normalizePath(to) === path) return;
-    await moveProjectFile(projectId, path, normalizePath(to));
-    setContextPath(null);
-    await refreshProjectData();
-    if (activePath === path) setActivePath(normalizePath(to));
+    if (!to) return;
+    let normalizedTo = normalizePath(to);
+    const parentPath = parentProjectPath(path);
+    if (parentPath && !normalizedTo.includes("/")) {
+      normalizedTo = joinProjectPath(parentPath, normalizedTo);
+    }
+    if (normalizedTo === path) return;
+    try {
+      await moveProjectFile(projectId, path, normalizedTo);
+      setContextPath(null);
+      await refreshProjectData();
+      if (activePath === path) setActivePath(normalizedTo);
+      setWorkspaceError(null);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to rename path";
+      setWorkspaceError(message);
+    }
   }
 
   async function removePath(path: string) {
     if (!projectId) return;
     if (!window.confirm(`Delete ${path}?`)) return;
-    await deleteProjectFile(projectId, path);
-    setContextPath(null);
-    if (activePath === path) setActivePath(entryFilePath);
-    await refreshProjectData();
+    try {
+      await deleteProjectFile(projectId, path);
+      setContextPath(null);
+      if (activePath === path) setActivePath(entryFilePath);
+      await refreshProjectData();
+      setWorkspaceError(null);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to delete path";
+      setWorkspaceError(message);
+    }
   }
 
-  async function uploadFiles() {
+  async function uploadFiles(parentPath = "") {
     if (!projectId) return;
     const picker = document.createElement("input");
     picker.type = "file";
     picker.multiple = true;
     picker.onchange = async () => {
       const files = Array.from(picker.files || []);
-      for (const file of files) {
-        const defaultPath = file.name;
-        const target = window.prompt(`Target path for ${file.name}`, defaultPath);
-        if (!target) continue;
-        const path = normalizePath(target);
-        const bytes = new Uint8Array(await file.arrayBuffer());
-        if (isTextFile(path) || file.type.startsWith("text/")) {
-          const text = new TextDecoder().decode(bytes);
-          await createProjectFile(projectId, { path, kind: "file", content: text });
-          setDocs((prev) => ({ ...prev, [path]: text }));
-        } else {
-          const binary = Array.from(bytes, (value) => String.fromCharCode(value)).join("");
-          await uploadProjectAsset(projectId, {
-            path,
-            content_base64: btoa(binary),
-            content_type: file.type || "application/octet-stream"
-          });
+      try {
+        setContextPath(null);
+        for (const file of files) {
+          const defaultPath = joinProjectPath(parentPath, file.name);
+          const target = window.prompt(`Target path for ${file.name}`, defaultPath);
+          if (!target) continue;
+          let path = normalizePath(target);
+          if (parentPath && !path.includes("/")) {
+            path = joinProjectPath(parentPath, path);
+          }
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          if (isTextFile(path) || file.type.startsWith("text/")) {
+            const text = new TextDecoder().decode(bytes);
+            await upsertDocumentByPath(projectId, path, text);
+            setDocs((prev) => ({ ...prev, [path]: text }));
+          } else {
+            const binary = Array.from(bytes, (value) => String.fromCharCode(value)).join("");
+            await uploadProjectAsset(projectId, {
+              path,
+              content_base64: btoa(binary),
+              content_type: file.type || "application/octet-stream"
+            });
+          }
         }
+        await refreshProjectData();
+        setWorkspaceError(null);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Unable to upload files";
+        setWorkspaceError(message);
       }
-      await refreshProjectData();
     };
     picker.click();
+  }
+
+  async function downloadArchive() {
+    if (!projectId) return;
+    try {
+      const blob = await downloadProjectArchive(projectId);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${project?.name || "project"}.zip`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setWorkspaceError(null);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to download archive";
+      setWorkspaceError(message);
+    }
   }
 
   async function openRevision(revisionId: string) {
@@ -807,7 +868,7 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
             <button className="button" onClick={() => addPath("directory")}>
               New Folder
             </button>
-            <button className="button" onClick={uploadFiles}>
+            <button className="button" onClick={() => uploadFiles()}>
               Upload Files
             </button>
           </div>
@@ -824,6 +885,9 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
                 onOpen={(path) => setActivePath(path)}
                 onRename={renamePath}
                 onDelete={removePath}
+                onCreateFile={(path) => addPath("file", path)}
+                onCreateFolder={(path) => addPath("directory", path)}
+                onUpload={uploadFiles}
               />
             ))}
           </div>
@@ -876,9 +940,9 @@ function WorkspacePage({ projects, authUser }: { projects: Project[]; authUser: 
             <button className="button" onClick={downloadCompiledPdf} disabled={!pdfData}>
               Download PDF (Client)
             </button>
-            <a className="button" href={projectArchiveUrl(projectId)} target="_blank" rel="noreferrer">
+            <button className="button" onClick={downloadArchive}>
               Download Archive
-            </a>
+            </button>
           </div>
 
           <button className="button" onClick={() => setShowProjectSettings((v) => !v)}>
@@ -947,7 +1011,10 @@ function TreeNodeRow({
   setContextPath,
   onOpen,
   onRename,
-  onDelete
+  onDelete,
+  onCreateFile,
+  onCreateFolder,
+  onUpload
 }: {
   node: ProjectTreeNodeView;
   activePath: string;
@@ -958,6 +1025,9 @@ function TreeNodeRow({
   onOpen: (path: string) => void;
   onRename: (path: string) => Promise<void>;
   onDelete: (path: string) => Promise<void>;
+  onCreateFile: (path: string) => Promise<void>;
+  onCreateFolder: (path: string) => Promise<void>;
+  onUpload: (path: string) => Promise<void>;
 }) {
   const isExpanded = expanded.has(node.path);
   const isActive = activePath === node.path;
@@ -983,11 +1053,32 @@ function TreeNodeRow({
           <span className={`tree-kind ${node.kind}`}>{node.kind === "directory" ? "Dir" : "File"}</span>
           <span className="tree-name">{node.name}</span>
         </button>
-        <button className="mini" onClick={() => setContextPath(contextPath === node.path ? null : node.path)}>
+        <button
+          className="mini"
+          onClick={(event) => {
+            event.stopPropagation();
+            setContextPath(contextPath === node.path ? null : node.path);
+          }}
+        >
           ⋮
         </button>
         {contextPath === node.path && (
-          <div className="context-menu">
+          <div className="context-menu" onClick={(event) => event.stopPropagation()}>
+            {node.kind === "directory" && (
+              <button className="mini" onClick={() => onCreateFile(node.path)}>
+                New File
+              </button>
+            )}
+            {node.kind === "directory" && (
+              <button className="mini" onClick={() => onCreateFolder(node.path)}>
+                New Folder
+              </button>
+            )}
+            {node.kind === "directory" && (
+              <button className="mini" onClick={() => onUpload(node.path)}>
+                Upload Here
+              </button>
+            )}
             <button className="mini" onClick={() => onRename(node.path)}>
               Rename
             </button>
@@ -1011,6 +1102,9 @@ function TreeNodeRow({
               onOpen={onOpen}
               onRename={onRename}
               onDelete={onDelete}
+              onCreateFile={onCreateFile}
+              onCreateFolder={onCreateFolder}
+              onUpload={onUpload}
             />
           ))}
         </div>

@@ -197,7 +197,7 @@ async fn seed_default_data(pool: &PgPool) {
     let org_id = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
     let project_id = Uuid::parse_str("00000000-0000-0000-0000-000000000010").unwrap();
     let admin_id = Uuid::parse_str("00000000-0000-0000-0000-000000000100").unwrap();
-    let member_id = Uuid::parse_str("00000000-0000-0000-0000-000000000101").unwrap();
+    let legacy_member_id = Uuid::parse_str("00000000-0000-0000-0000-000000000101").unwrap();
     let now = Utc::now();
 
     let _ = sqlx::query(
@@ -216,17 +216,6 @@ async fn seed_default_data(pool: &PgPool) {
     .bind(admin_id)
     .bind("admin@example.com")
     .bind("Administrator")
-    .bind(now)
-    .execute(pool)
-    .await;
-
-    let _ = sqlx::query(
-        "insert into users (id, email, display_name, created_at) values ($1, $2, $3, $4)
-         on conflict (id) do update set email = excluded.email, display_name = excluded.display_name",
-    )
-    .bind(member_id)
-    .bind("member@example.com")
-    .bind("Member")
     .bind(now)
     .execute(pool)
     .await;
@@ -264,14 +253,6 @@ async fn seed_default_data(pool: &PgPool) {
         .bind(project_id)
         .bind(admin_id)
         .bind("Owner")
-        .bind(now)
-        .execute(pool)
-        .await;
-
-    let _ = sqlx::query("insert into project_roles (project_id, user_id, role, granted_at) values ($1, $2, $3, $4) on conflict (project_id, user_id) do update set role = excluded.role")
-        .bind(project_id)
-        .bind(member_id)
-        .bind("TA")
         .bind(now)
         .execute(pool)
         .await;
@@ -332,28 +313,24 @@ async fn seed_default_data(pool: &PgPool) {
             );
         }
     }
-    let member_exists = sqlx::query("select 1 from local_accounts where user_id = $1")
-        .bind(member_id)
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten()
-        .is_some();
-    if !member_exists {
-        let member_password = "member1234!";
-        if let Ok(hash) = hash_password(member_password) {
-            let _ = sqlx::query(
-                "insert into local_accounts (user_id, password_hash, created_at, updated_at)
-                 values ($1, $2, $3, $4)",
-            )
-            .bind(member_id)
-            .bind(hash)
-            .bind(now)
-            .bind(now)
-            .execute(pool)
-            .await;
-        }
-    }
+
+    // Clean up legacy seeded non-admin account from earlier builds.
+    let _ = sqlx::query("delete from project_roles where user_id = $1")
+        .bind(legacy_member_id)
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("delete from org_admins where user_id = $1")
+        .bind(legacy_member_id)
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("delete from local_accounts where user_id = $1")
+        .bind(legacy_member_id)
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("delete from users where id = $1 and email = 'member@example.com'")
+        .bind(legacy_member_id)
+        .execute(pool)
+        .await;
 }
 
 async fn health() -> Json<HealthResponse> {
@@ -1121,6 +1098,27 @@ async fn create_project(
     .execute(&state.db)
     .await;
 
+    let _ = sqlx::query(
+        "insert into project_settings (project_id, entry_file_path, updated_at)
+         values ($1, 'main.typ', $2)
+         on conflict (project_id) do nothing",
+    )
+    .bind(id)
+    .bind(created_at)
+    .execute(&state.db)
+    .await;
+
+    let _ = sqlx::query(
+        "insert into documents (id, project_id, path, content, updated_at)
+         values ($1, $2, 'main.typ', '', $3)
+         on conflict (project_id, path) do nothing",
+    )
+    .bind(Uuid::new_v4())
+    .bind(id)
+    .bind(created_at)
+    .execute(&state.db)
+    .await;
+
     write_audit(
         &state.db,
         Some(actor),
@@ -1341,7 +1339,8 @@ async fn create_project_file(
             sqlx::query(
                 "insert into documents (id, project_id, path, content, updated_at)
                  values ($1, $2, $3, $4, $5)
-                 on conflict (project_id, path) do nothing",
+                 on conflict (project_id, path)
+                 do update set content = excluded.content, updated_at = excluded.updated_at",
             )
             .bind(Uuid::new_v4())
             .bind(project_id)
@@ -1377,7 +1376,10 @@ async fn move_project_file(
 
     let dir_move = sqlx::query(
         "update project_directories
-         set path = regexp_replace(path, ('^' || $2), $3)
+         set path = case
+             when path = $2 then $3
+             else $3 || substring(path from char_length($2) + 1)
+         end
          where project_id = $1 and (path = $2 or path like ($2 || '/%'))",
     )
     .bind(project_id)
@@ -1389,7 +1391,11 @@ async fn move_project_file(
 
     let doc_move = sqlx::query(
         "update documents
-         set path = regexp_replace(path, ('^' || $2), $3), updated_at = $4
+         set path = case
+             when path = $2 then $3
+             else $3 || substring(path from char_length($2) + 1)
+         end,
+         updated_at = $4
          where project_id = $1 and (path = $2 or path like ($2 || '/%'))",
     )
     .bind(project_id)
@@ -1402,7 +1408,10 @@ async fn move_project_file(
 
     let asset_move = sqlx::query(
         "update project_assets
-         set path = regexp_replace(path, ('^' || $2), $3)
+         set path = case
+             when path = $2 then $3
+             else $3 || substring(path from char_length($2) + 1)
+         end
          where project_id = $1 and (path = $2 or path like ($2 || '/%'))",
     )
     .bind(project_id)
@@ -2464,10 +2473,7 @@ async fn upload_project_asset(
     Json(input): Json<UploadAssetInput>,
 ) -> Result<Json<ProjectAsset>, StatusCode> {
     let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Write).await?;
-    let path = input.path.trim().to_string();
-    if path.is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
-    }
+    let path = sanitize_project_path(&input.path)?;
     let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, input.content_base64)
         .map_err(|_| StatusCode::BAD_REQUEST)?;
     let content_type = input

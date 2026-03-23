@@ -1,16 +1,16 @@
 FROM node:22-alpine AS web-builder
 WORKDIR /app
-COPY apps/web/package.json ./package.json
-COPY apps/web/package-lock.json ./package-lock.json
+COPY web/package.json ./package.json
+COPY web/package-lock.json ./package-lock.json
 RUN npm ci
-COPY apps/web .
+COPY web .
 RUN npm run build
 
 FROM rust:1.88 AS builder
 WORKDIR /app
-COPY services/core-api/Cargo.toml ./Cargo.toml
-COPY services/core-api/src ./src
-COPY services/core-api/migrations ./migrations
+COPY backend/Cargo.toml ./Cargo.toml
+COPY backend/src ./src
+COPY backend/migrations ./migrations
 RUN cargo build --release
 
 FROM debian:bookworm-slim

@@ -6,10 +6,12 @@ import { chromium } from "playwright";
 
 const baseUrl = process.env.WEB_BASE_URL ?? "http://127.0.0.1:18080";
 const coreApi = process.env.CORE_API_URL ?? "http://127.0.0.1:18080";
-const projectId = process.env.PROJECT_ID ?? "00000000-0000-0000-0000-000000000010";
-const adminUserId = "00000000-0000-0000-0000-000000000100";
-const memberUserId = "00000000-0000-0000-0000-000000000101";
 const outDir = process.env.SCREENSHOT_DIR ?? "/tmp/typst-collab-git";
+const runId = Date.now().toString();
+const ownerEmail = `git-owner-${runId}@example.com`;
+const ownerPassword = "Owner1234!";
+const collaboratorEmail = `git-collab-${runId}@example.com`;
+const collaboratorPassword = "Collab1234!";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -17,18 +19,86 @@ function run(cmd, cwd) {
   return execSync(cmd, { cwd, stdio: "pipe" }).toString("utf8").trim();
 }
 
-async function api(method, p, userId, body) {
-  const res = await fetch(`${coreApi}${p}`, {
+async function parseJson(res) {
+  if (res.status === 204) return null;
+  const text = await res.text();
+  if (!text.trim()) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`Expected JSON (${res.status}): ${text}`);
+  }
+}
+
+async function bearerApi(method, route, token, body) {
+  const res = await fetch(`${coreApi}${route}`, {
     method,
     headers: {
-      "content-type": "application/json",
-      "x-user-id": userId
+      ...(body ? { "content-type": "application/json" } : {}),
+      ...(token ? { authorization: `Bearer ${token}` } : {})
     },
     body: body ? JSON.stringify(body) : undefined
   });
-  if (!res.ok) throw new Error(`${method} ${p} failed (${res.status}): ${await res.text()}`);
-  if (res.status === 204) return null;
-  return res.json();
+  const payload = await parseJson(res);
+  if (!res.ok) throw new Error(`${method} ${route} failed (${res.status}): ${JSON.stringify(payload)}`);
+  return payload;
+}
+
+async function registerOrLogin(email, password, displayName) {
+  const registerRes = await fetch(`${coreApi}/v1/auth/local/register`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      email,
+      password,
+      display_name: displayName
+    })
+  });
+  if (registerRes.ok) {
+    const payload = await parseJson(registerRes);
+    return {
+      email,
+      password,
+      userId: payload.user_id,
+      sessionToken: payload.session_token
+    };
+  }
+
+  if (registerRes.status !== 403 && registerRes.status !== 409) {
+    const payload = await parseJson(registerRes);
+    throw new Error(`register ${email} failed (${registerRes.status}): ${JSON.stringify(payload)}`);
+  }
+
+  const loginRes = await fetch(`${coreApi}/v1/auth/local/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email, password })
+  });
+  const payload = await parseJson(loginRes);
+  if (!loginRes.ok) throw new Error(`login ${email} failed (${loginRes.status}): ${JSON.stringify(payload)}`);
+  return {
+    email,
+    password,
+    userId: payload.user_id,
+    sessionToken: payload.session_token
+  };
+}
+
+async function login(page, email, password) {
+  await page.goto(baseUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
+  await page.getByPlaceholder("Email").fill(email);
+  await page.getByPlaceholder("Password").fill(password);
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByRole("heading", { name: "Projects" }).waitFor({ timeout: 30000 });
+}
+
+async function openWorkspace(page, projectId) {
+  await page.goto(`${baseUrl}/project/${projectId}`, {
+    waitUntil: "domcontentloaded",
+    timeout: 60000
+  });
+  await page.getByRole("heading", { name: "Editor" }).waitFor({ timeout: 30000 });
+  await page.locator(".tree-label", { hasText: "main.typ" }).first().click();
 }
 
 async function editorText(page) {
@@ -75,26 +145,44 @@ async function main() {
   const offline = path.join(tmpRoot, "offline");
   const stale = path.join(tmpRoot, "stale");
 
-  await api(
+  const owner = await registerOrLogin(ownerEmail, ownerPassword, "Git Owner");
+  const collaborator = await registerOrLogin(collaboratorEmail, collaboratorPassword, "Git Collaborator");
+  const project = await bearerApi("POST", "/v1/projects", owner.sessionToken, {
+    organization_id: "00000000-0000-0000-0000-000000000001",
+    name: `Git Test ${runId}`,
+    description: "Headless collab git test project"
+  });
+  const projectId = project.id;
+  await bearerApi("POST", `/v1/projects/${projectId}/roles`, owner.sessionToken, {
+    user_id: collaborator.userId,
+    role: "Student"
+  });
+  await bearerApi(
     "PUT",
     `/v1/projects/${projectId}/documents/by-path/${encodeURIComponent("main.typ")}`,
-    adminUserId,
+    owner.sessionToken,
     { content: "= Headless Collaboration\n\nInitial content.\n" }
   );
 
-  const teacherPat = await api("POST", "/v1/profile/security/tokens", adminUserId, {
-    label: "headless-admin"
+  const ownerPat = await bearerApi("POST", "/v1/profile/security/tokens", owner.sessionToken, {
+    label: "headless-owner"
   });
-  const repoUrl = `${coreApi.replace(/\/$/, "")}/v1/git/repo/${projectId}`;
-  const authRepoUrl = repoUrl.replace("http://", `http://qa:${teacherPat.token}@`);
+  const repoLink = await bearerApi("GET", `/v1/git/repo-link/${projectId}`, owner.sessionToken);
+  const repoUrl = repoLink.repo_url;
+  const authRepoUrl = repoUrl.replace("http://", `http://qa:${ownerPat.token}@`);
 
   const browser = await chromium.launch({ headless: true });
-  const teacher = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
-  const student = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+  const contextA = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const contextB = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const pageA = await contextA.newPage();
+  const pageB = await contextB.newPage();
   const browserErrors = [];
-  for (const p of [teacher, student]) {
+  for (const p of [pageA, pageB]) {
     p.on("console", (msg) => {
-      if (msg.type() === "error") browserErrors.push(`console:${msg.text()}`);
+      const text = msg.text();
+      if (msg.type() === "error" && !text.includes("401 (Unauthorized)")) {
+        browserErrors.push(`console:${text}`);
+      }
     });
     p.on("pageerror", (err) => {
       browserErrors.push(`pageerror:${String(err)}`);
@@ -102,32 +190,24 @@ async function main() {
   }
 
   try {
-    await teacher.goto(`${baseUrl}/project/${projectId}?dev_user_id=${adminUserId}`, {
-      waitUntil: "domcontentloaded",
-      timeout: 60000
-    });
-    await student.goto(`${baseUrl}/project/${projectId}?dev_user_id=${memberUserId}`, {
-      waitUntil: "domcontentloaded",
-      timeout: 60000
-    });
-    await teacher.getByRole("heading", { name: "Editor" }).waitFor({ timeout: 30000 });
-    await student.getByRole("heading", { name: "Editor" }).waitFor({ timeout: 30000 });
-    await teacher.locator(".tree-label", { hasText: "main.typ" }).first().click();
-    await student.locator(".tree-label", { hasText: "main.typ" }).first().click();
-    await teacher.getByText("Workspace: ready").waitFor({ timeout: 30000 });
-    await student.getByText("Workspace: ready").waitFor({ timeout: 30000 });
-    await waitForCanvas(teacher, 45000);
+    await login(pageA, owner.email, owner.password);
+    await login(pageB, collaborator.email, collaborator.password);
+    await openWorkspace(pageA, projectId);
+    await openWorkspace(pageB, projectId);
+    await pageA.getByText("Workspace: ready").waitFor({ timeout: 30000 });
+    await pageB.getByText("Workspace: ready").waitFor({ timeout: 30000 });
+    await waitForCanvas(pageA, 45000);
     await sleep(1200);
-    const beforeChecksum = await canvasChecksum(teacher);
+    const beforeChecksum = await canvasChecksum(pageA);
 
-    await teacher.locator(".cm-content").click();
-    await teacher.keyboard.press("End");
-    await teacher.keyboard.type("\nAdmin live edit.\n", { delay: 4 });
+    await pageA.locator(".cm-content").click();
+    await pageA.keyboard.press(process.platform === "darwin" ? "Meta+ArrowUp" : "Control+Home");
+    await pageA.keyboard.type("Owner live edit.\n", { delay: 4 });
     await sleep(1200);
-    await waitForEditorContains(student, "Admin live edit.");
+    await waitForEditorContains(pageB, "Owner live edit.");
     let updated = false;
     for (let i = 0; i < 50; i += 1) {
-      const next = await canvasChecksum(teacher);
+      const next = await canvasChecksum(pageA);
       if (next > 0 && next !== beforeChecksum) {
         updated = true;
         break;
@@ -139,7 +219,7 @@ async function main() {
     }
 
     const collabShot = path.join(outDir, "01-collab.png");
-    await teacher.screenshot({ path: collabShot, fullPage: true });
+    await pageA.screenshot({ path: collabShot, fullPage: true });
     screenshots.push(collabShot);
 
     await fs.mkdir(offline, { recursive: true });
@@ -158,9 +238,9 @@ async function main() {
     run("git commit -m 'offline remote update'", offline);
     run("git push origin HEAD:main", offline);
 
-    await teacher.locator(".cm-content").click();
-    await teacher.keyboard.press("End");
-    await teacher.keyboard.type("\nServer-side collaborative update.\n", { delay: 4 });
+    await pageA.locator(".cm-content").click();
+    await pageA.keyboard.press("End");
+    await pageA.keyboard.type("\nServer-side collaborative update.\n", { delay: 4 });
     await sleep(1500);
 
     await fs.writeFile(path.join(stale, "main.typ"), "= Stale Push\n\nThis should conflict.\n", "utf8");
@@ -177,7 +257,7 @@ async function main() {
     }
 
     const rejectedShot = path.join(outDir, "02-stale-rejected.png");
-    await teacher.screenshot({ path: rejectedShot, fullPage: true });
+    await pageA.screenshot({ path: rejectedShot, fullPage: true });
     screenshots.push(rejectedShot);
 
     let recovered = false;
@@ -214,13 +294,14 @@ async function main() {
     }
 
     const finalShot = path.join(outDir, "03-after-recovery.png");
-    await teacher.screenshot({ path: finalShot, fullPage: true });
+    await pageA.screenshot({ path: finalShot, fullPage: true });
     screenshots.push(finalShot);
 
     console.log(
       JSON.stringify(
         {
           ok: true,
+          projectId,
           screenshots,
           browserErrors
         },
@@ -230,7 +311,7 @@ async function main() {
     );
   } catch (error) {
     const failShot = path.join(outDir, "99-failure.png");
-    await teacher.screenshot({ path: failShot, fullPage: true }).catch(() => undefined);
+    await pageA.screenshot({ path: failShot, fullPage: true }).catch(() => undefined);
     screenshots.push(failShot);
     console.error(
       JSON.stringify(
@@ -246,8 +327,10 @@ async function main() {
     );
     process.exitCode = 1;
   } finally {
-    await teacher.close().catch(() => undefined);
-    await student.close().catch(() => undefined);
+    await pageA.close().catch(() => undefined);
+    await pageB.close().catch(() => undefined);
+    await contextA.close().catch(() => undefined);
+    await contextB.close().catch(() => undefined);
     await browser.close().catch(() => undefined);
   }
 }

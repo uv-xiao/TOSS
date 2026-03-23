@@ -29,12 +29,12 @@ services:
       - "9000:9000"
       - "9001:9001"
     volumes:
-      - ./ops/minio/data:/data
+      - ./tmp/minio/data:/data
 
   core-api:
     build:
       context: .
-      dockerfile: services/core-api/Dockerfile
+      dockerfile: backend/Dockerfile
     container_name: typst-core-api
     env_file:
       - .env
