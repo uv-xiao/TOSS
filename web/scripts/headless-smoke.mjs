@@ -157,6 +157,25 @@ async function waitForCanvas(page, timeoutMs = 60000) {
   throw new Error(`Preview not rendered. Errors: ${errors.join(" | ")}`);
 }
 
+async function assertVisiblePreviewPage(page) {
+  const metrics = await page.evaluate(() => {
+    const nodes = Array.from(document.querySelectorAll(".pdf-frame .typst-page, .pdf-frame canvas"));
+    const sizes = nodes.map((node) => {
+      const rect = node.getBoundingClientRect();
+      return { width: rect.width, height: rect.height };
+    });
+    const maxWidth = sizes.reduce((m, s) => Math.max(m, s.width), 0);
+    const maxHeight = sizes.reduce((m, s) => Math.max(m, s.height), 0);
+    const zoomText = document.querySelector(".zoom-indicator")?.textContent?.trim() || "";
+    return { count: nodes.length, maxWidth, maxHeight, zoomText };
+  });
+  if (metrics.count < 1 || metrics.maxWidth < 120 || metrics.maxHeight < 120) {
+    throw new Error(
+      `Preview page looks collapsed (count=${metrics.count}, maxWidth=${metrics.maxWidth}, maxHeight=${metrics.maxHeight}, zoom=${metrics.zoomText})`
+    );
+  }
+}
+
 async function assertWorkspaceLayout(page) {
   const metrics = await page.evaluate(() => {
     const stage = document.querySelector(".workspace-stage")?.getBoundingClientRect();
@@ -373,6 +392,7 @@ try {
   await openWorkspace(pageB, projectId);
   await pageA.locator(".preview-runtime-status").first().waitFor({ timeout: 15000 });
   await waitForCanvas(pageA, 60000);
+  await assertVisiblePreviewPage(pageA);
   await assertWorkspaceLayout(pageA);
 
   const shot1 = path.join(outDir, "01-workspace-load.png");
@@ -520,6 +540,8 @@ try {
     undefined,
     { timeout: 10000 }
   );
+  await waitForCanvas(pageA, 20000);
+  await assertVisiblePreviewPage(pageA);
 
   const shot2 = path.join(outDir, "02-realtime-and-fileops.png");
   await pageA.screenshot({ path: shot2, fullPage: true });

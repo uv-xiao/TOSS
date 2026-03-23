@@ -199,6 +199,25 @@ async function waitForCanvas(page, timeoutMs = 45000) {
   throw new Error("preview page not rendered");
 }
 
+async function assertVisiblePreviewPage(page) {
+  const metrics = await page.evaluate(() => {
+    const nodes = Array.from(document.querySelectorAll(".pdf-frame .typst-page, .pdf-frame canvas"));
+    const sizes = nodes.map((node) => {
+      const rect = node.getBoundingClientRect();
+      return { width: rect.width, height: rect.height };
+    });
+    const maxWidth = sizes.reduce((m, s) => Math.max(m, s.width), 0);
+    const maxHeight = sizes.reduce((m, s) => Math.max(m, s.height), 0);
+    const zoomText = document.querySelector(".zoom-indicator")?.textContent?.trim() || "";
+    return { count: nodes.length, maxWidth, maxHeight, zoomText };
+  });
+  if (metrics.count < 1 || metrics.maxWidth < 120 || metrics.maxHeight < 120) {
+    throw new Error(
+      `Preview page looks collapsed (count=${metrics.count}, maxWidth=${metrics.maxWidth}, maxHeight=${metrics.maxHeight}, zoom=${metrics.zoomText})`
+    );
+  }
+}
+
 async function main() {
   await fs.mkdir(outDir, { recursive: true });
   const screenshots = [];
@@ -270,6 +289,7 @@ async function main() {
       });
     await waitForCollaboratorName(pageA, "Git Collaborator", 15000);
     await waitForCanvas(pageA, 45000);
+    await assertVisiblePreviewPage(pageA);
     await sleep(1200);
     const beforeChecksum = await canvasChecksum(pageA);
 
@@ -339,6 +359,8 @@ async function main() {
     }
 
     const rejectedShot = path.join(outDir, "02-stale-rejected.png");
+    await waitForCanvas(pageA, 20000);
+    await assertVisiblePreviewPage(pageA);
     await pageA.screenshot({ path: rejectedShot, fullPage: true });
     screenshots.push(rejectedShot);
 
@@ -376,6 +398,8 @@ async function main() {
     }
 
     const finalShot = path.join(outDir, "03-after-recovery.png");
+    await waitForCanvas(pageA, 20000);
+    await assertVisiblePreviewPage(pageA);
     await pageA.screenshot({ path: finalShot, fullPage: true });
     screenshots.push(finalShot);
 

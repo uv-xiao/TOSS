@@ -244,23 +244,37 @@ export async function renderTypstVectorToCanvas(container: HTMLElement, vectorDa
       const innerCanvas = transformWrapper?.querySelector("canvas") as HTMLCanvasElement | null;
       const canvasWidthStyle = Number.parseFloat(innerCanvas?.style.width || "");
       const canvasHeightStyle = Number.parseFloat(innerCanvas?.style.height || "");
+      const canvasWidthPx = innerCanvas?.width ?? 0;
+      const canvasHeightPx = innerCanvas?.height ?? 0;
+      const inferredCanvasWidth =
+        Number.isFinite(canvasWidthStyle) && canvasWidthStyle > 0
+          ? canvasWidthStyle
+          : canvasWidthPx > 0
+            ? canvasWidthPx * (rendererScale > 0 ? rendererScale : 1)
+            : 0;
+      const inferredCanvasHeight =
+        Number.isFinite(canvasHeightStyle) && canvasHeightStyle > 0
+          ? canvasHeightStyle
+          : canvasHeightPx > 0
+            ? canvasHeightPx * (rendererScale > 0 ? rendererScale : 1)
+            : 0;
       const rect = pageElement.getBoundingClientRect();
       const baseWidth = Math.max(
         1,
-        (Number.isFinite(canvasWidthStyle) ? canvasWidthStyle : 0) || rect.width || pageElement.clientWidth || 1
+        inferredCanvasWidth || rect.width || pageElement.clientWidth || 1
       );
       const baseHeight = Math.max(
         1,
-        (Number.isFinite(canvasHeightStyle) ? canvasHeightStyle : 0) || rect.height || pageElement.clientHeight || 1
+        inferredCanvasHeight || rect.height || pageElement.clientHeight || 1
       );
       pageElement.dataset.baseWidth = `${baseWidth}`;
       pageElement.dataset.baseHeight = `${baseHeight}`;
       pageElement.dataset.baseScale = "1";
-      if (Number.isFinite(canvasWidthStyle) && canvasWidthStyle > 0) {
-        pageElement.dataset.canvasWidth = `${canvasWidthStyle}`;
+      if (inferredCanvasWidth > 0) {
+        pageElement.dataset.canvasWidth = `${inferredCanvasWidth}`;
       }
-      if (Number.isFinite(canvasHeightStyle) && canvasHeightStyle > 0) {
-        pageElement.dataset.canvasHeight = `${canvasHeightStyle}`;
+      if (inferredCanvasHeight > 0) {
+        pageElement.dataset.canvasHeight = `${inferredCanvasHeight}`;
       }
       if (transformWrapper) {
         // Normalize renderer-internal scale so our zoom controls own the effective page size.
