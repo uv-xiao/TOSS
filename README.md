@@ -125,6 +125,9 @@ Optional variables:
 ## Notes
 
 - Non-WASM browsers can still edit source but do not get live Typst preview.
+- Browser Typst preview uses Typst's default embedded text-font asset set
+  (`Libertinus Serif`, `New Computer Modern`, `DejaVu Sans Mono`) plus any
+  project-uploaded font files, to best match offline CLI output.
 - `AUTH_DEV_HEADER_ENABLED=1` is for automated/local API tests only.
   Do not enable it for normal interactive login testing.
 - Production deployment hardening is intentionally deferred until feature-complete validation is finished.

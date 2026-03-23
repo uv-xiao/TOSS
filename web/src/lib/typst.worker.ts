@@ -2,7 +2,6 @@ import { TypstSnippet } from "@myriaddreamin/typst.ts/contrib/snippet";
 import { FetchAccessModel } from "@myriaddreamin/typst.ts/fs/fetch";
 import { FetchPackageRegistry } from "@myriaddreamin/typst.ts/fs/package";
 import {
-  disableDefaultFontAssets,
   loadFonts,
   withAccessModel,
   withPackageRegistry
@@ -175,8 +174,10 @@ async function getTypst(coreApiUrl: string, fontData: Uint8Array[], appOrigin: s
         beforeBuild: [
           withAccessModel(accessModel!),
           withPackageRegistry(new FetchPackageRegistry(accessModel!)),
-          disableDefaultFontAssets(),
-          loadFonts(fontData)
+          // Align browser preview with Typst CLI defaults by loading Typst's
+          // builtin "text" font asset set (Libertinus/NewCM/DejaVu Mono),
+          // while still layering project-uploaded raw fonts on top.
+          loadFonts(fontData, { assets: ["text"] })
         ],
         getModule: async () => {
           self.postMessage({

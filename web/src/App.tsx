@@ -882,7 +882,6 @@ function WorkspacePage({
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set([""]));
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [filesDropActive, setFilesDropActive] = useState(false);
-  const [bundledFonts, setBundledFonts] = useState<Uint8Array[]>([]);
   const [shareLinks, setShareLinks] = useState<ProjectShareLink[]>([]);
   const [projectOrgAccess, setProjectOrgAccess] = useState<ProjectOrganizationAccess[]>([]);
   const [projectAccessUsers, setProjectAccessUsers] = useState<ProjectAccessUser[]>([]);
@@ -922,7 +921,7 @@ function WorkspacePage({
         }),
     [assetBase64]
   );
-  const fontData = useMemo(() => [...bundledFonts, ...assetFontData], [assetFontData, bundledFonts]);
+  const fontData = useMemo(() => assetFontData, [assetFontData]);
   const remoteCursors = useMemo(
     () =>
       presence
@@ -1222,37 +1221,6 @@ function WorkspacePage({
         previewPanCleanupRef.current();
         previewPanCleanupRef.current = null;
       }
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    const bundledFontPaths = [
-      "/typst-fonts/NotoSans-Regular.ttf",
-      "/typst-fonts/NotoSans-Bold.ttf",
-      "/typst-fonts/NotoSans-Italic.ttf",
-      "/typst-fonts/NotoSans-BoldItalic.ttf"
-    ];
-    Promise.allSettled(
-      bundledFontPaths.map(async (path) => {
-        const res = await fetch(path, { cache: "force-cache" });
-        if (!res.ok) return null;
-        return new Uint8Array(await res.arrayBuffer());
-      })
-    )
-      .then((results) => {
-        if (cancelled) return;
-        const fonts: Uint8Array[] = [];
-        for (const result of results) {
-          if (result.status !== "fulfilled") continue;
-          if (!result.value || result.value.byteLength === 0) continue;
-          fonts.push(result.value);
-        }
-        setBundledFonts(fonts);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
     };
   }, []);
 
