@@ -800,6 +800,12 @@ body {
   background: #e8edf5;
   overflow: auto;
   padding: 0;
+  cursor: grab;
+}
+
+.pdf-frame.is-panning {
+  cursor: grabbing;
+  user-select: none;
 }
 
 .pdf-pages {

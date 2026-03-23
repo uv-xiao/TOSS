@@ -840,6 +840,7 @@ function WorkspacePage({
   const realtimeRef = useRef<{ close: () => void; sendCursor: (cursor: { line: number; column: number }) => void } | null>(null);
   const canvasPreviewRef = useRef<HTMLDivElement | null>(null);
   const centerSplitRef = useRef<HTMLDivElement | null>(null);
+  const previewPanCleanupRef = useRef<(() => void) | null>(null);
   const lastSavedDocRef = useRef<string>("");
   const copyNoticeTimerRef = useRef<number | null>(null);
 
@@ -874,6 +875,7 @@ function WorkspacePage({
   const [previewZoom, setPreviewZoom] = useState(1);
   const [previewFitMode, setPreviewFitMode] = useState<PreviewFitMode>("page");
   const [previewRenderTick, setPreviewRenderTick] = useState(0);
+  const [previewIsPanning, setPreviewIsPanning] = useState(false);
   const [lineWrapEnabled, setLineWrapEnabled] = useState(true);
   const [jumpTarget, setJumpTarget] = useState<{ line: number; column: number; token: number } | null>(null);
   const [queuedJump, setQueuedJump] = useState<{ path: string; line: number; column: number } | null>(null);
@@ -1214,12 +1216,38 @@ function WorkspacePage({
   }, [activePath, queuedJump]);
 
   useEffect(() => {
+    return () => {
+      if (previewPanCleanupRef.current) {
+        previewPanCleanupRef.current();
+        previewPanCleanupRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
-    fetch("/typst-fonts/NotoSans-Regular.ttf")
-      .then((res) => (res.ok ? res.arrayBuffer() : null))
-      .then((buf) => {
-        if (cancelled || !buf) return;
-        setBundledFonts([new Uint8Array(buf)]);
+    const bundledFontPaths = [
+      "/typst-fonts/NotoSans-Regular.ttf",
+      "/typst-fonts/NotoSans-Bold.ttf",
+      "/typst-fonts/NotoSans-Italic.ttf",
+      "/typst-fonts/NotoSans-BoldItalic.ttf"
+    ];
+    Promise.allSettled(
+      bundledFontPaths.map(async (path) => {
+        const res = await fetch(path, { cache: "force-cache" });
+        if (!res.ok) return null;
+        return new Uint8Array(await res.arrayBuffer());
+      })
+    )
+      .then((results) => {
+        if (cancelled) return;
+        const fonts: Uint8Array[] = [];
+        for (const result of results) {
+          if (result.status !== "fulfilled") continue;
+          if (!result.value || result.value.byteLength === 0) continue;
+          fonts.push(result.value);
+        }
+        setBundledFonts(fonts);
       })
       .catch(() => undefined);
     return () => {
@@ -1919,6 +1947,40 @@ function WorkspacePage({
     setPreviewFitMode("width");
   }
 
+  function beginPreviewPan(event: ReactMouseEvent<HTMLDivElement>) {
+    if (event.button !== 0) return;
+    const frame = canvasPreviewRef.current;
+    if (!frame) return;
+    const pages = frame.querySelector(".pdf-pages");
+    if (!pages) return;
+    const canPanX = frame.scrollWidth > frame.clientWidth + 1;
+    const canPanY = frame.scrollHeight > frame.clientHeight + 1;
+    if (!canPanX && !canPanY) return;
+
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const initialScrollLeft = frame.scrollLeft;
+    const initialScrollTop = frame.scrollTop;
+    setPreviewIsPanning(true);
+    event.preventDefault();
+
+    const onMove = (moveEvent: MouseEvent) => {
+      const deltaX = moveEvent.clientX - startX;
+      const deltaY = moveEvent.clientY - startY;
+      if (canPanX) frame.scrollLeft = initialScrollLeft - deltaX;
+      if (canPanY) frame.scrollTop = initialScrollTop - deltaY;
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      previewPanCleanupRef.current = null;
+      setPreviewIsPanning(false);
+    };
+    previewPanCleanupRef.current = onUp;
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
+
   const workspaceTopbarControls = useMemo(
     () => (
       <div className="workspace-topbar-controls">
@@ -2230,7 +2292,11 @@ function WorkspacePage({
                     )}
                   </div>
                 )}
-                <div ref={canvasPreviewRef} className="pdf-frame" />
+                <div
+                  ref={canvasPreviewRef}
+                  className={`pdf-frame ${previewIsPanning ? "is-panning" : ""}`}
+                  onMouseDown={beginPreviewPan}
+                />
                 {compileDiagnostics.length > 0 && (
                   <div className="panel-inline-error diagnostics">
                     {compileDiagnostics.map((diagnostic, index) => (
