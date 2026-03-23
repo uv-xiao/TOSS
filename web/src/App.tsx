@@ -1306,18 +1306,43 @@ function WorkspacePage({
           setApiReachable(true);
           const incomingByPath: Record<string, string> = {};
           for (const doc of response.documents) incomingByPath[doc.path] = doc.content;
+          const activeIncoming = activePath ? incomingByPath[activePath] : undefined;
+          const localDirty = docText !== lastSavedDocRef.current;
+
+          if (
+            activePath &&
+            typeof activeIncoming === "string" &&
+            activeIncoming !== lastSavedDocRef.current &&
+            !localDirty
+          ) {
+            const ytext = ytextRef.current;
+            if (ytext) {
+              const current = ytext.toString();
+              if (current !== activeIncoming) {
+                ytext.doc?.transact(() => {
+                  ytext.delete(0, ytext.length);
+                  ytext.insert(0, activeIncoming);
+                }, "remote");
+              }
+            } else if (docText !== activeIncoming) {
+              setDocText(activeIncoming);
+            }
+            lastSavedDocRef.current = activeIncoming;
+            setSaveState("saved");
+          }
+
           setDocs((previous) => {
             let changed = false;
             const next = { ...previous };
             for (const [path, content] of Object.entries(incomingByPath)) {
-              if (path === activePath) continue;
               if (next[path] !== content) {
+                if (path === activePath && localDirty) continue;
                 next[path] = content;
                 changed = true;
               }
             }
             for (const path of Object.keys(next)) {
-              if (path === activePath) continue;
+              if (path === activePath && localDirty) continue;
               if (!(path in incomingByPath)) {
                 delete next[path];
                 changed = true;
@@ -1329,7 +1354,7 @@ function WorkspacePage({
         .catch(() => setApiReachable(false));
     }, 2200);
     return () => window.clearInterval(timer);
-  }, [activePath, isRevisionMode, projectId, workspaceLoaded]);
+  }, [activePath, docText, isRevisionMode, projectId, workspaceLoaded]);
 
   useEffect(() => {
     if (!projectId || !workspaceLoaded) return;

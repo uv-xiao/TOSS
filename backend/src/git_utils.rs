@@ -93,7 +93,10 @@ fn collect_repo_files_recursive(
                 .map_err(|e| e.to_string())?
                 .to_string_lossy()
                 .to_string();
-            let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+            let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+            let Ok(content) = String::from_utf8(bytes) else {
+                continue;
+            };
             out.insert(rel, content);
         }
     }
