@@ -399,7 +399,7 @@ pub struct PdfArtifact {
 
 #[derive(Serialize)]
 pub struct Revision {
-    pub id: Uuid,
+    pub id: String,
     pub project_id: Uuid,
     pub actor_user_id: Option<Uuid>,
     pub summary: String,
@@ -421,11 +421,11 @@ pub struct RevisionAuthor {
 
 #[derive(Serialize)]
 pub struct RevisionDocumentsResponse {
-    pub revision_id: Uuid,
+    pub revision_id: String,
     pub entry_file_path: String,
     pub transfer_mode: String,
     pub base_anchor: String,
-    pub base_revision_id: Option<Uuid>,
+    pub base_revision_id: Option<String>,
     pub nodes: Vec<ProjectFileNode>,
     pub documents: Vec<RevisionDocument>,
     pub deleted_documents: Vec<String>,
@@ -535,7 +535,7 @@ pub struct ListDocumentsQuery {
 
 #[derive(Deserialize, Default)]
 pub struct RevisionDocumentsQuery {
-    pub current_revision_id: Option<Uuid>,
+    pub current_revision_id: Option<String>,
     pub include_live_anchor: Option<bool>,
 }
 

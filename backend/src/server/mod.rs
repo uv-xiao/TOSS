@@ -15,6 +15,7 @@ use axum::{Json, Router};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
+use git2::{Commit, Oid, Repository, Sort, TreeWalkMode, TreeWalkResult};
 use openidconnect::core::{
     CoreAuthenticationFlow, CoreClient, CoreIdTokenClaims, CoreProviderMetadata,
 };

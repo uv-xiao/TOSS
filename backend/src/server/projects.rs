@@ -24,7 +24,7 @@ async fn list_projects(
                 greatest(
                   p.created_at,
                   coalesce((select max(d.updated_at) from documents d where d.project_id = p.id), p.created_at),
-                  coalesce((select max(r.created_at) from revisions r where r.project_id = p.id and r.is_complete = true), p.created_at),
+                  coalesce((select gr.last_server_sync_at from git_repositories gr where gr.project_id = p.id), p.created_at),
                   coalesce((select max(a.created_at) from project_assets a where a.project_id = p.id), p.created_at)
                 ) as last_edited_at,
                 pua.archived_at as user_archived_at,
@@ -58,7 +58,7 @@ async fn list_projects(
                     greatest(
                       p.created_at,
                       coalesce((select max(d.updated_at) from documents d where d.project_id = p.id), p.created_at),
-                      coalesce((select max(r.created_at) from revisions r where r.project_id = p.id and r.is_complete = true), p.created_at),
+                      coalesce((select gr.last_server_sync_at from git_repositories gr where gr.project_id = p.id), p.created_at),
                       coalesce((select max(a.created_at) from project_assets a where a.project_id = p.id), p.created_at)
                     ) as last_edited_at,
                     pua.archived_at as user_archived_at,
@@ -93,7 +93,7 @@ async fn list_projects(
                     greatest(
                       p.created_at,
                       coalesce((select max(d.updated_at) from documents d where d.project_id = p.id), p.created_at),
-                      coalesce((select max(r.created_at) from revisions r where r.project_id = p.id and r.is_complete = true), p.created_at),
+                      coalesce((select gr.last_server_sync_at from git_repositories gr where gr.project_id = p.id), p.created_at),
                       coalesce((select max(a.created_at) from project_assets a where a.project_id = p.id), p.created_at)
                     ) as last_edited_at,
                     pua.archived_at as user_archived_at

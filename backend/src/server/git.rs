@@ -1,3 +1,171 @@
+#[derive(Clone)]
+enum MergeFileValue {
+    Text(String),
+    Binary {
+        bytes: Vec<u8>,
+        content_type: String,
+    },
+}
+
+fn merge_file_equal(a: &MergeFileValue, b: &MergeFileValue) -> bool {
+    match (a, b) {
+        (MergeFileValue::Text(x), MergeFileValue::Text(y)) => x == y,
+        (
+            MergeFileValue::Binary {
+                bytes: xb,
+                content_type: xc,
+            },
+            MergeFileValue::Binary {
+                bytes: yb,
+                content_type: yc,
+            },
+        ) => xb == yb && xc == yc,
+        _ => false,
+    }
+}
+
+async fn state_to_merge_map(
+    state: &AppState,
+    source: &RevisionStateData,
+) -> Result<HashMap<String, MergeFileValue>, StatusCode> {
+    let mut out = HashMap::new();
+    for (path, content) in source.documents.iter() {
+        out.insert(path.clone(), MergeFileValue::Text(content.clone()));
+    }
+    for (path, asset) in source.assets.iter() {
+        let bytes = stored_asset_bytes(state, asset).await?;
+        out.insert(
+            path.clone(),
+            MergeFileValue::Binary {
+                bytes,
+                content_type: asset.content_type.clone(),
+            },
+        );
+    }
+    Ok(out)
+}
+
+fn merge_online_over_pushed(
+    base: &HashMap<String, MergeFileValue>,
+    pushed: &HashMap<String, MergeFileValue>,
+    online: &HashMap<String, MergeFileValue>,
+) -> Result<HashMap<String, MergeFileValue>, Vec<String>> {
+    let mut keys: HashSet<String> = HashSet::new();
+    keys.extend(base.keys().cloned());
+    keys.extend(pushed.keys().cloned());
+    keys.extend(online.keys().cloned());
+
+    let mut merged = HashMap::new();
+    let mut conflicts = Vec::new();
+
+    for key in keys {
+        let base_v = base.get(&key);
+        let pushed_v = pushed.get(&key);
+        let online_v = online.get(&key);
+
+        let online_changed = match (base_v, online_v) {
+            (Some(a), Some(b)) => !merge_file_equal(a, b),
+            (None, None) => false,
+            _ => true,
+        };
+        let pushed_changed = match (base_v, pushed_v) {
+            (Some(a), Some(b)) => !merge_file_equal(a, b),
+            (None, None) => false,
+            _ => true,
+        };
+
+        let merged_value = if !online_changed {
+            pushed_v.cloned()
+        } else if !pushed_changed {
+            online_v.cloned()
+        } else {
+            match (online_v, pushed_v) {
+                (Some(a), Some(b)) if merge_file_equal(a, b) => Some(a.clone()),
+                (None, None) => None,
+                _ => {
+                    conflicts.push(key.clone());
+                    None
+                }
+            }
+        };
+
+        if let Some(value) = merged_value {
+            merged.insert(key, value);
+        }
+    }
+
+    if conflicts.is_empty() {
+        Ok(merged)
+    } else {
+        conflicts.sort();
+        Err(conflicts)
+    }
+}
+
+fn materialize_merge_map_to_dir(
+    root: &std::path::Path,
+    merged: &HashMap<String, MergeFileValue>,
+) -> Result<(), String> {
+    for (path, value) in merged.iter() {
+        let target = root.join(path);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        match value {
+            MergeFileValue::Text(content) => {
+                std::fs::write(&target, content.as_bytes()).map_err(|e| e.to_string())?;
+            }
+            MergeFileValue::Binary { bytes, .. } => {
+                std::fs::write(&target, bytes).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn pending_author_trailers(
+    db: &PgPool,
+    project_id: Uuid,
+    force_author: Option<Uuid>,
+) -> Result<Vec<String>, String> {
+    let mut trailers = Vec::new();
+    let author_rows = sqlx::query(
+        "select u.display_name, u.email
+         from git_pending_authors g
+         join users u on u.id = g.user_id
+         where g.project_id = $1
+         order by g.touched_at asc",
+    )
+    .bind(project_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| e.to_string())?;
+    for row in author_rows {
+        trailers.push(format!(
+            "Co-authored-by: {} <{}>",
+            row.get::<String, _>("display_name"),
+            row.get::<String, _>("email")
+        ));
+    }
+    if trailers.is_empty() {
+        if let Some(user_id) = force_author {
+            if let Some(row) = sqlx::query("select display_name, email from users where id = $1")
+                .bind(user_id)
+                .fetch_optional(db)
+                .await
+                .map_err(|e| e.to_string())?
+            {
+                trailers.push(format!(
+                    "Co-authored-by: {} <{}>",
+                    row.get::<String, _>("display_name"),
+                    row.get::<String, _>("email")
+                ));
+            }
+        }
+    }
+    Ok(trailers)
+}
+
 async fn git_status(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -142,13 +310,9 @@ async fn git_pull(
     ensure_git_branch_checked_out(&config.local_path, &config.default_branch)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if let Some(remote_url) = &config.remote_url {
-        let _ = run_git(&config.local_path, &["remote", "remove", "origin"]);
-        run_git(&config.local_path, &["remote", "add", "origin", remote_url])
+        set_git_remote(&config.local_path, "origin", remote_url)
             .map_err(|_| StatusCode::BAD_REQUEST)?;
-        if let Err(err) = run_git(
-            &config.local_path,
-            &["fetch", "origin", &config.default_branch],
-        ) {
+        if let Err(err) = git_fetch_branch(&config.local_path, "origin", &config.default_branch) {
             update_git_sync_state(
                 &state.db,
                 project_id,
@@ -168,10 +332,9 @@ async fn git_pull(
             .await;
             return Err(StatusCode::CONFLICT);
         }
-        if let Err(err) = run_git(
-            &config.local_path,
-            &["pull", "--rebase", "origin", &config.default_branch],
-        ) {
+        if let Err(err) =
+            git_fast_forward_from_remote(&config.local_path, &config.default_branch, "origin")
+        {
             update_git_sync_state(
                 &state.db,
                 project_id,
@@ -237,27 +400,16 @@ async fn git_push(
     sync_project_documents_to_repo(&state, project_id, &config.local_path)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let _ = run_git(&config.local_path, &["add", "."]);
-    let _ = run_git(
+    let _ = git_commit_staged_if_changed(
         &config.local_path,
-        &[
-            "-c",
-            "user.name=Typst Collaboration Server",
-            "-c",
-            "user.email=noreply@typst-collab.local",
-            "commit",
-            "-m",
-            "Sync from Typst collaboration workspace",
-        ],
+        "Sync from Typst collaboration workspace",
+        "Typst Collaboration Server",
+        "noreply@typst-collab.local",
     );
     if let Some(remote_url) = &config.remote_url {
-        let _ = run_git(&config.local_path, &["remote", "remove", "origin"]);
-        run_git(&config.local_path, &["remote", "add", "origin", remote_url])
+        set_git_remote(&config.local_path, "origin", remote_url)
             .map_err(|_| StatusCode::BAD_REQUEST)?;
-        if let Err(err) = run_git(
-            &config.local_path,
-            &["push", "origin", &format!("HEAD:{}", config.default_branch)],
-        ) {
+        if let Err(err) = git_push_branch(&config.local_path, "origin", &config.default_branch) {
             update_git_sync_state(
                 &state.db,
                 project_id,
@@ -337,17 +489,6 @@ async fn git_http_backend(
     }
     let _git_lock = acquire_git_project_lock(&state, project_id).await;
 
-    if flush_pending_server_commit(&state, project_id, None)
-        .await
-        .is_err()
-    {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to flush server updates",
-        )
-            .into_response();
-    }
-
     let Ok(config) = load_git_config(&state.db, project_id).await else {
         return (StatusCode::NOT_FOUND, "Git repository config missing").into_response();
     };
@@ -358,6 +499,24 @@ async fn git_http_backend(
         )
             .into_response();
     }
+    if ensure_git_branch_checked_out(&config.local_path, &config.default_branch).is_err() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to checkout project branch",
+        )
+            .into_response();
+    }
+    let head_before = git_head_oid(&config.local_path).ok().flatten();
+    let had_pending_sync = sqlx::query(
+        "select pending_sync from git_repositories where project_id = $1",
+    )
+    .bind(project_id)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten()
+    .map(|row| row.get::<bool, _>("pending_sync"))
+    .unwrap_or(false);
 
     let query = uri.query().unwrap_or_default();
     let path_info = if rest.is_empty() {
@@ -414,58 +573,200 @@ async fn git_http_backend(
     let (status, response_headers, response_body) = parse_cgi_http_backend_output(&output.stdout);
     let mut post_sync_error: Option<String> = None;
     if can_push && status.is_success() {
-        match sync_repo_documents_to_project(&state, project_id, &config.local_path).await {
-            Ok(()) => {
-                let _ = sqlx::query(
-                    "update git_repositories set pending_sync = false, last_server_sync_at = $2 where project_id = $1",
-                )
-                .bind(project_id)
-                .bind(Utc::now())
-                .execute(&state.db)
-                .await;
-                let _ = sqlx::query("delete from git_pending_authors where project_id = $1")
+        let head_after = git_head_oid(&config.local_path).ok().flatten();
+        if let (Some(old_head), Some(new_head)) = (head_before, head_after) {
+            if !git_ancestor(&config.local_path, old_head, new_head).unwrap_or(false) {
+                let _ = git_hard_reset_to(&config.local_path, old_head);
+                post_sync_error = Some("force push is not allowed".to_string());
+            }
+        }
+
+        if post_sync_error.is_none() && had_pending_sync {
+            let merge_result: Result<HashMap<String, MergeFileValue>, String> = async {
+                let old_head = head_before.ok_or_else(|| "missing old head".to_string())?;
+                let new_head = head_after.ok_or_else(|| "missing new head".to_string())?;
+                let (base_state, pushed_state) = {
+                    let repo = Repository::open(&config.local_path).map_err(|e| e.to_string())?;
+                    let base_commit = repo.find_commit(old_head).map_err(|e| e.to_string())?;
+                    let pushed_commit = repo.find_commit(new_head).map_err(|e| e.to_string())?;
+                    let base_state = load_git_state_from_commit(&repo, &base_commit)?;
+                    let pushed_state = load_git_state_from_commit(&repo, &pushed_commit)?;
+                    (base_state, pushed_state)
+                };
+                let online_state = load_project_state(&state.db, project_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let base_map = state_to_merge_map(&state, &base_state)
+                    .await
+                    .map_err(|_| "failed to load base state bytes".to_string())?;
+                let pushed_map = state_to_merge_map(&state, &pushed_state)
+                    .await
+                    .map_err(|_| "failed to load pushed state bytes".to_string())?;
+                let online_map = state_to_merge_map(&state, &online_state)
+                    .await
+                    .map_err(|_| "failed to load online state bytes".to_string())?;
+                merge_online_over_pushed(&base_map, &pushed_map, &online_map).map_err(|conflicts| {
+                    format!(
+                        "server has uncommitted updates that conflict with pushed commits: {}",
+                        conflicts.into_iter().take(8).collect::<Vec<_>>().join(", ")
+                    )
+                })
+            }
+            .await;
+
+            match merge_result {
+                Ok(merged_map) => {
+                    let temp_dir = match tempfile::tempdir() {
+                        Ok(dir) => dir,
+                        Err(err) => {
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                format!("failed to create merge temp dir: {err}"),
+                            )
+                                .into_response();
+                        }
+                    };
+                    if let Err(err) = materialize_merge_map_to_dir(temp_dir.path(), &merged_map) {
+                        post_sync_error = Some(err);
+                    } else if let Err(err) = sync_repo_documents_to_project(
+                        &state,
+                        project_id,
+                        &temp_dir.path().to_string_lossy(),
+                    )
+                    .await
+                    {
+                        post_sync_error = Some(err);
+                    } else if let Err(err) =
+                        sync_project_documents_to_repo(&state, project_id, &config.local_path).await
+                    {
+                        post_sync_error = Some(err);
+                    } else {
+                        let is_clean = git_worktree_is_clean(&config.local_path).unwrap_or(false);
+                        let _ = sqlx::query(
+                            "update git_repositories
+                             set pending_sync = $2, last_server_sync_at = $3
+                             where project_id = $1",
+                        )
+                        .bind(project_id)
+                        .bind(!is_clean)
+                        .bind(Utc::now())
+                        .execute(&state.db)
+                        .await;
+                        if is_clean {
+                            let _ = sqlx::query("delete from git_pending_authors where project_id = $1")
+                                .bind(project_id)
+                                .execute(&state.db)
+                                .await;
+                        }
+                        write_audit(
+                            &state.db,
+                            Some(actor),
+                            "git.receive_pack.accepted.merged_online_delta",
+                            serde_json::json!({"project_id": project_id}),
+                        )
+                        .await;
+                    }
+                }
+                Err(conflict_reason) => {
+                    if let Some(old_head) = head_before {
+                        let _ = git_hard_reset_to(&config.local_path, old_head);
+                    }
+                    let _ = sync_project_documents_to_repo(&state, project_id, &config.local_path).await;
+                    let trailers = pending_author_trailers(&state.db, project_id, Some(actor))
+                        .await
+                        .unwrap_or_default();
+                    let actor_name = lookup_user_display_name(&state.db, actor)
+                        .await
+                        .unwrap_or_else(|| "Typst Server".to_string());
+                    let actor_email = lookup_user_email(&state.db, actor)
+                        .await
+                        .unwrap_or_else(|| "noreply@typst-server.local".to_string());
+                    let message = if trailers.is_empty() {
+                        "Online updates".to_string()
+                    } else {
+                        format!("Online updates\n\n{}", trailers.join("\n"))
+                    };
+                    let _ = git_commit_staged_if_changed(
+                        &config.local_path,
+                        &message,
+                        &actor_name,
+                        &actor_email,
+                    );
+                    let _ = sqlx::query(
+                        "update git_repositories set pending_sync = false, last_server_sync_at = $2 where project_id = $1",
+                    )
                     .bind(project_id)
+                    .bind(Utc::now())
                     .execute(&state.db)
                     .await;
-                write_audit(
-                    &state.db,
-                    Some(actor),
-                    "git.receive_pack.accepted",
-                    serde_json::json!({"project_id": project_id}),
-                )
-                .await;
-                let _ = create_git_bundle_artifact(&state, project_id, &config.local_path, "receive_pack")
-                    .await;
+                    let _ = sqlx::query("delete from git_pending_authors where project_id = $1")
+                        .bind(project_id)
+                        .execute(&state.db)
+                        .await;
+                    post_sync_error = Some(conflict_reason);
+                }
             }
-            Err(err) => {
-                let _ = update_git_sync_state(
-                    &state.db,
-                    project_id,
-                    "receive_pack_import_failed",
-                    true,
-                    None,
-                    Some(Utc::now()),
-                )
-                .await;
-                write_audit(
-                    &state.db,
-                    Some(actor),
-                    "git.receive_pack.import_failed",
-                    serde_json::json!({
-                        "project_id": project_id,
-                        "error": err
-                    }),
-                )
-                .await;
-                post_sync_error = Some(err);
+        }
+
+        if post_sync_error.is_none() && !had_pending_sync {
+            match sync_repo_documents_to_project(&state, project_id, &config.local_path).await {
+                Ok(()) => {
+                    let _ = sqlx::query(
+                        "update git_repositories set pending_sync = false, last_server_sync_at = $2 where project_id = $1",
+                    )
+                    .bind(project_id)
+                    .bind(Utc::now())
+                    .execute(&state.db)
+                    .await;
+                    let _ = sqlx::query("delete from git_pending_authors where project_id = $1")
+                        .bind(project_id)
+                        .execute(&state.db)
+                        .await;
+                    write_audit(
+                        &state.db,
+                        Some(actor),
+                        "git.receive_pack.accepted",
+                        serde_json::json!({"project_id": project_id}),
+                    )
+                    .await;
+                    let _ = create_git_bundle_artifact(
+                        &state,
+                        project_id,
+                        &config.local_path,
+                        "receive_pack",
+                    )
+                    .await;
+                }
+                Err(err) => {
+                    let _ = update_git_sync_state(
+                        &state.db,
+                        project_id,
+                        "receive_pack_import_failed",
+                        true,
+                        None,
+                        Some(Utc::now()),
+                    )
+                    .await;
+                    write_audit(
+                        &state.db,
+                        Some(actor),
+                        "git.receive_pack.import_failed",
+                        serde_json::json!({
+                            "project_id": project_id,
+                            "error": err
+                        }),
+                    )
+                    .await;
+                    post_sync_error = Some(err);
+                }
             }
         }
     }
 
     if let Some(err) = post_sync_error {
         return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Push accepted but server import failed: {err}"),
+            StatusCode::CONFLICT,
+            format!("Push rejected: {err}"),
         )
             .into_response();
     }

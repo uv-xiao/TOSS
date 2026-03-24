@@ -2,7 +2,6 @@ import * as Y from "yjs";
 
 const CORE_API = process.env.CORE_API_URL ?? "http://127.0.0.1:18080";
 const REALTIME_WS = process.env.REALTIME_WS_URL ?? "ws://127.0.0.1:18080";
-const ORG_ID = process.env.DEFAULT_ORG_ID ?? "00000000-0000-0000-0000-000000000001";
 const runId = Date.now().toString();
 const ownerEmail = `rt-owner-${runId}@example.com`;
 const ownerPassword = "Owner1234!";
@@ -40,12 +39,12 @@ async function authJson(method, route, body) {
   return payload;
 }
 
-async function api(method, path, userId, body) {
+async function api(method, path, sessionToken, body) {
   const response = await fetch(`${CORE_API}${path}`, {
     method,
     headers: {
       "content-type": "application/json",
-      "x-user-id": userId
+      ...(sessionToken ? { authorization: `Bearer ${sessionToken}` } : {})
     },
     body: body ? JSON.stringify(body) : undefined
   });
@@ -68,23 +67,25 @@ async function registerOrLogin(email, password, displayName) {
   });
   if (registerRes.ok) {
     const payload = await parseJson(registerRes);
-    return { userId: payload.user_id, email, password };
+    return { userId: payload.user_id, sessionToken: payload.session_token, email, password };
   }
   if (registerRes.status !== 403 && registerRes.status !== 409) {
     const payload = await parseJson(registerRes);
     throw new Error(`register ${email} failed: ${registerRes.status} ${JSON.stringify(payload)}`);
   }
   const login = await authJson("POST", "/v1/auth/local/login", { email, password });
-  return { userId: login.user_id, email, password };
+  return { userId: login.user_id, sessionToken: login.session_token, email, password };
 }
 
-function connectClient(projectId, userId) {
+function connectClient(projectId, userId, userName, sessionToken) {
   const docId = `${projectId}:${DOC_PATH}`;
   const ydoc = new Y.Doc();
   const ytext = ydoc.getText("main");
   const query = new URLSearchParams({
     project_id: projectId,
-    user_id: userId
+    user_id: userId,
+    user_name: userName,
+    session_token: sessionToken
   });
   const wsUrl = `${REALTIME_WS}/v1/realtime/ws/${encodeURIComponent(docId)}?${query.toString()}`;
   const ws = new WebSocket(wsUrl);
@@ -148,25 +149,28 @@ async function waitFor(predicate, timeoutMs, label) {
 async function main() {
   const owner = await registerOrLogin(ownerEmail, ownerPassword, "Realtime Owner");
   const collaborator = await registerOrLogin(collabEmail, collabPassword, "Realtime Collaborator");
-  const project = await api("POST", "/v1/projects", owner.userId, {
-    organization_id: ORG_ID,
-    name: `Realtime QA ${runId}`,
-    description: "Realtime API test project"
+  const project = await api("POST", "/v1/projects", owner.sessionToken, {
+    name: `Realtime QA ${runId}`
   });
   const projectId = project.id;
-  await api("POST", `/v1/projects/${projectId}/roles`, owner.userId, {
+  await api("POST", `/v1/projects/${projectId}/roles`, owner.sessionToken, {
     user_id: collaborator.userId,
     role: "Student"
   });
   await api(
     "PUT",
     `/v1/projects/${projectId}/documents/by-path/${encodeURIComponent(DOC_PATH)}`,
-    owner.userId,
+    owner.sessionToken,
     { content: "= Realtime QA\n\nSeed.\n" }
   );
 
-  const a = connectClient(projectId, owner.userId);
-  const b = connectClient(projectId, collaborator.userId);
+  const a = connectClient(projectId, owner.userId, "Realtime Owner", owner.sessionToken);
+  const b = connectClient(
+    projectId,
+    collaborator.userId,
+    "Realtime Collaborator",
+    collaborator.sessionToken
+  );
 
   await waitFor(
     () => a.ws.readyState === WebSocket.OPEN && b.ws.readyState === WebSocket.OPEN,
@@ -193,7 +197,12 @@ async function main() {
 
   b.ws.close();
   await wait(300);
-  const b2 = connectClient(projectId, collaborator.userId);
+  const b2 = connectClient(
+    projectId,
+    collaborator.userId,
+    "Realtime Collaborator",
+    collaborator.sessionToken
+  );
   await waitFor(() => b2.ws.readyState === WebSocket.OPEN, 5000, "B reconnect open");
   await waitFor(
     () => b2.ytext.toString().includes("Edited by A.") && b2.ytext.toString().includes("Edited by B."),

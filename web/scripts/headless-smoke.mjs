@@ -658,9 +658,26 @@ try {
   const copyButtonBefore = pageA.getByRole("button", { name: "Copy" }).first();
   await copyButtonBefore.click();
   await pageA.getByRole("button", { name: "Copied" }).first().waitFor({ timeout: 3000 });
+  await bearerApi("POST", `/v1/projects/${projectId}/revisions`, owner.sessionToken, {
+    summary: "Headless UI checkpoint"
+  });
   await pageA.getByRole("button", { name: "Revisions" }).click();
   currentStep = "open-revisions";
-  const historyCount = await pageA.locator(".history-item").count();
+  let historyCount = 0;
+  for (let i = 0; i < 25; i += 1) {
+    historyCount = await pageA.locator(".history-item").count();
+    if (historyCount > 0) break;
+    await wait(200);
+  }
+  if (historyCount < 1) {
+    await openWorkspace(pageA, projectId);
+    await pageA.getByRole("button", { name: "Revisions" }).click();
+    for (let i = 0; i < 25; i += 1) {
+      historyCount = await pageA.locator(".history-item").count();
+      if (historyCount > 0) break;
+      await wait(200);
+    }
+  }
   if (historyCount < 1) throw new Error("No revisions available");
   await pageA.locator(".history-item").first().click();
   await pageA.waitForFunction(

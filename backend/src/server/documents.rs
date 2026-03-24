@@ -1,39 +1,259 @@
+fn revision_commit_time(commit: &Commit<'_>) -> DateTime<Utc> {
+    let seconds = commit.time().seconds();
+    DateTime::<Utc>::from_timestamp(seconds, 0).unwrap_or_else(Utc::now)
+}
+
+fn parse_co_authors(message: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for line in message.lines() {
+        let trimmed = line.trim();
+        if !trimmed
+            .to_ascii_lowercase()
+            .starts_with("co-authored-by:")
+        {
+            continue;
+        }
+        let value = trimmed
+            .split_once(':')
+            .map(|(_, right)| right.trim())
+            .unwrap_or_default();
+        let start = value.rfind('<');
+        let end = value.rfind('>');
+        if let (Some(start), Some(end)) = (start, end) {
+            let name = value[..start].trim();
+            let email = value[start + 1..end].trim();
+            if !name.is_empty() && !email.is_empty() {
+                out.push((name.to_string(), email.to_string()));
+            }
+        }
+    }
+    out
+}
+
+fn guess_content_type(path: &str) -> String {
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".png") {
+        "image/png".to_string()
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        "image/jpeg".to_string()
+    } else if lower.ends_with(".gif") {
+        "image/gif".to_string()
+    } else if lower.ends_with(".svg") {
+        "image/svg+xml".to_string()
+    } else if lower.ends_with(".pdf") {
+        "application/pdf".to_string()
+    } else if lower.ends_with(".ttf") {
+        "font/ttf".to_string()
+    } else if lower.ends_with(".otf") {
+        "font/otf".to_string()
+    } else if lower.ends_with(".woff") {
+        "font/woff".to_string()
+    } else if lower.ends_with(".woff2") {
+        "font/woff2".to_string()
+    } else {
+        "application/octet-stream".to_string()
+    }
+}
+
+fn load_git_state_from_commit(
+    repo: &Repository,
+    commit: &Commit<'_>,
+) -> Result<RevisionStateData, String> {
+    let tree = commit.tree().map_err(|e| e.to_string())?;
+    let mut documents: HashMap<String, String> = HashMap::new();
+    let mut assets: HashMap<String, RevisionStoredAsset> = HashMap::new();
+    let mut directories: HashSet<String> = HashSet::new();
+    let mut walk_error: Option<String> = None;
+
+    let _ = tree.walk(TreeWalkMode::PreOrder, |root, entry| {
+        if walk_error.is_some() {
+            return TreeWalkResult::Abort;
+        }
+        if entry.kind() != Some(git2::ObjectType::Blob) {
+            return TreeWalkResult::Ok;
+        }
+        let Some(name) = entry.name() else {
+            return TreeWalkResult::Ok;
+        };
+        let raw_path = format!("{root}{name}");
+        let Ok(clean_path) = sanitize_project_path(&raw_path) else {
+            walk_error = Some("invalid path in commit tree".to_string());
+            return TreeWalkResult::Abort;
+        };
+
+        let parts: Vec<&str> = clean_path.split('/').collect();
+        let mut acc = String::new();
+        for part in parts.iter().take(parts.len().saturating_sub(1)) {
+            if acc.is_empty() {
+                acc.push_str(part);
+            } else {
+                acc.push('/');
+                acc.push_str(part);
+            }
+            directories.insert(acc.clone());
+        }
+
+        let blob = match repo.find_blob(entry.id()) {
+            Ok(value) => value,
+            Err(err) => {
+                walk_error = Some(err.to_string());
+                return TreeWalkResult::Abort;
+            }
+        };
+        let bytes = blob.content();
+        if let Ok(text) = std::str::from_utf8(bytes) {
+            documents.insert(clean_path, text.to_string());
+        } else {
+            assets.insert(
+                clean_path.clone(),
+                RevisionStoredAsset {
+                    object_key: format!("git://{}", blob.id()),
+                    content_type: guess_content_type(&clean_path),
+                    size_bytes: i64::try_from(bytes.len()).unwrap_or(i64::MAX),
+                    inline_data: Some(bytes.to_vec()),
+                },
+            );
+        }
+        TreeWalkResult::Ok
+    });
+
+    if let Some(err) = walk_error {
+        return Err(err);
+    }
+    Ok(RevisionStateData {
+        documents,
+        directories,
+        assets,
+    })
+}
+
+async fn resolve_revision_author(
+    db: &PgPool,
+    default_name: String,
+    email: String,
+) -> Result<RevisionAuthor, sqlx::Error> {
+    let row = sqlx::query(
+        "select id, display_name, email
+         from users
+         where lower(email) = lower($1)
+         order by created_at asc
+         limit 1",
+    )
+    .bind(&email)
+    .fetch_optional(db)
+    .await?;
+
+    if let Some(row) = row {
+        Ok(RevisionAuthor {
+            user_id: row.get("id"),
+            display_name: row.get("display_name"),
+            email: row.get("email"),
+        })
+    } else {
+        Ok(RevisionAuthor {
+            user_id: Uuid::nil(),
+            display_name: default_name,
+            email,
+        })
+    }
+}
+
 async fn list_revisions(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
 ) -> Result<Json<RevisionsResponse>, StatusCode> {
     ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
-    let rows = sqlx::query(
-        "select id, project_id, actor_user_id, summary, created_at
-         from revisions where project_id = $1 and is_complete = true order by created_at desc limit 200",
-    )
-    .bind(project_id)
-    .fetch_all(&state.db)
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let config = load_git_config(&state.db, project_id).await?;
+    let commit_rows = {
+        let _git_lock = acquire_git_project_lock(&state, project_id).await;
+        ensure_git_repo_initialized(&config.local_path, &config.default_branch)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        ensure_git_branch_checked_out(&config.local_path, &config.default_branch)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let repo =
+            Repository::open(&config.local_path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let head = repo.head().ok().and_then(|h| h.target());
+        let Some(head_oid) = head else {
+            return Ok(Json(RevisionsResponse { revisions: vec![] }));
+        };
 
-    let revision_ids = rows
-        .iter()
-        .map(|r| r.get::<Uuid, _>("id"))
-        .collect::<Vec<_>>();
-    let author_map = load_revision_authors(&state.db, &revision_ids)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let revisions = rows
-        .into_iter()
-        .map(|r| {
-            let id: Uuid = r.get("id");
-            Revision {
-                id,
-                project_id: r.get("project_id"),
-                actor_user_id: r.get("actor_user_id"),
-                summary: r.get("summary"),
-                created_at: r.get("created_at"),
-                authors: author_map.get(&id).cloned().unwrap_or_default(),
+        let mut revwalk = repo.revwalk().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        revwalk
+            .set_sorting(Sort::TIME)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        revwalk
+            .push(head_oid)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        let mut rows: Vec<(String, String, DateTime<Utc>, String, String, Vec<(String, String)>)> =
+            Vec::new();
+        for oid_result in revwalk.take(200) {
+            let oid = oid_result.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            let commit = repo.find_commit(oid).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            let subject = commit
+                .summary()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "Online updates".to_string());
+            let author_sig = commit.author();
+            let author_name = author_sig.name().unwrap_or("Unknown").to_string();
+            let author_email = author_sig
+                .email()
+                .unwrap_or("unknown@example.com")
+                .to_string();
+
+            let mut seen_emails: HashSet<String> = HashSet::new();
+            seen_emails.insert(author_email.to_ascii_lowercase());
+
+            let message = commit.message().unwrap_or_default().to_string();
+            let mut co_authors = Vec::new();
+            for (name, email) in parse_co_authors(&message) {
+                let key = email.to_ascii_lowercase();
+                if seen_emails.contains(&key) {
+                    continue;
+                }
+                seen_emails.insert(key);
+                co_authors.push((name, email));
             }
-        })
-        .collect();
+            rows.push((
+                oid.to_string(),
+                subject,
+                revision_commit_time(&commit),
+                author_name,
+                author_email,
+                co_authors,
+            ));
+        }
+        rows
+    };
+
+    let mut revisions = Vec::new();
+    for (id, summary, created_at, author_name, author_email, co_authors) in commit_rows {
+        let mut authors = Vec::new();
+        let primary = resolve_revision_author(&state.db, author_name, author_email)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let actor_user_id = if primary.user_id == Uuid::nil() {
+            None
+        } else {
+            Some(primary.user_id)
+        };
+        authors.push(primary);
+        for (name, email) in co_authors {
+            let author = resolve_revision_author(&state.db, name, email)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            authors.push(author);
+        }
+        revisions.push(Revision {
+            id,
+            project_id,
+            actor_user_id,
+            summary,
+            created_at,
+            authors,
+        });
+    }
 
     Ok(Json(RevisionsResponse { revisions }))
 }
@@ -45,48 +265,127 @@ async fn create_revision(
     Json(input): Json<CreateRevisionInput>,
 ) -> Result<Json<Revision>, StatusCode> {
     let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Write).await?;
+    let _git_lock = acquire_git_project_lock(&state, project_id).await;
     let summary = input.summary.trim().to_string();
     if summary.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let now = Utc::now();
-    let row = create_project_revision(&state.db, project_id, Some(actor), &summary, now)
+    let config = load_git_config(&state.db, project_id).await?;
+    ensure_git_repo_initialized(&config.local_path, &config.default_branch)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    ensure_git_branch_checked_out(&config.local_path, &config.default_branch)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    sync_project_documents_to_repo(&state, project_id, &config.local_path)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let _ = sqlx::query(
-        "insert into revision_authors (revision_id, user_id)
-         values ($1, $2)
-         on conflict (revision_id, user_id) do nothing",
+
+    let actor_name = lookup_user_display_name(&state.db, actor)
+        .await
+        .unwrap_or_else(|| "Unknown".to_string());
+    let actor_email = lookup_user_email(&state.db, actor)
+        .await
+        .unwrap_or_else(|| "unknown@example.com".to_string());
+
+    let author_rows = sqlx::query(
+        "select u.id, u.display_name, u.email
+         from git_pending_authors g
+         join users u on u.id = g.user_id
+         where g.project_id = $1
+         order by g.touched_at asc",
     )
-    .bind(row.id)
-    .bind(actor)
+    .bind(project_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut authors = Vec::new();
+    let mut trailers = Vec::new();
+    let mut seen: HashSet<Uuid> = HashSet::new();
+    for row in author_rows {
+        let uid: Uuid = row.get("id");
+        if seen.contains(&uid) {
+            continue;
+        }
+        seen.insert(uid);
+        let display_name: String = row.get("display_name");
+        let email: String = row.get("email");
+        authors.push(RevisionAuthor {
+            user_id: uid,
+            display_name: display_name.clone(),
+            email: email.clone(),
+        });
+        trailers.push(format!("Co-authored-by: {display_name} <{email}>"));
+    }
+    if !seen.contains(&actor) {
+        authors.push(RevisionAuthor {
+            user_id: actor,
+            display_name: actor_name.clone(),
+            email: actor_email.clone(),
+        });
+        trailers.push(format!("Co-authored-by: {actor_name} <{actor_email}>"));
+    }
+
+    let message = if trailers.is_empty() {
+        summary.clone()
+    } else {
+        format!("{summary}\n\n{}", trailers.join("\n"))
+    };
+    let commit_id = git_commit_staged_if_changed(
+        &config.local_path,
+        &message,
+        &actor_name,
+        &actor_email,
+    )
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .map(Ok)
+    .unwrap_or_else(|| {
+        git_commit_allow_empty(
+            &config.local_path,
+            &message,
+            &actor_name,
+            &actor_email,
+        )
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    })?;
+
+    let _ = sqlx::query(
+        "update git_repositories
+         set pending_sync = false, last_server_sync_at = $2
+         where project_id = $1",
+    )
+    .bind(project_id)
+    .bind(Utc::now())
     .execute(&state.db)
     .await;
+    let _ = sqlx::query("delete from git_pending_authors where project_id = $1")
+        .bind(project_id)
+        .execute(&state.db)
+        .await;
+    clear_project_sync_queue_item(&state.db, project_id).await;
 
     write_audit(
         &state.db,
         Some(actor),
         "revision.create",
-        serde_json::json!({"project_id": project_id, "revision_id": row.id}),
+        serde_json::json!({"project_id": project_id, "revision_id": commit_id}),
     )
     .await;
-    mark_project_dirty(&state.db, project_id, Some(actor)).await;
+    let repo =
+        Repository::open(&config.local_path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let commit = repo
+        .find_commit(Oid::from_str(&commit_id).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(Revision {
-        id: row.id,
-        project_id: row.project_id,
-        actor_user_id: row.actor_user_id,
-        summary: row.summary,
-        created_at: row.created_at,
-        authors: vec![RevisionAuthor {
-            user_id: actor,
-            display_name: lookup_user_display_name(&state.db, actor)
-                .await
-                .unwrap_or_else(|| "Unknown".to_string()),
-            email: lookup_user_email(&state.db, actor)
-                .await
-                .unwrap_or_else(|| "unknown@example.com".to_string()),
-        }],
+        id: commit_id,
+        project_id,
+        actor_user_id: Some(actor),
+        summary: commit
+            .summary()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| summary),
+        created_at: revision_commit_time(&commit),
+        authors,
     }))
 }
 
@@ -94,7 +393,7 @@ async fn create_revision(
 enum RevisionAnchorKind {
     None,
     Live,
-    Revision(Uuid),
+    Revision(String),
 }
 
 #[derive(Clone)]
@@ -275,56 +574,48 @@ async fn get_revision_documents(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<RevisionDocumentsQuery>,
-    Path((project_id, revision_id)): Path<(Uuid, Uuid)>,
+    Path((project_id, revision_id)): Path<(Uuid, String)>,
 ) -> Result<Json<RevisionDocumentsResponse>, StatusCode> {
     ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
-    let revision_row = sqlx::query(
-        "select entry_file_path
-         from revisions
-         where id = $1 and project_id = $2 and is_complete = true",
-    )
-        .bind(revision_id)
-        .bind(project_id)
-        .fetch_optional(&state.db)
-        .await
+    let _git_lock = acquire_git_project_lock(&state, project_id).await;
+    let config = load_git_config(&state.db, project_id).await?;
+    ensure_git_repo_initialized(&config.local_path, &config.default_branch)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if revision_row.is_none() {
-        return Err(StatusCode::NOT_FOUND);
-    }
-    let entry_file_path = revision_row
-        .and_then(|row| row.get::<Option<String>, _>("entry_file_path"))
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "main.typ".to_string());
-
-    let state_data = load_materialized_revision_state(&state.db, project_id, revision_id)
-        .await
+    ensure_git_branch_checked_out(&config.local_path, &config.default_branch)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let Some(target_state) = state_data else {
-        return Err(StatusCode::NOT_FOUND);
-    };
-    let nodes = build_nodes_from_state(&target_state)?;
-
-    let mut candidates = vec![build_transfer_candidate(
-        &target_state,
-        None,
-        RevisionAnchorKind::None,
-    )];
-
-    if let Some(base_revision_id) = query.current_revision_id {
-        if base_revision_id != revision_id {
-            if let Some(base_revision_state) =
-                load_materialized_revision_state(&state.db, project_id, base_revision_id)
-                    .await
-                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-            {
-                candidates.push(build_transfer_candidate(
-                    &target_state,
-                    Some(&base_revision_state),
-                    RevisionAnchorKind::Revision(base_revision_id),
-                ));
+    let entry_file_path = lookup_project_entry_file_path(&state.db, project_id).await;
+    let (target_state, nodes, mut candidates) = {
+        let repo =
+            Repository::open(&config.local_path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let revision_oid = Oid::from_str(&revision_id).map_err(|_| StatusCode::NOT_FOUND)?;
+        let target_commit = repo
+            .find_commit(revision_oid)
+            .map_err(|_| StatusCode::NOT_FOUND)?;
+        let target_state = load_git_state_from_commit(&repo, &target_commit)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let nodes = build_nodes_from_state(&target_state)?;
+        let mut candidates = vec![build_transfer_candidate(
+            &target_state,
+            None,
+            RevisionAnchorKind::None,
+        )];
+        if let Some(base_revision_id) = query.current_revision_id.clone() {
+            if base_revision_id != revision_id {
+                if let Ok(base_oid) = Oid::from_str(&base_revision_id) {
+                    if let Ok(base_commit) = repo.find_commit(base_oid) {
+                        let base_revision_state = load_git_state_from_commit(&repo, &base_commit)
+                            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                        candidates.push(build_transfer_candidate(
+                            &target_state,
+                            Some(&base_revision_state),
+                            RevisionAnchorKind::Revision(base_revision_id),
+                        ));
+                    }
+                }
             }
         }
-    }
+        (target_state, nodes, candidates)
+    };
 
     if query.include_live_anchor.unwrap_or(false) {
         let live_state = load_project_state(&state.db, project_id)

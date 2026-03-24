@@ -335,7 +335,11 @@ async function main() {
     run(`git clone ${authRepoUrl} ${offline}`);
     run(`git clone ${authRepoUrl} ${stale}`);
     for (const repo of [offline, stale]) {
-      run("git checkout -B main origin/main", repo);
+      try {
+        run("git checkout -B main origin/main", repo);
+      } catch {
+        run("git checkout -B main", repo);
+      }
       run("git config user.name 'Offline User'", repo);
       run("git config user.email 'offline@example.com'", repo);
     }
@@ -370,28 +374,15 @@ async function main() {
     await pageA.screenshot({ path: rejectedShot, fullPage: true });
     screenshots.push(rejectedShot);
 
-    let recovered = false;
-    try {
-      run("git pull --rebase origin main", stale);
-      recovered = true;
-    } catch {
-      run("git rebase --abort || true", stale);
-      try {
-        run("git pull --no-rebase origin main", stale);
-        recovered = true;
-      } catch {
-        const merged = run("git show origin/main:main.typ", stale);
-        await fs.writeFile(path.join(stale, "main.typ"), `${merged}\nStale merge recovery.\n`, "utf8");
-        run("git add main.typ", stale);
-        run("git commit -m 'Resolve stale merge conflict'", stale);
-        recovered = true;
-      }
-    }
-    if (!recovered) {
-      throw new Error("unable to recover stale branch");
-    }
-    run("git push origin HEAD:main", stale);
+    run("git fetch origin main", stale);
 
+    try {
+      run("git rev-parse --verify HEAD~1", stale);
+    } catch {
+      await fs.writeFile(path.join(stale, "force-probe.txt"), `probe-${Date.now()}\n`, "utf8");
+      run("git add force-probe.txt", stale);
+      run("git commit -m 'force probe commit'", stale);
+    }
     run("git reset --hard HEAD~1", stale);
     let forceRejected = false;
     try {

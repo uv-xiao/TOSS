@@ -1,7 +1,13 @@
 use std::collections::HashMap;
 use std::env;
 use std::path::{Component, Path as FsPath, PathBuf};
-use std::process::Command;
+use std::str;
+
+use git2::{
+    build::{CheckoutBuilder, RepoBuilder},
+    Cred, FetchOptions, IndexAddOption, Oid, PushOptions, RemoteCallbacks, Repository, Signature,
+    StatusOptions,
+};
 use uuid::Uuid;
 
 pub fn git_storage_root() -> PathBuf {
@@ -19,50 +25,270 @@ pub fn ensure_git_repo_initialized(repo_path: &str, default_branch: &str) -> Res
     std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
     let git_dir = path.join(".git");
     if !git_dir.exists() {
-        run_git(repo_path, &["init", "-b", default_branch])?;
+        let mut options = git2::RepositoryInitOptions::new();
+        options.initial_head(default_branch);
+        Repository::init_opts(&path, &options).map_err(|e| e.to_string())?;
     }
-    run_git(
-        repo_path,
-        &["config", "receive.denyNonFastForwards", "true"],
-    )?;
-    run_git(
-        repo_path,
-        &["config", "receive.denyCurrentBranch", "updateInstead"],
-    )?;
-    run_git(repo_path, &["config", "http.receivepack", "true"])?;
+    let repo = Repository::open(&path).map_err(|e| e.to_string())?;
+    let mut cfg = repo.config().map_err(|e| e.to_string())?;
+    cfg.set_bool("receive.denyNonFastForwards", true)
+        .map_err(|e| e.to_string())?;
+    cfg.set_str("receive.denyCurrentBranch", "updateInstead")
+        .map_err(|e| e.to_string())?;
+    cfg.set_bool("http.receivepack", true)
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
 pub fn ensure_git_branch_checked_out(repo_path: &str, default_branch: &str) -> Result<(), String> {
-    let has_branch = run_git(
-        repo_path,
-        &[
-            "show-ref",
-            "--verify",
-            &format!("refs/heads/{}", default_branch),
-        ],
-    )
-    .is_ok();
-    if !has_branch {
-        let _ = run_git(repo_path, &["checkout", "-B", default_branch]);
-    } else {
-        run_git(repo_path, &["checkout", default_branch])?;
+    let repo = Repository::open(repo_path).map_err(|e| e.to_string())?;
+    let branch_ref = format!("refs/heads/{default_branch}");
+    repo.set_head(&branch_ref).map_err(|e| e.to_string())?;
+    if repo.find_reference(&branch_ref).is_ok() {
+        let mut checkout = CheckoutBuilder::new();
+        checkout.safe();
+        let _ = repo.checkout_head(Some(&mut checkout));
     }
     Ok(())
 }
 
-pub fn run_git(repo_path: &str, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo_path)
-        .args(args)
-        .output()
-        .map_err(|e| e.to_string())?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+fn default_git_signature() -> Result<Signature<'static>, String> {
+    Signature::now("Typst Server", "noreply@typst-server.local").map_err(|e| e.to_string())
+}
+
+pub fn set_git_remote(repo_path: &str, remote_name: &str, remote_url: &str) -> Result<(), String> {
+    let repo = Repository::open(repo_path).map_err(|e| e.to_string())?;
+    if repo.find_remote(remote_name).is_ok() {
+        repo.remote_set_url(remote_name, remote_url)
+            .map_err(|e| e.to_string())?;
     } else {
-        Err(String::from_utf8_lossy(&output.stderr).to_string())
+        repo.remote(remote_name, remote_url)
+            .map_err(|e| e.to_string())?;
     }
+    Ok(())
+}
+
+fn fetch_options() -> FetchOptions<'static> {
+    let mut callbacks = RemoteCallbacks::new();
+    callbacks.credentials(|_url, username_from_url, _allowed| {
+        if let Some(username) = username_from_url {
+            Cred::username(username)
+        } else {
+            Cred::default()
+        }
+    });
+    let mut fetch = FetchOptions::new();
+    fetch.remote_callbacks(callbacks);
+    fetch
+}
+
+fn push_options() -> PushOptions<'static> {
+    let mut callbacks = RemoteCallbacks::new();
+    callbacks.credentials(|_url, username_from_url, _allowed| {
+        if let Some(username) = username_from_url {
+            Cred::username(username)
+        } else {
+            Cred::default()
+        }
+    });
+    let mut push = PushOptions::new();
+    push.remote_callbacks(callbacks);
+    push
+}
+
+pub fn git_fetch_branch(repo_path: &str, remote_name: &str, branch: &str) -> Result<(), String> {
+    let repo = Repository::open(repo_path).map_err(|e| e.to_string())?;
+    let mut remote = repo.find_remote(remote_name).map_err(|e| e.to_string())?;
+    let mut fetch = fetch_options();
+    remote
+        .fetch(&[branch], Some(&mut fetch), None)
+        .map_err(|e| e.to_string())
+}
+
+pub fn git_fast_forward_from_remote(
+    repo_path: &str,
+    branch: &str,
+    remote_name: &str,
+) -> Result<(), String> {
+    let repo = Repository::open(repo_path).map_err(|e| e.to_string())?;
+    let local_ref_name = format!("refs/heads/{branch}");
+    let remote_ref_name = format!("refs/remotes/{remote_name}/{branch}");
+
+    let remote_ref = repo
+        .find_reference(&remote_ref_name)
+        .map_err(|e| e.to_string())?;
+    let remote_target = remote_ref
+        .target()
+        .ok_or_else(|| "remote branch has no target".to_string())?;
+
+    if let Ok(local_ref) = repo.find_reference(&local_ref_name) {
+        let local_target = local_ref
+            .target()
+            .ok_or_else(|| "local branch has no target".to_string())?;
+        let merge_base = repo
+            .merge_base(local_target, remote_target)
+            .map_err(|e| e.to_string())?;
+        if merge_base != local_target {
+            return Err("non fast-forward pull would be required".to_string());
+        }
+    }
+
+    repo.reference(&local_ref_name, remote_target, true, "fast-forward")
+        .map_err(|e| e.to_string())?;
+    repo.set_head(&local_ref_name).map_err(|e| e.to_string())?;
+
+    let mut checkout = CheckoutBuilder::new();
+    checkout.force();
+    repo.checkout_head(Some(&mut checkout))
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn git_push_branch(repo_path: &str, remote_name: &str, branch: &str) -> Result<(), String> {
+    let repo = Repository::open(repo_path).map_err(|e| e.to_string())?;
+    let mut remote = repo.find_remote(remote_name).map_err(|e| e.to_string())?;
+    let mut push = push_options();
+    remote
+        .push(
+            &[&format!("refs/heads/{branch}:refs/heads/{branch}")],
+            Some(&mut push),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn git_stage_all(repo_path: &str) -> Result<(), String> {
+    let repo = Repository::open(repo_path).map_err(|e| e.to_string())?;
+    let mut index = repo.index().map_err(|e| e.to_string())?;
+    index
+        .add_all(["*"].iter(), IndexAddOption::DEFAULT, None)
+        .map_err(|e| e.to_string())?;
+    index.write().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn git_worktree_is_clean(repo_path: &str) -> Result<bool, String> {
+    let repo = Repository::open(repo_path).map_err(|e| e.to_string())?;
+    let mut opts = StatusOptions::new();
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_unmodified(false)
+        .renames_head_to_index(true)
+        .renames_index_to_workdir(true);
+    let statuses = repo.statuses(Some(&mut opts)).map_err(|e| e.to_string())?;
+    Ok(statuses.is_empty())
+}
+
+pub fn git_commit_staged_if_changed(
+    repo_path: &str,
+    message: &str,
+    author_name: &str,
+    author_email: &str,
+) -> Result<Option<String>, String> {
+    let repo = Repository::open(repo_path).map_err(|e| e.to_string())?;
+    let mut index = repo.index().map_err(|e| e.to_string())?;
+    index
+        .add_all(["*"].iter(), IndexAddOption::DEFAULT, None)
+        .map_err(|e| e.to_string())?;
+    index.write().map_err(|e| e.to_string())?;
+
+    let tree_id = index.write_tree().map_err(|e| e.to_string())?;
+    let tree = repo.find_tree(tree_id).map_err(|e| e.to_string())?;
+    let head_commit = repo
+        .head()
+        .ok()
+        .and_then(|h| h.target())
+        .and_then(|oid| repo.find_commit(oid).ok());
+
+    if let Some(parent) = head_commit.as_ref() {
+        if let Ok(parent_tree) = parent.tree() {
+            if parent_tree.id() == tree.id() {
+                return Ok(None);
+            }
+        }
+    }
+
+    let author = Signature::now(author_name, author_email).map_err(|e| e.to_string())?;
+    let committer = default_git_signature()?;
+    let commit_id = if let Some(parent) = head_commit {
+        repo.commit(Some("HEAD"), &author, &committer, message, &tree, &[&parent])
+            .map_err(|e| e.to_string())?
+    } else {
+        repo.commit(Some("HEAD"), &author, &committer, message, &tree, &[])
+            .map_err(|e| e.to_string())?
+    };
+    Ok(Some(commit_id.to_string()))
+}
+
+pub fn git_commit_allow_empty(
+    repo_path: &str,
+    message: &str,
+    author_name: &str,
+    author_email: &str,
+) -> Result<String, String> {
+    let repo = Repository::open(repo_path).map_err(|e| e.to_string())?;
+    let mut index = repo.index().map_err(|e| e.to_string())?;
+    index
+        .add_all(["*"].iter(), IndexAddOption::DEFAULT, None)
+        .map_err(|e| e.to_string())?;
+    index.write().map_err(|e| e.to_string())?;
+
+    let tree_id = index.write_tree().map_err(|e| e.to_string())?;
+    let tree = repo.find_tree(tree_id).map_err(|e| e.to_string())?;
+    let head_commit = repo
+        .head()
+        .ok()
+        .and_then(|h| h.target())
+        .and_then(|oid| repo.find_commit(oid).ok());
+
+    let author = Signature::now(author_name, author_email).map_err(|e| e.to_string())?;
+    let committer = default_git_signature()?;
+    let commit_id = if let Some(parent) = head_commit {
+        repo.commit(Some("HEAD"), &author, &committer, message, &tree, &[&parent])
+            .map_err(|e| e.to_string())?
+    } else {
+        repo.commit(Some("HEAD"), &author, &committer, message, &tree, &[])
+            .map_err(|e| e.to_string())?
+    };
+    Ok(commit_id.to_string())
+}
+
+pub fn git_head_oid(repo_path: &str) -> Result<Option<Oid>, String> {
+    let repo = Repository::open(repo_path).map_err(|e| e.to_string())?;
+    Ok(repo.head().ok().and_then(|h| h.target()))
+}
+
+pub fn git_hard_reset_to(repo_path: &str, target: Oid) -> Result<(), String> {
+    let repo = Repository::open(repo_path).map_err(|e| e.to_string())?;
+    let object = repo.find_object(target, None).map_err(|e| e.to_string())?;
+    repo.reset(&object, git2::ResetType::Hard, None)
+        .map_err(|e| e.to_string())
+}
+
+pub fn git_ancestor(repo_path: &str, ancestor: Oid, tip: Oid) -> Result<bool, String> {
+    let repo = Repository::open(repo_path).map_err(|e| e.to_string())?;
+    Ok(repo.graph_descendant_of(tip, ancestor).unwrap_or(false))
+}
+
+pub fn clone_repo(url: &str, repo_path: &str, default_branch: &str) -> Result<(), String> {
+    std::fs::create_dir_all(repo_path).map_err(|e| e.to_string())?;
+    let mut callbacks = RemoteCallbacks::new();
+    callbacks.credentials(|_url, username_from_url, _allowed| {
+        if let Some(username) = username_from_url {
+            Cred::username(username)
+        } else {
+            Cred::default()
+        }
+    });
+    let mut fetch = FetchOptions::new();
+    fetch.remote_callbacks(callbacks);
+    let mut builder = RepoBuilder::new();
+    builder.branch(default_branch);
+    builder.fetch_options(fetch);
+    builder
+        .clone(url, FsPath::new(repo_path))
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 pub fn collect_repo_files(repo_path: &str) -> Result<HashMap<String, Vec<u8>>, String> {

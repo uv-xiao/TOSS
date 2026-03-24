@@ -263,34 +263,7 @@ async fn create_git_bundle_artifact(
     repo_path: &str,
     event_type: &str,
 ) -> Result<(), String> {
-    let Some(storage) = state.storage.clone() else {
-        return Ok(());
-    };
-    let temp = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
-    let bundle_path = temp.path().to_string_lossy().to_string();
-    run_git(repo_path, &["bundle", "create", &bundle_path, "--all"])?;
-    let bytes = std::fs::read(&bundle_path).map_err(|e| e.to_string())?;
-    let artifact_id = Uuid::new_v4();
-    let object_key = format!("projects/{project_id}/git-bundles/{artifact_id}.bundle");
-    put_object(
-        &storage,
-        &object_key,
-        "application/x-git-bundle",
-        bytes.clone(),
-    )
-    .await?;
-    let _ = sqlx::query(
-        "insert into git_bundle_artifacts (id, project_id, event_type, object_key, size_bytes, created_at)
-         values ($1, $2, $3, $4, $5, $6)",
-    )
-    .bind(artifact_id)
-    .bind(project_id)
-    .bind(event_type)
-    .bind(object_key)
-    .bind(bytes.len() as i64)
-    .bind(Utc::now())
-    .execute(&state.db)
-    .await;
+    let _ = (state, project_id, repo_path, event_type);
     Ok(())
 }
 
@@ -1265,78 +1238,6 @@ async fn mark_project_dirty(db: &PgPool, project_id: Uuid, actor_user_id: Option
         .execute(db)
         .await;
     }
-    let interval_sec = env::var("AUTO_REVISION_INTERVAL_SECONDS")
-        .ok()
-        .and_then(|v| v.parse::<i64>().ok())
-        .filter(|v| *v >= 10)
-        .unwrap_or(30);
-    let recent_created_at = sqlx::query(
-        "select created_at from revisions where project_id = $1 and is_complete = true order by created_at desc limit 1",
-    )
-    .bind(project_id)
-    .fetch_optional(db)
-    .await
-    .ok()
-    .flatten()
-    .map(|row| row.get::<DateTime<Utc>, _>("created_at"));
-    let should_create = if let Some(created_at) = recent_created_at.as_ref() {
-        Utc::now().signed_duration_since(created_at.clone())
-            >= chrono::Duration::seconds(interval_sec)
-    } else {
-        true
-    };
-    if should_create {
-        let now = Utc::now();
-        let created = create_project_revision(db, project_id, actor_user_id, "Automatic snapshot", now)
-            .await
-            .ok();
-        let Some(created) = created else {
-            return;
-        };
-        let revision_id = created.id;
-        let authors = if let Some(previous_revision_time) = recent_created_at.as_ref() {
-            sqlx::query(
-                "select user_id from git_pending_authors
-                 where project_id = $1 and touched_at >= $2",
-            )
-            .bind(project_id)
-            .bind(previous_revision_time.clone())
-            .fetch_all(db)
-            .await
-            .ok()
-            .unwrap_or_default()
-        } else {
-            sqlx::query("select user_id from git_pending_authors where project_id = $1")
-                .bind(project_id)
-                .fetch_all(db)
-                .await
-                .ok()
-                .unwrap_or_default()
-        };
-        for row in authors {
-            let user_id: Uuid = row.get("user_id");
-            let _ = sqlx::query(
-                "insert into revision_authors (revision_id, user_id)
-                 values ($1, $2)
-                 on conflict (revision_id, user_id) do nothing",
-            )
-            .bind(revision_id)
-            .bind(user_id)
-            .execute(db)
-            .await;
-        }
-        if let Some(user_id) = actor_user_id {
-            let _ = sqlx::query(
-                "insert into revision_authors (revision_id, user_id)
-                 values ($1, $2)
-                 on conflict (revision_id, user_id) do nothing",
-            )
-            .bind(revision_id)
-            .bind(user_id)
-            .execute(db)
-            .await;
-        }
-    }
 }
 
 async fn flush_pending_server_commit(
@@ -1365,10 +1266,8 @@ async fn flush_pending_server_commit(
     ensure_git_repo_initialized(&local_path, &default_branch)?;
     ensure_git_branch_checked_out(&local_path, &default_branch)?;
     sync_project_documents_to_repo(state, project_id, &local_path).await?;
-    let _ = run_git(&local_path, &["add", "."]);
-
-    let clean = run_git(&local_path, &["status", "--porcelain"]).unwrap_or_default();
-    if clean.trim().is_empty() {
+    let clean = git_worktree_is_clean(&local_path)?;
+    if clean {
         let _ = sqlx::query(
             "update git_repositories set pending_sync = false, last_server_sync_at = $2 where project_id = $1",
         )
@@ -1418,23 +1317,31 @@ async fn flush_pending_server_commit(
             }
         }
     }
-
-    let message = if trailers.is_empty() {
-        "Recent updates on Typst server".to_string()
+    let commit_author = if let Some(first) = trailers.first() {
+        // first trailer format is guaranteed by builder above.
+        let trimmed = first.trim_start_matches("Co-authored-by: ").trim();
+        let start = trimmed.rfind('<');
+        let end = trimmed.rfind('>');
+        if let (Some(start), Some(end)) = (start, end) {
+            let name = trimmed[..start].trim().to_string();
+            let email = trimmed[start + 1..end].trim().to_string();
+            (name, email)
+        } else {
+            ("Typst Server".to_string(), "noreply@typst-server.local".to_string())
+        }
     } else {
-        format!("Recent updates on Typst server\n\n{}", trailers.join("\n"))
+        ("Typst Server".to_string(), "noreply@typst-server.local".to_string())
     };
-    let _ = run_git(
+    let message = if trailers.is_empty() {
+        "Online updates".to_string()
+    } else {
+        format!("Online updates\n\n{}", trailers.join("\n"))
+    };
+    let _ = git_commit_staged_if_changed(
         &local_path,
-        &[
-            "-c",
-            "user.name=Typst Server",
-            "-c",
-            "user.email=noreply@typst-server.local",
-            "commit",
-            "-m",
-            &message,
-        ],
+        &message,
+        &commit_author.0,
+        &commit_author.1,
     )?;
     let _ = sqlx::query(
         "update git_repositories set pending_sync = false, last_server_sync_at = $2 where project_id = $1",
@@ -1459,6 +1366,14 @@ fn git_flush_worker_interval_seconds() -> u64 {
         .unwrap_or(3)
 }
 
+fn git_autosave_interval_seconds() -> i64 {
+    env::var("GIT_AUTOSAVE_INTERVAL_SECONDS")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|v| *v >= 60)
+        .unwrap_or(600)
+}
+
 fn git_flush_worker_batch_size() -> i64 {
     env::var("GIT_FLUSH_WORKER_BATCH_SIZE")
         .ok()
@@ -1468,13 +1383,17 @@ fn git_flush_worker_batch_size() -> i64 {
 }
 
 async fn list_pending_sync_projects(db: &PgPool, limit: i64) -> Result<Vec<Uuid>, sqlx::Error> {
+    let now = Utc::now();
+    let due_before = now - chrono::Duration::seconds(git_autosave_interval_seconds());
     let rows = sqlx::query(
         "select project_id
          from project_sync_queue
+         where dirty_since <= $2
          order by dirty_since asc
          limit $1",
     )
     .bind(limit)
+    .bind(due_before)
     .fetch_all(db)
     .await?;
     Ok(rows

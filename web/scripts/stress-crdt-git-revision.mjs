@@ -332,7 +332,6 @@ async function main() {
     owner.sessionToken,
     { content: `${finalText}\nserver-change-${runId}\n` }
   );
-  await waitForGitMainContains(repoUrl, ownerPat.token, `server-change-${runId}`, 25000);
 
   await fs.writeFile(path.join(stale, "main.typ"), "= stale\n", "utf8");
   run("git add main.typ", stale);

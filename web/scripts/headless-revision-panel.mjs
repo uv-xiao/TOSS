@@ -109,6 +109,11 @@ async function main() {
       undefined,
       { timeout: 10000 }
     );
+    await page.waitForFunction(
+      () => !!document.querySelector(".pdf-frame canvas, .pdf-frame .typst-page"),
+      undefined,
+      { timeout: 15000 }
+    );
     const revisionShot = path.join(outDir, "02-revision.png");
     await page.screenshot({ path: revisionShot, fullPage: true });
     artifacts.push(revisionShot);
@@ -125,6 +130,11 @@ async function main() {
         if (!status) return false;
         return status.classList.contains("ok") && !/offline/i.test(status.textContent || "");
       },
+      undefined,
+      { timeout: 15000 }
+    );
+    await page.waitForFunction(
+      () => !!document.querySelector(".pdf-frame canvas, .pdf-frame .typst-page"),
       undefined,
       { timeout: 15000 }
     );
