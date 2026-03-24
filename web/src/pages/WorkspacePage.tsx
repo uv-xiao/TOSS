@@ -133,12 +133,10 @@ export function WorkspacePage({
   const [docs, setDocs] = useState<Record<string, string>>({});
   const [assetBase64, setAssetBase64] = useState<Record<string, string>>({});
   const [assetMeta, setAssetMeta] = useState<Record<string, AssetMeta>>({});
-  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [vectorData, setVectorData] = useState<Uint8Array | null>(null);
   const [pdfData, setPdfData] = useState<Uint8Array | null>(null);
   const [compileErrors, setCompileErrors] = useState<string[]>([]);
   const [compileDiagnostics, setCompileDiagnostics] = useState<CompileDiagnostic[]>([]);
-  const [compiledAt, setCompiledAt] = useState<number | null>(null);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [workspaceLoaded, setWorkspaceLoaded] = useState(false);
   const [gitRepoUrl, setGitRepoUrl] = useState("");
@@ -206,6 +204,7 @@ export function WorkspacePage({
     lastSavedDocRef,
     presence,
     realtimeStatus,
+    reconnectState,
     docText,
     setDocText,
     hasActiveLiveDoc,
@@ -321,7 +320,11 @@ export function WorkspacePage({
   const previewPercent = Math.round(previewZoom * 100);
   const activeFileName = activePath.split("/").filter(Boolean).at(-1) || activePath;
   const realtimeRequired = isActiveTextDoc && !isRevisionMode;
-  const serverReachable = apiReachable && (!realtimeRequired || realtimeStatus !== "disconnected");
+  const connectionOnline = apiReachable && (!realtimeRequired || realtimeStatus === "connected");
+  const reconnectCountdownText = t("workspace.connectionLostReconnecting").replace(
+    "{seconds}",
+    String(Math.max(0, reconnectState.secondsRemaining))
+  );
 
   const formatAccessType = (accessType: string, role: string) => {
     if (accessType === "manage") return "Manage";
@@ -389,7 +392,6 @@ export function WorkspacePage({
     setCompileDiagnostics([]);
     setVectorData(null);
     setPdfData(null);
-    setCompiledAt(null);
     setDocText("");
     setContextMenu(null);
     setProjectTemplateOrgAccess([]);
@@ -512,7 +514,6 @@ export function WorkspacePage({
               setDocText(activeIncoming);
             }
             lastSavedDocRef.current = activeIncoming;
-            setSaveState("saved");
           }
 
           setDocs((previous) => {
@@ -557,18 +558,15 @@ export function WorkspacePage({
     if (!projectId || !activePath || isRevisionMode || !workspaceLoaded) return;
     if (!hasActiveLiveDoc) return;
     if (docText === lastSavedDocRef.current) return;
-    setSaveState("saving");
     const timer = window.setTimeout(() => {
       upsertDocumentByPath(projectId, activePath, docText)
         .then((saved) => {
           setApiReachable(true);
           lastSavedDocRef.current = saved.content;
           setDocs((prev) => ({ ...prev, [saved.path]: saved.content }));
-          setSaveState("saved");
         })
         .catch(() => {
           setApiReachable(false);
-          setSaveState("error");
         });
     }, 320);
     return () => window.clearTimeout(timer);
@@ -581,7 +579,6 @@ export function WorkspacePage({
       setPdfData(output.pdfData);
       setCompileErrors(output.errors);
       setCompileDiagnostics(output.diagnostics);
-      setCompiledAt(output.compiledAt);
     };
     let cancelled = false;
     if (compileDocuments.length === 0) {
@@ -591,7 +588,6 @@ export function WorkspacePage({
       setPdfData(null);
       setCompileErrors(["Project has no source documents"]);
       setCompileDiagnostics([]);
-      setCompiledAt(Date.now());
       return;
     }
     if (compileInputKey === lastCompileInputKeyRef.current && lastCompileOutputRef.current) {
@@ -1377,19 +1373,15 @@ export function WorkspacePage({
             style={showPreviewPanel ? { flex: `${editorRatio} 1 0`, minWidth: 320 } : { flex: "1 1 auto", minWidth: 320 }}
           >
             <div className="panel-header">
-              <h2>{t("workspace.editor")}</h2>
+              <h2 title={activePath}>{activeFileName}</h2>
               <div className="panel-status compact">
-                <span className="status-pill" title={activePath}>
-                  {activeFileName}
-                </span>
-                <span className="status-pill">{isRevisionMode ? t("status.modeRevision") : t("status.modeLive")}</span>
-                <span className="status-pill">{t(`status.save${saveState.charAt(0).toUpperCase()}${saveState.slice(1)}`)}</span>
-                <span className="status-pill">{compiledAt ? new Date(compiledAt).toLocaleTimeString() : "n/a"}</span>
                 <button className="inline-toggle" onClick={() => setLineWrapEnabled((value) => !value)}>
                   {lineWrapEnabled ? t("status.wrapOn") : t("status.wrapOff")}
                 </button>
                 <span className="status-pill" title={remoteCursors.map((user) => user.name).join(", ")}>{`👥 ${remoteCursors.length}`}</span>
-                <span className={`status-pill ${serverReachable ? "ok" : "warn"}`}>{serverReachable ? "Online" : "Offline"}</span>
+                <span className={`status-pill ${connectionOnline ? "ok" : "warn"}`}>
+                  {connectionOnline ? t("status.online") : t("status.offline")}
+                </span>
               </div>
             </div>
             <div className="panel-content flush editor-panel-content">
@@ -1422,8 +1414,16 @@ export function WorkspacePage({
               {isRevisionMode && !activePathExistsInTree && (
                 <div className="error panel-inline-error">This file did not exist in this revision snapshot.</div>
               )}
-              {!serverReachable && <div className="error panel-inline-error connection-warning">{t("workspace.connectionLost")}</div>}
-              {realtimeRequired && serverReachable && realtimeStatus === "connecting" && (
+              {!apiReachable && <div className="error panel-inline-error connection-warning">{t("workspace.connectionLost")}</div>}
+              {realtimeRequired && apiReachable && realtimeStatus === "disconnected" && (
+                <div className="error panel-inline-error connection-warning connection-warning-row">
+                  <span>{reconnectState.active ? reconnectCountdownText : t("workspace.connectionLost")}</span>
+                  <UiButton size="sm" onClick={() => realtimeRef.current?.reconnectNow()}>
+                    {t("workspace.reconnectNow")}
+                  </UiButton>
+                </div>
+              )}
+              {realtimeRequired && apiReachable && realtimeStatus === "connecting" && !reconnectState.active && (
                 <div className="error panel-inline-error connection-warning">{t("workspace.connectionReconnecting")}</div>
               )}
               {workspaceError && <div className="error panel-inline-error">{workspaceError}</div>}

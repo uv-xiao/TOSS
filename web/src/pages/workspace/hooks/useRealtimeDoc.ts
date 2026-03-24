@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as Y from "yjs";
 import type { EditorChange } from "@/components/EditorPane";
-import { bindRealtimeYDoc, type PresencePeer, type RealtimeStatus } from "@/lib/realtime";
+import { bindRealtimeYDoc, type PresencePeer, type RealtimeStatus, type ReconnectState } from "@/lib/realtime";
 
 type UseRealtimeDocParams = {
   projectId: string;
@@ -26,12 +26,20 @@ export function useRealtimeDoc({
 }: UseRealtimeDocParams) {
   const ydocRef = useRef<Y.Doc | null>(null);
   const ytextRef = useRef<Y.Text | null>(null);
-  const realtimeRef = useRef<{ close: () => void; sendCursor: (cursor: { line: number; column: number }) => void } | null>(null);
+  const realtimeRef = useRef<{
+    close: () => void;
+    sendCursor: (cursor: { line: number; column: number }) => void;
+    reconnectNow: () => void;
+  } | null>(null);
   const lastSavedDocRef = useRef<string>("");
   const activeBindingRef = useRef<string>("");
 
   const [presence, setPresence] = useState<PresencePeer[]>([]);
   const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>("connecting");
+  const [reconnectState, setReconnectState] = useState<ReconnectState>({
+    active: false,
+    secondsRemaining: 0
+  });
   const [docText, setDocText] = useState("");
 
   const hasActiveLiveDoc = useMemo(
@@ -60,6 +68,7 @@ export function useRealtimeDoc({
       setPresence([]);
       setDocText("");
       setRealtimeStatus("disconnected");
+      setReconnectState({ active: false, secondsRemaining: 0 });
       return;
     }
     const fileContent = activeFileContent;
@@ -88,7 +97,8 @@ export function useRealtimeDoc({
       userId: effectiveUserId,
       userName: effectiveUserName,
       onPresenceChange: setPresence,
-      onStatusChange: setRealtimeStatus
+      onStatusChange: setRealtimeStatus,
+      onReconnectChange: setReconnectState
     });
     realtimeRef.current = realtime;
     return () => {
@@ -100,6 +110,7 @@ export function useRealtimeDoc({
       realtimeRef.current = null;
       setPresence([]);
       setRealtimeStatus("disconnected");
+      setReconnectState({ active: false, secondsRemaining: 0 });
     };
   }, [
     activePath,
@@ -135,6 +146,7 @@ export function useRealtimeDoc({
     lastSavedDocRef,
     presence,
     realtimeStatus,
+    reconnectState,
     docText,
     setDocText,
     hasActiveLiveDoc,

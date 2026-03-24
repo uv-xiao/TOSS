@@ -1117,6 +1117,14 @@ a {
   font-weight: 600;
 }
 
+.connection-warning-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .preview-runtime-status {
   display: flex;
   align-items: center;
