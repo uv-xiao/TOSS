@@ -126,6 +126,7 @@ export function WorkspacePage({
   const lastUploadedThumbnailRef = useRef<string>("");
   const lastCompileInputKeyRef = useRef<string>("");
   const lastCompileOutputRef = useRef<CompileOutput | null>(null);
+  const revisionLoadSeqRef = useRef(0);
 
   const [nodes, setNodes] = useState<ProjectNode[]>([]);
   const [entryFilePath, setEntryFilePath] = useState("main.typ");
@@ -147,6 +148,17 @@ export function WorkspacePage({
   const [revisionEntryFilePath, setRevisionEntryFilePath] = useState("main.typ");
   const [revisionAssetBase64, setRevisionAssetBase64] = useState<Record<string, string>>({});
   const [revisionAssetMeta, setRevisionAssetMeta] = useState<Record<string, AssetMeta>>({});
+  const [revisionLoading, setRevisionLoading] = useState<{
+    active: boolean;
+    revisionId: string | null;
+    loadedBytes: number;
+    totalBytes: number | null;
+  }>({
+    active: false,
+    revisionId: null,
+    loadedBytes: 0,
+    totalBytes: null
+  });
   const [showFilesPanel, setShowFilesPanel] = useState(true);
   const [showRevisionPanel, setShowRevisionPanel] = useState(false);
   const [showProjectSettingsPanel, setShowProjectSettingsPanel] = useState(false);
@@ -389,6 +401,12 @@ export function WorkspacePage({
     setRevisionAssetBase64({});
     setRevisionAssetMeta({});
     setRevisionEntryFilePath("main.typ");
+    setRevisionLoading({
+      active: false,
+      revisionId: null,
+      loadedBytes: 0,
+      totalBytes: null
+    });
     setCompileErrors([]);
     setCompileDiagnostics([]);
     setVectorData(null);
@@ -467,6 +485,12 @@ export function WorkspacePage({
     setRevisionAssetBase64({});
     setRevisionAssetMeta({});
     setRevisionEntryFilePath("main.typ");
+    setRevisionLoading({
+      active: false,
+      revisionId: null,
+      loadedBytes: 0,
+      totalBytes: null
+    });
   }, [activeRevisionId, showRevisionPanel]);
 
   useEffect(() => {
@@ -1142,16 +1166,40 @@ export function WorkspacePage({
   async function openRevision(revisionId: string) {
     if (!projectId) return;
     if (activeRevisionId === revisionId) {
+      revisionLoadSeqRef.current += 1;
       setActiveRevisionId(null);
       setRevisionDocs({});
       setRevisionNodes([]);
       setRevisionAssetBase64({});
       setRevisionAssetMeta({});
       setRevisionEntryFilePath("main.typ");
+      setRevisionLoading({
+        active: false,
+        revisionId: null,
+        loadedBytes: 0,
+        totalBytes: null
+      });
       return;
     }
+    const requestSeq = revisionLoadSeqRef.current + 1;
+    revisionLoadSeqRef.current = requestSeq;
+    setRevisionLoading({
+      active: true,
+      revisionId,
+      loadedBytes: 0,
+      totalBytes: null
+    });
     try {
-      const response = await getRevisionDocuments(projectId, revisionId);
+      const response = await getRevisionDocuments(projectId, revisionId, (progress) => {
+        if (revisionLoadSeqRef.current !== requestSeq) return;
+        setRevisionLoading({
+          active: true,
+          revisionId,
+          loadedBytes: progress.loadedBytes,
+          totalBytes: progress.totalBytes
+        });
+      });
+      if (revisionLoadSeqRef.current !== requestSeq) return;
       const map: Record<string, string> = {};
       for (const doc of response.documents) map[doc.path] = doc.content;
       const revisionAssets: Record<string, string> = {};
@@ -1170,8 +1218,16 @@ export function WorkspacePage({
       setActiveRevisionId(revisionId);
       setWorkspaceError(null);
     } catch (err) {
+      if (revisionLoadSeqRef.current !== requestSeq) return;
       const message = err instanceof Error ? err.message : "Unable to load revision snapshot";
       setWorkspaceError(message);
+    } finally {
+      if (revisionLoadSeqRef.current === requestSeq) {
+        setRevisionLoading((prev) => ({
+          ...prev,
+          active: false
+        }));
+      }
     }
   }
 
@@ -1245,12 +1301,19 @@ export function WorkspacePage({
   function toggleRevisionPanel() {
     setShowRevisionPanel((shown) => {
       if (shown) {
+        revisionLoadSeqRef.current += 1;
         setActiveRevisionId(null);
         setRevisionDocs({});
         setRevisionNodes([]);
         setRevisionAssetBase64({});
         setRevisionAssetMeta({});
         setRevisionEntryFilePath("main.typ");
+        setRevisionLoading({
+          active: false,
+          revisionId: null,
+          loadedBytes: 0,
+          totalBytes: null
+        });
       }
       return !shown;
     });
@@ -1530,6 +1593,10 @@ export function WorkspacePage({
               width={revisionsPanelWidth}
               revisions={revisions}
               activeRevisionId={activeRevisionId}
+              loading={revisionLoading.active}
+              loadingRevisionId={revisionLoading.revisionId}
+              loadingBytes={revisionLoading.loadedBytes}
+              loadingTotalBytes={revisionLoading.totalBytes}
               onOpenRevision={openRevision}
               t={t}
             />

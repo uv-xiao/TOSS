@@ -147,6 +147,11 @@ export type RevisionDocumentsResponse = {
   assets: RevisionAsset[];
 };
 
+export type DownloadProgress = {
+  loadedBytes: number;
+  totalBytes: number | null;
+};
+
 export type ProjectAsset = {
   id: string;
   project_id: string;
@@ -470,13 +475,45 @@ export async function listRevisions(projectId: string) {
   return parseJsonOrThrow<{ revisions: Revision[] }>(res, "Unable to list revisions");
 }
 
-export async function getRevisionDocuments(projectId: string, revisionId: string) {
+export async function getRevisionDocuments(
+  projectId: string,
+  revisionId: string,
+  onProgress?: (progress: DownloadProgress) => void
+) {
   const res = await fetch(apiUrl(`/v1/projects/${projectId}/revisions/${revisionId}/documents`), {
     cache: "no-store",
     credentials: authCredentials(),
     headers: authHeaders()
   });
-  return parseJsonOrThrow<RevisionDocumentsResponse>(res, "Unable to load revision documents");
+  if (!res.ok) await throwApiError(res, "Unable to load revision documents");
+  const totalHeader = Number.parseInt(res.headers.get("content-length") || "", 10);
+  const totalBytes = Number.isFinite(totalHeader) && totalHeader > 0 ? totalHeader : null;
+  if (!res.body) {
+    const payload = (await res.json()) as RevisionDocumentsResponse;
+    onProgress?.({ loadedBytes: totalBytes ?? 1, totalBytes });
+    return payload;
+  }
+
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let loadedBytes = 0;
+  onProgress?.({ loadedBytes: 0, totalBytes });
+  while (true) {
+    const next = await reader.read();
+    if (next.done) break;
+    if (!next.value) continue;
+    loadedBytes += next.value.byteLength;
+    chunks.push(next.value);
+    onProgress?.({ loadedBytes, totalBytes });
+  }
+  const fullBytes = new Uint8Array(loadedBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    fullBytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  const jsonText = new TextDecoder().decode(fullBytes);
+  return JSON.parse(jsonText) as RevisionDocumentsResponse;
 }
 
 export async function listProjectAssets(projectId: string) {
