@@ -404,33 +404,62 @@ async fn git_http_backend(
     };
 
     let (status, response_headers, response_body) = parse_cgi_http_backend_output(&output.stdout);
+    let mut post_sync_error: Option<String> = None;
     if can_push && status.is_success() {
-        if sync_repo_documents_to_project(&state, project_id, &config.local_path)
-            .await
-            .is_ok()
-        {
-            let _ = sqlx::query(
-                "update git_repositories set pending_sync = false, last_server_sync_at = $2 where project_id = $1",
-            )
-            .bind(project_id)
-            .bind(Utc::now())
-            .execute(&state.db)
-            .await;
-            let _ = sqlx::query("delete from git_pending_authors where project_id = $1")
+        match sync_repo_documents_to_project(&state, project_id, &config.local_path).await {
+            Ok(()) => {
+                let _ = sqlx::query(
+                    "update git_repositories set pending_sync = false, last_server_sync_at = $2 where project_id = $1",
+                )
                 .bind(project_id)
+                .bind(Utc::now())
                 .execute(&state.db)
                 .await;
-            write_audit(
-                &state.db,
-                Some(actor),
-                "git.receive_pack.accepted",
-                serde_json::json!({"project_id": project_id}),
-            )
-            .await;
-            let _ =
-                create_git_bundle_artifact(&state, project_id, &config.local_path, "receive_pack")
+                let _ = sqlx::query("delete from git_pending_authors where project_id = $1")
+                    .bind(project_id)
+                    .execute(&state.db)
                     .await;
+                write_audit(
+                    &state.db,
+                    Some(actor),
+                    "git.receive_pack.accepted",
+                    serde_json::json!({"project_id": project_id}),
+                )
+                .await;
+                let _ = create_git_bundle_artifact(&state, project_id, &config.local_path, "receive_pack")
+                    .await;
+            }
+            Err(err) => {
+                let _ = update_git_sync_state(
+                    &state.db,
+                    project_id,
+                    "receive_pack_import_failed",
+                    true,
+                    None,
+                    Some(Utc::now()),
+                )
+                .await;
+                write_audit(
+                    &state.db,
+                    Some(actor),
+                    "git.receive_pack.import_failed",
+                    serde_json::json!({
+                        "project_id": project_id,
+                        "error": err
+                    }),
+                )
+                .await;
+                post_sync_error = Some(err);
+            }
         }
+    }
+
+    if let Some(err) = post_sync_error {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Push accepted but server import failed: {err}"),
+        )
+            .into_response();
     }
 
     let mut builder = axum::http::Response::builder().status(status);
