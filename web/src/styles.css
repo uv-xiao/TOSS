@@ -137,14 +137,14 @@ a {
 }
 
 .page {
-  padding: 14px;
+  padding: 18px 20px;
   width: min(1240px, 100%);
   margin: 0 auto;
 }
 
 .profile-page {
   display: grid;
-  gap: 10px;
+  gap: 14px;
 }
 
 .profile-token-create {
@@ -181,12 +181,12 @@ a {
 
 .projects-page {
   display: grid;
-  gap: 14px;
+  gap: 16px;
 }
 
 .projects-page > .ui-card,
 .projects-page > .projects-title-row {
-  margin: 0 10px;
+  margin: 0 12px;
 }
 
 .projects-title-row {
@@ -201,13 +201,13 @@ a {
 
 .projects-create-bar {
   display: grid;
-  gap: 10px;
+  gap: 12px;
 }
 
 .projects-create-controls {
   display: grid;
   grid-template-columns: minmax(220px, 420px) max-content;
-  gap: 8px;
+  gap: 10px;
 }
 
 .projects-create-controls .button {
@@ -216,7 +216,7 @@ a {
 
 .projects-controls {
   display: grid;
-  gap: 8px;
+  gap: 10px;
 }
 
 .projects-grid-header,
@@ -231,20 +231,20 @@ a {
   color: var(--muted);
   font-size: 12px;
   font-weight: 600;
-  padding: 4px 8px;
+  padding: 6px 10px;
 }
 
 .projects-list {
   display: grid;
-  gap: 8px;
-  padding: 2px;
+  gap: 10px;
+  padding: 4px 2px;
 }
 
 .projects-row {
   border: 1px solid var(--border);
   border-radius: 12px;
   background: #fff;
-  padding: 10px 8px;
+  padding: 12px 10px;
 }
 
 .projects-row:hover {
@@ -300,7 +300,7 @@ a {
 }
 
 .projects-table-shell {
-  padding: 12px;
+  padding: 14px;
   overflow: hidden;
 }
 
@@ -361,7 +361,7 @@ a {
 
 .projects-org-memberships {
   display: grid;
-  gap: 8px;
+  gap: 10px;
 }
 
 .projects-org-list {
@@ -381,16 +381,16 @@ a {
 
 .card-list {
   display: grid;
-  gap: 10px;
+  gap: 12px;
 }
 
 .card {
   display: grid;
-  gap: 6px;
+  gap: 8px;
   border: 1px solid var(--border);
   background: var(--surface);
   border-radius: 12px;
-  padding: 12px;
+  padding: 14px;
   text-decoration: none;
   color: inherit;
 }
@@ -421,9 +421,9 @@ a {
   border: 1px solid var(--border);
   background: var(--surface);
   border-radius: 14px;
-  padding: 16px;
+  padding: 18px;
   display: grid;
-  gap: 12px;
+  gap: 14px;
 }
 
 .auth-fields {
@@ -1267,6 +1267,12 @@ label {
   border: 1px solid var(--border);
   background: var(--surface);
   box-shadow: var(--shadow-sm);
+}
+
+.ui-card {
+  padding: 14px;
+  display: grid;
+  gap: 10px;
 }
 
 .ui-button {
