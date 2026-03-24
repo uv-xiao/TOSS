@@ -1276,9 +1276,11 @@ export function WorkspacePage({
   function beginHorizontalResize(onDelta: (deltaX: number) => void) {
     return (event: ReactMouseEvent<HTMLDivElement>) => {
       event.preventDefault();
-      const startX = event.clientX;
+      let lastX = event.clientX;
       const onMove = (moveEvent: MouseEvent) => {
-        onDelta(moveEvent.clientX - startX);
+        const deltaX = moveEvent.clientX - lastX;
+        lastX = moveEvent.clientX;
+        if (deltaX !== 0) onDelta(deltaX);
       };
       const onUp = () => {
         window.removeEventListener("mousemove", onMove);
