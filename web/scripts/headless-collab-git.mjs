@@ -125,7 +125,7 @@ async function openWorkspace(page, projectId) {
     waitUntil: "domcontentloaded",
     timeout: 60000
   });
-  await page.getByRole("heading", { name: "Editor" }).waitFor({ timeout: 30000 });
+  await page.locator(".panel-editor .panel-header h2").first().waitFor({ timeout: 30000 });
   await page.locator(".tree-label", { hasText: "main.typ" }).first().click();
 }
 
@@ -279,14 +279,20 @@ async function main() {
     await login(pageB, collaborator.email, collaborator.password);
     await openWorkspace(pageA, projectId);
     await openWorkspace(pageB, projectId);
-    await pageA
-      .waitForFunction(() => (document.querySelector(".panel-status")?.textContent || "").includes("Live"), undefined, {
+    await pageA.waitForFunction(
+      () => !!document.querySelector(".panel-status .status-pill.ok, .panel-status .status-pill.warn"),
+      undefined,
+      {
         timeout: 30000
-      });
-    await pageB
-      .waitForFunction(() => (document.querySelector(".panel-status")?.textContent || "").includes("Live"), undefined, {
+      }
+    );
+    await pageB.waitForFunction(
+      () => !!document.querySelector(".panel-status .status-pill.ok, .panel-status .status-pill.warn"),
+      undefined,
+      {
         timeout: 30000
-      });
+      }
+    );
     await waitForCollaboratorName(pageA, "Git Collaborator", 15000);
     await waitForCanvas(pageA, 45000);
     await assertVisiblePreviewPage(pageA);

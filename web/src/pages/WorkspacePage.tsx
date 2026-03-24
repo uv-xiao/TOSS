@@ -321,6 +321,7 @@ export function WorkspacePage({
   const activeFileName = activePath.split("/").filter(Boolean).at(-1) || activePath;
   const realtimeRequired = isActiveTextDoc && !isRevisionMode;
   const connectionOnline = apiReachable && (!realtimeRequired || realtimeStatus === "connected");
+  const showConnectionWarning = realtimeRequired && !connectionOnline;
   const reconnectCountdownText = t("workspace.connectionLostReconnecting").replace(
     "{seconds}",
     String(Math.max(0, reconnectState.secondsRemaining))
@@ -1372,7 +1373,7 @@ export function WorkspacePage({
             className="panel panel-editor"
             style={showPreviewPanel ? { flex: `${editorRatio} 1 0`, minWidth: 320 } : { flex: "1 1 auto", minWidth: 320 }}
           >
-            <div className="panel-header">
+            <div className="panel-header workspace-main-header">
               <h2 title={activePath}>{activeFileName}</h2>
               <div className="panel-status compact">
                 <button className="inline-toggle" onClick={() => setLineWrapEnabled((value) => !value)}>
@@ -1414,8 +1415,7 @@ export function WorkspacePage({
               {isRevisionMode && !activePathExistsInTree && (
                 <div className="error panel-inline-error">This file did not exist in this revision snapshot.</div>
               )}
-              {!apiReachable && <div className="error panel-inline-error connection-warning">{t("workspace.connectionLost")}</div>}
-              {realtimeRequired && apiReachable && realtimeStatus === "disconnected" && (
+              {showConnectionWarning && realtimeStatus === "disconnected" && (
                 <div className="error panel-inline-error connection-warning connection-warning-row">
                   <span>{reconnectState.active ? reconnectCountdownText : t("workspace.connectionLost")}</span>
                   <UiButton size="sm" onClick={() => realtimeRef.current?.reconnectNow()}>
@@ -1423,7 +1423,7 @@ export function WorkspacePage({
                   </UiButton>
                 </div>
               )}
-              {realtimeRequired && apiReachable && realtimeStatus === "connecting" && !reconnectState.active && (
+              {showConnectionWarning && realtimeStatus === "connecting" && !reconnectState.active && (
                 <div className="error panel-inline-error connection-warning">{t("workspace.connectionReconnecting")}</div>
               )}
               {workspaceError && <div className="error panel-inline-error">{workspaceError}</div>}

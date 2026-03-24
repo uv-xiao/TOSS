@@ -587,6 +587,15 @@ a {
   font-weight: 700;
 }
 
+.workspace-main-header {
+  min-height: 42px;
+  padding: 0 10px;
+}
+
+.workspace-main-header .toolbar.compact {
+  flex-wrap: nowrap;
+}
+
 .panel-status {
   display: flex;
   flex-wrap: nowrap;

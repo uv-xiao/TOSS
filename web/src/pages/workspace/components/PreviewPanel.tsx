@@ -45,7 +45,7 @@ export function PreviewPanel({
 }) {
   return (
     <aside className="panel panel-preview" style={{ flex: `${1 - editorRatio} 1 0`, minWidth: 280 }}>
-      <div className="panel-header">
+      <div className="panel-header workspace-main-header">
         <h2>{t("workspace.preview")}</h2>
         <div className="toolbar compact">
           <UiIconButton
@@ -132,4 +132,3 @@ export function PreviewPanel({
     </aside>
   );
 }
-

@@ -103,17 +103,17 @@ async function openWorkspace(page, projectId) {
     waitUntil: "domcontentloaded",
     timeout: 60000
   });
-  await page.getByRole("heading", { name: "Editor" }).waitFor({ timeout: 30000 });
+  await page.locator(".panel-editor .panel-header h2").first().waitFor({ timeout: 30000 });
   await page.locator(".tree-label", { hasText: "main.typ" }).first().waitFor({ timeout: 30000 });
 }
 
 async function waitForActiveFile(page, filePath, timeoutMs = 10000) {
   await page.waitForFunction(
     (path) => {
-      const firstPill = document.querySelector(".panel-status .status-pill");
-      if (!firstPill) return false;
-      const title = firstPill.getAttribute("title") || "";
-      const text = firstPill.textContent || "";
+      const headerTitle = document.querySelector(".panel-editor .panel-header h2");
+      if (!headerTitle) return false;
+      const title = headerTitle.getAttribute("title") || "";
+      const text = headerTitle.textContent || "";
       return title === path || text.includes(path.split("/").filter(Boolean).pop() || path);
     },
     filePath,
@@ -447,7 +447,7 @@ try {
   }
 
   await pageA.reload({ waitUntil: "domcontentloaded", timeout: 60000 });
-  await pageA.getByRole("heading", { name: "Editor" }).waitFor({ timeout: 30000 });
+  await pageA.locator(".panel-editor .panel-header h2").first().waitFor({ timeout: 30000 });
   const widthsAfterReload = await pageA.evaluate(() => {
     const files = document.querySelector(".panel-files")?.getBoundingClientRect().width ?? 0;
     const editor = document.querySelector(".panel-editor")?.getBoundingClientRect().width ?? 0;
