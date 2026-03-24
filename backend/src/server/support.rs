@@ -1015,6 +1015,7 @@ async fn create_project_revision(
 }
 
 async fn mark_project_dirty(db: &PgPool, project_id: Uuid, actor_user_id: Option<Uuid>) {
+    let now = Utc::now();
     let _ = sqlx::query(
         "insert into git_repositories (project_id, remote_url, local_path, default_branch, pending_sync, updated_at)
          values ($1, $2, $3, 'main', true, $4)
@@ -1023,7 +1024,18 @@ async fn mark_project_dirty(db: &PgPool, project_id: Uuid, actor_user_id: Option
     .bind(project_id)
     .bind(Option::<String>::None)
     .bind(project_git_repo_path(project_id).to_string_lossy().to_string())
-    .bind(Utc::now())
+    .bind(now)
+    .execute(db)
+    .await;
+    let _ = sqlx::query(
+        "insert into project_sync_queue
+           (project_id, dirty_since, last_enqueued_at, last_attempt_at, attempt_count, last_error)
+         values ($1, $2, $2, null, 0, null)
+         on conflict (project_id) do update
+         set last_enqueued_at = excluded.last_enqueued_at",
+    )
+    .bind(project_id)
+    .bind(now)
     .execute(db)
     .await;
     if let Some(user_id) = actor_user_id {
@@ -1125,10 +1137,12 @@ async fn flush_pending_server_commit(
     .await
     .map_err(|e| e.to_string())?;
     let Some(row) = row else {
+        clear_project_sync_queue_item(db, project_id).await;
         return Ok(());
     };
     let pending_sync: bool = row.get("pending_sync");
     if !pending_sync {
+        clear_project_sync_queue_item(db, project_id).await;
         return Ok(());
     }
     let local_path: String = row.get("local_path");
@@ -1151,6 +1165,7 @@ async fn flush_pending_server_commit(
             .bind(project_id)
             .execute(db)
             .await;
+        clear_project_sync_queue_item(db, project_id).await;
         return Ok(());
     }
 
@@ -1217,6 +1232,7 @@ async fn flush_pending_server_commit(
         .bind(project_id)
         .execute(db)
         .await;
+    clear_project_sync_queue_item(db, project_id).await;
     Ok(())
 }
 
@@ -1239,9 +1255,8 @@ fn git_flush_worker_batch_size() -> i64 {
 async fn list_pending_sync_projects(db: &PgPool, limit: i64) -> Result<Vec<Uuid>, sqlx::Error> {
     let rows = sqlx::query(
         "select project_id
-         from git_repositories
-         where pending_sync = true
-         order by updated_at asc
+         from project_sync_queue
+         order by dirty_since asc
          limit $1",
     )
     .bind(limit)
@@ -1253,6 +1268,38 @@ async fn list_pending_sync_projects(db: &PgPool, limit: i64) -> Result<Vec<Uuid>
         .collect())
 }
 
+async fn mark_project_sync_attempt(db: &PgPool, project_id: Uuid) {
+    let _ = sqlx::query(
+        "update project_sync_queue
+         set last_attempt_at = $2,
+             attempt_count = attempt_count + 1
+         where project_id = $1",
+    )
+    .bind(project_id)
+    .bind(Utc::now())
+    .execute(db)
+    .await;
+}
+
+async fn clear_project_sync_queue_item(db: &PgPool, project_id: Uuid) {
+    let _ = sqlx::query("delete from project_sync_queue where project_id = $1")
+        .bind(project_id)
+        .execute(db)
+        .await;
+}
+
+async fn fail_project_sync_queue_item(db: &PgPool, project_id: Uuid, error_message: &str) {
+    let _ = sqlx::query(
+        "update project_sync_queue
+         set last_error = $2
+         where project_id = $1",
+    )
+    .bind(project_id)
+    .bind(error_message)
+    .execute(db)
+    .await;
+}
+
 fn spawn_git_flush_worker(state: AppState) {
     let interval = Duration::from_secs(git_flush_worker_interval_seconds());
     let batch_size = git_flush_worker_batch_size();
@@ -1261,6 +1308,7 @@ fn spawn_git_flush_worker(state: AppState) {
             match list_pending_sync_projects(&state.db, batch_size).await {
                 Ok(projects) => {
                     for project_id in projects {
+                        mark_project_sync_attempt(&state.db, project_id).await;
                         let _git_lock = acquire_git_project_lock(&state, project_id).await;
                         if let Err(err) = flush_pending_server_commit(&state.db, project_id, None).await
                         {
@@ -1268,6 +1316,9 @@ fn spawn_git_flush_worker(state: AppState) {
                                 "git flush worker failed for project {}: {}",
                                 project_id, err
                             );
+                            fail_project_sync_queue_item(&state.db, project_id, &err).await;
+                        } else {
+                            clear_project_sync_queue_item(&state.db, project_id).await;
                         }
                     }
                 }
