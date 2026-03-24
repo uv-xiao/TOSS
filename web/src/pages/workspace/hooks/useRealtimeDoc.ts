@@ -28,6 +28,7 @@ export function useRealtimeDoc({
   const ytextRef = useRef<Y.Text | null>(null);
   const realtimeRef = useRef<{ close: () => void; sendCursor: (cursor: { line: number; column: number }) => void } | null>(null);
   const lastSavedDocRef = useRef<string>("");
+  const activeBindingRef = useRef<string>("");
 
   const [presence, setPresence] = useState<PresencePeer[]>([]);
   const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>("connecting");
@@ -37,15 +38,21 @@ export function useRealtimeDoc({
     () => Object.prototype.hasOwnProperty.call(docs, activePath),
     [activePath, docs]
   );
+  const activeFileContent = docs[activePath] ?? "";
 
   useEffect(() => {
     if (isRevisionMode) return;
     if (!projectId || !activePath) {
+      activeBindingRef.current = "";
       setDocText("");
       return;
     }
-    setDocText(docs[activePath] ?? "");
-  }, [activePath, docs, isRevisionMode, projectId]);
+    const nextBinding = `${projectId}:${activePath}`;
+    if (activeBindingRef.current !== nextBinding) {
+      activeBindingRef.current = nextBinding;
+      setDocText(activeFileContent);
+    }
+  }, [activeFileContent, activePath, isRevisionMode, projectId]);
 
   useEffect(() => {
     if (!projectId || !activePath || isRevisionMode || !workspaceLoaded) return;
@@ -55,7 +62,7 @@ export function useRealtimeDoc({
       setRealtimeStatus("disconnected");
       return;
     }
-    const fileContent = docs[activePath] ?? "";
+    const fileContent = activeFileContent;
     const ydoc = new Y.Doc();
     const ytext = ydoc.getText("main");
     ydocRef.current = ydoc;
@@ -96,7 +103,6 @@ export function useRealtimeDoc({
     };
   }, [
     activePath,
-    docs,
     effectiveUserId,
     effectiveUserName,
     hasActiveLiveDoc,
@@ -135,4 +141,3 @@ export function useRealtimeDoc({
     applyDocumentDeltas
   };
 }
-
