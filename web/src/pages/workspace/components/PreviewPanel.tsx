@@ -12,6 +12,7 @@ export function PreviewPanel({
   previewIsPanning,
   compileDiagnostics,
   compileErrors,
+  hasPreviewPage,
   canvasPreviewRef,
   onBeginPreviewPan,
   onSetFitWholePage,
@@ -32,6 +33,7 @@ export function PreviewPanel({
   previewIsPanning: boolean;
   compileDiagnostics: CompileDiagnostic[];
   compileErrors: string[];
+  hasPreviewPage: boolean;
   canvasPreviewRef: React.RefObject<HTMLDivElement | null>;
   onBeginPreviewPan: (event: React.MouseEvent<HTMLDivElement>) => void;
   onSetFitWholePage: () => void;
@@ -43,6 +45,10 @@ export function PreviewPanel({
   onJumpToDiagnostic: (diagnostic: CompileDiagnostic) => void;
   t: (key: string) => string;
 }) {
+  const hasCompileFailure = compileDiagnostics.length > 0 || compileErrors.length > 0;
+  const showStaleOverlay = hasCompileFailure && hasPreviewPage;
+  const showEmptyErrorState = hasCompileFailure && !hasPreviewPage;
+
   return (
     <aside className="panel panel-preview" style={{ flex: `${1 - editorRatio} 1 0`, minWidth: 280 }}>
       <div className="panel-header workspace-main-header">
@@ -84,7 +90,7 @@ export function PreviewPanel({
           </UiIconButton>
         </div>
       </div>
-      <div className="panel-content flush">
+      <div className="panel-content flush preview-panel-content">
         {(typstRuntimeStatus.stage === "downloading-compiler" ||
           (typstRuntimeStatus.stage === "compiling" && !vectorData)) && (
           <div className="preview-runtime-status">
@@ -102,11 +108,25 @@ export function PreviewPanel({
             )}
           </div>
         )}
-        <div
-          ref={canvasPreviewRef}
-          className={`pdf-frame ${previewIsPanning ? "is-panning" : ""}`}
-          onMouseDown={onBeginPreviewPan}
-        />
+        <div className="preview-stage">
+          <div
+            ref={canvasPreviewRef}
+            className={`pdf-frame ${previewIsPanning ? "is-panning" : ""}`}
+            onMouseDown={onBeginPreviewPan}
+          />
+          {showStaleOverlay && (
+            <div className="preview-stale-overlay">
+              <strong>{t("preview.staleTitle")}</strong>
+              <span>{t("preview.staleHint")}</span>
+            </div>
+          )}
+          {showEmptyErrorState && (
+            <div className="preview-empty-error">
+              <strong>{t("preview.failedTitle")}</strong>
+              <span>{t("preview.failedHint")}</span>
+            </div>
+          )}
+        </div>
         {compileDiagnostics.length > 0 && (
           <div className="panel-inline-error diagnostics">
             {compileDiagnostics.map((diagnostic, index) => (

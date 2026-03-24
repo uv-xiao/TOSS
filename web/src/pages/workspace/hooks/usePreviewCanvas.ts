@@ -32,6 +32,7 @@ export function usePreviewCanvas({
   const lastRenderSignatureRef = useRef<string>("");
   const [previewRenderTick, setPreviewRenderTick] = useState(0);
   const [previewIsPanning, setPreviewIsPanning] = useState(false);
+  const [hasPreviewPage, setHasPreviewPage] = useState(false);
 
   useEffect(() => {
     onRenderErrorRef.current = onRenderError;
@@ -60,6 +61,7 @@ export function usePreviewCanvas({
     if (!frame) return;
     if (!vectorData) {
       lastRenderSignatureRef.current = "";
+      setHasPreviewPage(!!frame.querySelector(".pdf-pages .typst-page, .pdf-pages canvas"));
       setPreviewRenderTick((value) => value + 1);
       return;
     }
@@ -69,6 +71,7 @@ export function usePreviewCanvas({
     const alreadyRendered =
       lastRenderSignatureRef.current === renderSignature && !!frame.querySelector(".pdf-pages .typst-page, .pdf-pages canvas");
     if (alreadyRendered) {
+      setHasPreviewPage(true);
       setPreviewRenderTick((value) => value + 1);
       return;
     }
@@ -87,9 +90,11 @@ export function usePreviewCanvas({
             setPreviewZoom(zoom);
           }
         }
+        setHasPreviewPage(!!frame.querySelector(".pdf-pages .typst-page, .pdf-pages canvas"));
         setPreviewRenderTick((value) => value + 1);
       })
       .catch((err) => {
+        setHasPreviewPage(!!frame.querySelector(".pdf-pages .typst-page, .pdf-pages canvas"));
         const message = err instanceof Error ? err.message : "Preview render failed";
         onRenderErrorRef.current(message);
       });
@@ -185,6 +190,7 @@ export function usePreviewCanvas({
     canvasPreviewRef,
     previewRenderTick,
     previewIsPanning,
+    hasPreviewPage,
     beginPreviewPan
   };
 }

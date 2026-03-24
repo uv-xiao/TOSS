@@ -272,6 +272,7 @@ export function WorkspacePage({
     canvasPreviewRef,
     previewRenderTick,
     previewIsPanning,
+    hasPreviewPage,
     beginPreviewPan
   } = usePreviewCanvas({
     showPreviewPanel,
@@ -1518,6 +1519,7 @@ export function WorkspacePage({
               previewIsPanning={previewIsPanning}
               compileDiagnostics={compileDiagnostics}
               compileErrors={compileErrors}
+              hasPreviewPage={hasPreviewPage}
               canvasPreviewRef={canvasPreviewRef}
               onBeginPreviewPan={beginPreviewPan}
               onSetFitWholePage={setPreviewFitWholePage}
