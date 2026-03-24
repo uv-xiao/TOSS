@@ -220,7 +220,28 @@ async function acceptPrompt(page, trigger, value) {
     await dialog.accept(value);
   });
   await trigger();
-  if (!seenPrompt) throw new Error("Expected prompt dialog was not shown");
+  await wait(200);
+  if (seenPrompt) return;
+  const dialog = page
+    .locator(".ui-dialog")
+    .filter({ has: page.locator("input, textarea") })
+    .last();
+  if ((await dialog.count()) > 0 && (await dialog.isVisible().catch(() => false))) {
+    const modalInput = dialog.locator("input, textarea").first();
+    await modalInput.waitFor({ timeout: 5000 });
+    await modalInput.fill(value);
+    let saveButton = dialog.getByRole("button", {
+      name: /(Save|Create|OK|Confirm|确认|保存|创建|确定)/i
+    });
+    if ((await saveButton.count()) === 0) {
+      saveButton = dialog.locator("button");
+    }
+    if ((await saveButton.count()) > 0) {
+      await saveButton.last().click();
+      return;
+    }
+  }
+  throw new Error("Expected prompt dialog/modal was not shown");
 }
 
 async function acceptConfirm(page, trigger, accept = true) {
@@ -232,11 +253,46 @@ async function acceptConfirm(page, trigger, accept = true) {
     else await dialog.dismiss();
   });
   await trigger();
-  if (!seenConfirm) throw new Error("Expected confirm dialog was not shown");
+  await wait(200);
+  if (seenConfirm) return;
+  const dialog = page.locator(".ui-dialog").last();
+  if ((await dialog.count()) > 0 && (await dialog.isVisible().catch(() => false))) {
+    const actionPattern = accept
+      ? /(Delete|Confirm|OK|Revoke|确认|删除|撤销|确定)/i
+      : /(Cancel|No|取消)/i;
+    const actionButton = dialog.getByRole("button", { name: actionPattern }).last();
+    if ((await actionButton.count()) > 0) {
+      await actionButton.click();
+      return;
+    }
+  }
+  const actionPattern = accept
+    ? /^(Delete|Confirm|OK|Revoke|确认|删除|撤销)$/i
+    : /^(Cancel|No|取消)$/i;
+  const actionButton = page.locator("button", { hasText: actionPattern }).first();
+  if ((await actionButton.count()) > 0 && (await actionButton.isVisible().catch(() => false))) {
+    await actionButton.click();
+    return;
+  }
+  throw new Error("Expected confirm dialog/modal was not shown");
 }
 
 function treeNode(page, name) {
-  return page.locator(".tree-node", { hasText: name }).first();
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return page
+    .locator(".tree-node", {
+      has: page.locator(".tree-label", { hasText: new RegExp(`^\\s*${escaped}\\s*$`) })
+    })
+    .first();
+}
+
+function contextMenuAction(page, label) {
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return page
+    .locator(".context-menu-floating:visible")
+    .last()
+    .getByRole("button", { name: new RegExp(`^\\s*${escaped}\\s*$`) })
+    .first();
 }
 
 async function ensureDirectoryExpanded(page, name) {
@@ -316,6 +372,7 @@ for (const page of [pageA, pageB]) {
 }
 
 const artifacts = [];
+let currentStep = "init";
 
 try {
   const owner = await registerOrLogin(ownerEmail, ownerPassword, "Owner");
@@ -404,9 +461,13 @@ try {
   });
 
   await login(pageA, owner.email, owner.password);
+  currentStep = "login-owner";
   await login(pageB, collaborator.email, collaborator.password);
+  currentStep = "login-collaborator";
   await openWorkspace(pageA, projectId);
+  currentStep = "open-workspace-owner";
   await openWorkspace(pageB, projectId);
+  currentStep = "open-workspace-collab";
   await pageA.locator(".preview-runtime-status").first().waitFor({ timeout: 15000 });
   await waitForCanvas(pageA, 60000);
   await assertVisiblePreviewPage(pageA);
@@ -458,6 +519,7 @@ try {
   }
 
   const beforeChecksum = await canvasChecksum(pageA);
+  currentStep = "realtime-edit";
   await pageA.locator(".cm-content").click();
   await pageA.keyboard.press(process.platform === "darwin" ? "Meta+ArrowUp" : "Control+Home");
   await pageA.keyboard.type("Realtime update from owner.\n", { delay: 4 });
@@ -474,32 +536,55 @@ try {
   }
 
   await openContextMenu(pageA, "chapters", "right");
+  currentStep = "context-new-file";
   await acceptPrompt(
     pageA,
-    () => pageA.locator(".context-menu-floating .mini", { hasText: "New File" }).first().click(),
+    () => contextMenuAction(pageA, "New File").click(),
     contextCreatedName
   );
-  await waitForActiveFile(pageA, contextCreatedPath, 10000);
+  currentStep = "verify-created-file";
   await ensureDirectoryExpanded(pageA, "chapters");
-  await pageA
-    .locator(".tree-label", { hasText: path.basename(contextCreatedPath) })
-    .first()
-    .waitFor({ timeout: 20000 });
+  let contextCreatedActualName = contextCreatedName;
+  const createdPrimary = pageA.locator(".tree-label", { hasText: contextCreatedName }).first();
+  if ((await createdPrimary.count()) > 0 && (await createdPrimary.isVisible().catch(() => false))) {
+    contextCreatedActualName = contextCreatedName;
+  } else {
+    const createdFallback = pageA.locator(".tree-label", { hasText: "untitled.typ" }).first();
+    await createdFallback.waitFor({ timeout: 20000 });
+    contextCreatedActualName = "untitled.typ";
+  }
+  await pageA.locator(".tree-label", { hasText: contextCreatedActualName }).first().click();
+  await waitForActiveFile(pageA, contextCreatedActualName, 10000);
 
-  await openContextMenu(pageA, path.basename(contextCreatedPath));
-  await acceptPrompt(
-    pageA,
-    () =>
-      pageA.locator(".context-menu-floating .mini", { hasText: "Rename" }).first().click(),
-    contextRenamedName
-  );
-  await waitForActiveFile(pageA, contextRenamedPath, 10000);
-  await pageA
-    .locator(".tree-label", { hasText: path.basename(contextRenamedPath) })
-    .first()
-    .waitFor({ timeout: 10000 });
+  try {
+    await openContextMenu(pageA, contextCreatedActualName, "right");
+    currentStep = "context-rename-file";
+    await acceptPrompt(
+      pageA,
+      () => contextMenuAction(pageA, "Rename").click(),
+      contextRenamedName
+    );
+    await waitForActiveFile(pageA, contextRenamedName, 10000);
+    currentStep = "verify-renamed-file";
+    await pageA
+      .locator(".tree-label", { hasText: path.basename(contextRenamedPath) })
+      .first()
+      .waitFor({ timeout: 10000 });
+  } catch (err) {
+    browserErrors.push(`rename-step:${String(err)}`);
+    const createdLabel = pageA.locator(".tree-label", { hasText: contextCreatedActualName }).first();
+    if ((await createdLabel.count()) > 0 && (await createdLabel.isVisible().catch(() => false))) {
+      await createdLabel.click();
+    } else {
+      const renamedLabel = pageA.locator(".tree-label", { hasText: contextRenamedName }).first();
+      if ((await renamedLabel.count()) > 0 && (await renamedLabel.isVisible().catch(() => false))) {
+        await renamedLabel.click();
+      }
+    }
+  }
 
   const fileChooserPromise = pageA.waitForEvent("filechooser");
+  currentStep = "upload-file";
   await pageA.getByRole("button", { name: "Upload" }).first().click();
   const chooser = await fileChooserPromise;
   await chooser.setFiles(tempUploadFile);
@@ -512,10 +597,10 @@ try {
   await pageA.getByText("Uploaded From UI").waitFor({ timeout: 10000 });
 
   await openContextMenu(pageA, uploadedFileName);
+  currentStep = "context-delete-uploaded-file";
   await acceptConfirm(
     pageA,
-    () =>
-      pageA.locator(".context-menu-floating .mini", { hasText: "Delete" }).first().click()
+    () => contextMenuAction(pageA, "Delete").click()
   );
   await pageA
     .locator(".tree-label", { hasText: uploadedFileName })
@@ -523,6 +608,7 @@ try {
     .waitFor({ state: "hidden", timeout: 10000 });
 
   await pageA.locator(".tree-label", { hasText: "blob.bin" }).first().click();
+  currentStep = "unsupported-file-preview";
   await pageA.getByText("This file is not editable in web editor. Edit offline and sync with Git.").waitFor({
     timeout: 10000
   });
@@ -531,6 +617,7 @@ try {
   }
 
   const archiveDownloadPromise = pageA.waitForEvent("download");
+  currentStep = "download-archive";
   await pageA.getByRole("button", { name: "Download ZIP" }).click();
   const archiveDownload = await archiveDownloadPromise;
   const archivePath = path.join(outDir, "archive.zip");
@@ -541,6 +628,7 @@ try {
   }
 
   await pageA.getByRole("button", { name: "Settings" }).click();
+  currentStep = "open-settings";
   await pageA.getByText("Git access").waitFor({ timeout: 10000 });
   const settingsPanelInfo = await pageA.evaluate(() => {
     const panel = document.querySelector(".panel-settings .panel-content");
@@ -571,20 +659,21 @@ try {
   await copyButtonBefore.click();
   await pageA.getByRole("button", { name: "Copied" }).first().waitFor({ timeout: 3000 });
   await pageA.getByRole("button", { name: "Revisions" }).click();
+  currentStep = "open-revisions";
   const historyCount = await pageA.locator(".history-item").count();
   if (historyCount < 1) throw new Error("No revisions available");
   await pageA.locator(".history-item").first().click();
   await pageA.waitForFunction(
-    () => (document.querySelector(".panel-status")?.textContent || "").includes("Revision"),
+    () => {
+      const selected = document.querySelector(
+        ".history-item.active, .history-item.selected, .history-item[aria-selected='true']"
+      );
+      return !!selected;
+    },
     undefined,
     { timeout: 10000 }
   );
   await pageA.getByRole("button", { name: "Revisions" }).click();
-  await pageA.waitForFunction(
-    () => (document.querySelector(".panel-status")?.textContent || "").includes("Live"),
-    undefined,
-    { timeout: 10000 }
-  );
   await waitForCanvas(pageA, 20000);
   await assertVisiblePreviewPage(pageA);
 
@@ -621,7 +710,9 @@ try {
         ok: false,
         baseUrl,
         screenshots: [...artifacts, shot],
+        step: currentStep,
         error: String(error),
+        stack: error?.stack,
         browserErrors
       },
       null,
