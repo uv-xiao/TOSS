@@ -113,6 +113,24 @@ pub async fn run() {
         )
         .route("/v1/organizations/mine", get(list_my_organizations))
         .route("/v1/projects", get(list_projects).post(create_project))
+        .route("/v1/projects/{project_id}/copy", post(copy_project))
+        .route(
+            "/v1/projects/{project_id}/template",
+            put(update_project_template),
+        )
+        .route(
+            "/v1/projects/{project_id}/template-organization-access",
+            get(list_project_template_organization_access),
+        )
+        .route(
+            "/v1/projects/{project_id}/template-organization-access/{org_id}",
+            put(upsert_project_template_organization_access)
+                .delete(delete_project_template_organization_access),
+        )
+        .route(
+            "/v1/projects/{project_id}/thumbnail",
+            get(get_project_thumbnail).put(upload_project_thumbnail),
+        )
         .route("/v1/projects/{project_id}/tree", get(get_project_tree))
         .route("/v1/projects/{project_id}/files", post(create_project_file))
         .route(

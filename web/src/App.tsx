@@ -14,6 +14,15 @@ import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } fr
 import * as Y from "yjs";
 import { EditorPane, type EditorChange } from "@/components/EditorPane";
 import { HistoryPanel } from "@/components/HistoryPanel";
+import {
+  UiBadge,
+  UiButton,
+  UiCard,
+  UiDialog,
+  UiIconButton,
+  UiInput,
+  UiSelect
+} from "@/components/ui";
 import { bindRealtimeYDoc, type PresencePeer, type RealtimeStatus } from "@/lib/realtime";
 import {
   compileTypstClientSide,
@@ -25,8 +34,10 @@ import {
 import {
   createPersonalAccessToken,
   createProject,
+  copyProject,
   createProjectShareLink,
   createProjectFile,
+  deleteProjectTemplateOrganizationAccess,
   deleteProjectOrganizationAccess,
   downloadProjectArchive,
   deleteOrgGroupRoleMapping,
@@ -37,6 +48,7 @@ import {
   getGitRepoLink,
   getProjectAssetContent,
   getProjectSettings,
+  projectThumbnailUrl,
   getProjectTree,
   getRevisionDocuments,
   listDocuments,
@@ -46,6 +58,7 @@ import {
   listProjectAccessUsers,
   listProjectAssets,
   listProjectOrganizationAccess,
+  listProjectTemplateOrganizationAccess,
   listProjectShareLinks,
   listProjects,
   listRevisions,
@@ -57,6 +70,7 @@ import {
   revokeProjectShareLink,
   revokePersonalAccessToken,
   setProjectArchived,
+  updateProjectTemplate,
   type AdminAuthSettings,
   type AuthConfig,
   type AuthUser,
@@ -67,6 +81,7 @@ import {
   type ProjectAccessUser,
   type ProjectOrganizationAccess,
   type ProjectRole,
+  type ProjectTemplateOrganizationAccess,
   type ProjectShareLink,
   type Revision,
   moveProjectFile,
@@ -74,11 +89,31 @@ import {
   upsertDocumentByPath,
   upsertOrgGroupRoleMapping,
   upsertProjectOrganizationAccess,
+  upsertProjectTemplateOrganizationAccess,
   upsertProjectSettings,
+  uploadProjectThumbnail,
   uploadProjectAsset
 } from "@/lib/api";
 import { readStoredLocale, translate, type UiLocale } from "@/lib/i18n";
 import { loadProjectSnapshotFromCache, saveProjectSnapshotToCache } from "@/lib/projectCache";
+import { AdminPage } from "@/pages/AdminPage";
+import { ProfilePage } from "@/pages/ProfilePage";
+import { ProjectsPage } from "@/pages/ProjectsPage";
+import { SignInPage } from "@/pages/SignInPage";
+import type { ProjectCopyDialogState } from "@/types/project-ui";
+import {
+  Archive,
+  ArrowRight,
+  Copy,
+  Download,
+  FilePlus2,
+  FolderPlus,
+  Plus,
+  RefreshCw,
+  Upload,
+  ZoomIn,
+  ZoomOut
+} from "lucide-react";
 
 type ProjectTreeNodeView = {
   name: string;
@@ -98,6 +133,23 @@ type ContextMenuState = {
   x: number;
   y: number;
 };
+
+type PathDialogState =
+  | {
+      mode: "create";
+      kind: "file" | "directory";
+      parentPath: string;
+      value: string;
+    }
+  | {
+      mode: "rename";
+      path: string;
+      value: string;
+    }
+  | {
+      mode: "delete";
+      path: string;
+    };
 
 type WorkspaceLayoutPrefs = {
   filesWidth: number;
@@ -174,48 +226,6 @@ function parentProjectPath(path: string) {
   const idx = clean.lastIndexOf("/");
   if (idx < 0) return "";
   return clean.slice(0, idx);
-}
-
-function formatRelativeTime(iso: string) {
-  const at = Date.parse(iso);
-  if (!Number.isFinite(at)) return iso;
-  const diffMs = Date.now() - at;
-  const abs = Math.abs(diffMs);
-  const minute = 60_000;
-  const hour = 60 * minute;
-  const day = 24 * hour;
-  const week = 7 * day;
-  const month = 30 * day;
-  const year = 365 * day;
-  const rawValue =
-    abs < hour
-      ? Math.round(abs / minute)
-      : abs < day
-        ? Math.round(abs / hour)
-        : abs < week
-          ? Math.round(abs / day)
-          : abs < month
-            ? Math.round(abs / week)
-            : abs < year
-              ? Math.round(abs / month)
-              : Math.round(abs / year);
-  const value = Math.max(1, rawValue);
-  const unit =
-    abs < hour
-      ? "minute"
-      : abs < day
-        ? "hour"
-        : abs < week
-          ? "day"
-          : abs < month
-            ? "week"
-            : abs < year
-              ? "month"
-              : "year";
-  const formatter = new Intl.RelativeTimeFormat(readStoredLocale() === "zh-CN" ? "zh-CN" : "en", {
-    numeric: "auto"
-  });
-  return formatter.format(diffMs >= 0 ? -value : value, unit as Intl.RelativeTimeFormatUnit);
 }
 
 function isTextFile(path: string) {
@@ -521,31 +531,31 @@ export function App() {
       <header className={`topbar ${onWorkspaceRoute ? "workspace" : ""}`}>
         <strong className="topbar-brand">{siteName}</strong>
         {onWorkspaceRoute && (
-          <Link className="tab" to="/projects">
+          <UiButton className="tab" onClick={() => navigate("/projects")}>
             {t("nav.backToProjects")}
-          </Link>
+          </UiButton>
         )}
         <div className="topbar-workspace-slot">{onWorkspaceRoute ? workspaceTopbar : null}</div>
         <div className="meta">
           {!onWorkspaceRoute && (
             <>
-              <Link className={`tab ${onProjectsRoute ? "active" : ""}`} to="/projects">
+              <Link className={`ui-button ui-secondary ui-md tab ${onProjectsRoute ? "active" : ""}`} to="/projects">
                 {t("nav.projects")}
               </Link>
-              <Link className={`tab ${onProfileRoute ? "active" : ""}`} to="/profile">
+              <Link className={`ui-button ui-secondary ui-md tab ${onProfileRoute ? "active" : ""}`} to="/profile">
                 {t("nav.profile")}
               </Link>
               {hasOrgAdminAccess && (
-                <Link className={`tab ${onAdminRoute ? "active" : ""}`} to="/admin">
+                <Link className={`ui-button ui-secondary ui-md tab ${onAdminRoute ? "active" : ""}`} to="/admin">
                   {t("nav.admin")}
                 </Link>
               )}
             </>
           )}
           <span>{authUser.display_name}</span>
-          <button className="button" onClick={handleLogout}>
+          <UiButton onClick={handleLogout}>
             {t("nav.logout")}
-          </button>
+          </UiButton>
         </div>
       </header>
       {error && <div className="error-banner">{error}</div>}
@@ -571,6 +581,7 @@ export function App() {
                   projects={projects}
                   organizations={organizations}
                   authUser={authUser}
+                  refreshProjects={refreshProjects}
                   t={t}
                 />
               }
@@ -588,252 +599,17 @@ export function App() {
   );
 }
 
-function SignInPage({
-  config,
-  t,
-  onSignedIn
-}: {
-  config: AuthConfig | null;
-  t: (key: string) => string;
-  onSignedIn: () => Promise<void>;
-}) {
-  const [mode, setMode] = useState<"login" | "register">("login");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [displayName, setDisplayName] = useState("");
-  const [error, setError] = useState<string | null>(null);
-
-  async function submit() {
-    try {
-      setError(null);
-      if (mode === "login") {
-        await localLogin(email.trim(), password);
-      } else {
-        await localRegister({
-          email: email.trim(),
-          password,
-          display_name: displayName.trim() || undefined
-        });
-      }
-      await onSignedIn();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Authentication failed";
-      setError(message);
-    }
-  }
-
-  return (
-    <section className="auth-shell">
-      <div className="auth-card">
-        <h2>{t("auth.signIn")}</h2>
-        <p>{t("auth.subtitle")}</p>
-        <div className="toolbar">
-          <button className={`button ${mode === "login" ? "filled" : ""}`} onClick={() => setMode("login")}>
-            {t("auth.localLogin")}
-          </button>
-          {config?.allow_local_registration && (
-            <button className={`button ${mode === "register" ? "filled" : ""}`} onClick={() => setMode("register")}>
-              {t("auth.register")}
-            </button>
-          )}
-          {config?.allow_oidc && (
-            <a className="button" href={oidcLoginUrl()}>
-              {t("auth.oidcLogin")}
-            </a>
-          )}
-        </div>
-        <div className="auth-fields">
-          <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" />
-          <input
-            value={password}
-            type="password"
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="Password"
-          />
-          {mode === "register" && (
-            <input
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-              placeholder="Display name (optional)"
-            />
-          )}
-          <button className="button filled" onClick={submit} disabled={!email || !password}>
-            {t("auth.continue")}
-          </button>
-        </div>
-        {error && <div className="error">{error}</div>}
-      </div>
-    </section>
-  );
-}
-
-function ProjectsPage({
+function WorkspacePage({
   projects,
   organizations,
+  authUser,
   refreshProjects,
   t
 }: {
   projects: Project[];
   organizations: OrganizationMembership[];
-  refreshProjects: () => Promise<void>;
-  t: (key: string) => string;
-}) {
-  const [name, setName] = useState("");
-  const [search, setSearch] = useState("");
-  const [view, setView] = useState<"active" | "archived">("active");
-  const [busyProjectId, setBusyProjectId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const filteredProjects = useMemo(() => {
-    const keyword = search.trim().toLowerCase();
-    return projects
-      .filter((project) => (view === "archived" ? project.archived : !project.archived))
-      .filter((project) => {
-        if (!keyword) return true;
-        return (
-          project.name.toLowerCase().includes(keyword) ||
-          project.owner_display_name.toLowerCase().includes(keyword)
-        );
-      })
-      .sort((a, b) => Date.parse(b.last_edited_at) - Date.parse(a.last_edited_at));
-  }, [projects, search, view]);
-
-  return (
-    <section className="page projects-page">
-      <div className="projects-title-row">
-        <h2>{t("projects.title")}</h2>
-      </div>
-      <div className="card projects-create-bar">
-        <strong>{t("projects.createTitle")}</strong>
-        <div className="projects-create-controls">
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder={t("projects.namePlaceholder")} />
-          <button
-            className="button"
-            onClick={async () => {
-              if (!name.trim()) return;
-              try {
-                setError(null);
-                await createProject({ name: name.trim() });
-                setName("");
-                await refreshProjects();
-              } catch (err) {
-                const message = err instanceof Error ? err.message : "Unable to create project";
-                setError(message);
-              }
-            }}
-          >
-            {t("projects.createAction")}
-          </button>
-        </div>
-      </div>
-      <div className="card projects-controls">
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder={t("projects.searchPlaceholder")}
-          aria-label="Search projects"
-        />
-        <div className="toolbar compact-left">
-          <button className={`button ${view === "active" ? "filled" : ""}`} onClick={() => setView("active")}>
-            {t("projects.active")}
-          </button>
-          <button className={`button ${view === "archived" ? "filled" : ""}`} onClick={() => setView("archived")}>
-            {t("projects.archived")}
-          </button>
-        </div>
-      </div>
-      <div className="card projects-table-shell">
-        <div className="projects-table-scroll">
-          <table className="projects-table">
-            <thead>
-              <tr>
-                <th>{t("projects.tableTitle")}</th>
-                <th>{t("projects.tableOwner")}</th>
-                <th>{t("projects.tableLastEdited")}</th>
-                <th className="align-right">{t("projects.tableActions")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredProjects.map((project) => (
-                <tr key={project.id}>
-                  <td>
-                    <Link to={`/project/${project.id}`} className="project-title-link">
-                      {project.name}
-                    </Link>
-                  </td>
-                  <td>{project.owner_display_name}</td>
-                  <td title={new Date(project.last_edited_at).toLocaleString()}>{formatRelativeTime(project.last_edited_at)}</td>
-                  <td className="align-right">
-                    <div className="projects-row-actions">
-                      <Link className="button button-small" to={`/project/${project.id}`}>
-                        {t("projects.open")}
-                      </Link>
-                      <button
-                        className="button button-small"
-                        disabled={busyProjectId === project.id}
-                        onClick={async () => {
-                          try {
-                            setError(null);
-                            setBusyProjectId(project.id);
-                            await setProjectArchived(project.id, !project.archived);
-                            await refreshProjects();
-                          } catch (err) {
-                            const message =
-                              err instanceof Error
-                                ? err.message
-                                : project.archived
-                                  ? "Unable to unarchive project"
-                                  : "Unable to archive project";
-                            setError(message);
-                          } finally {
-                            setBusyProjectId(null);
-                          }
-                        }}
-                      >
-                        {project.archived ? t("projects.unarchive") : t("projects.archive")}
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-              {filteredProjects.length === 0 && (
-                <tr>
-                  <td colSpan={4} className="projects-empty">
-                    {t("projects.empty")}
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-      <div className="card projects-org-memberships">
-        <strong>{t("projects.organizations")}</strong>
-        <div className="projects-org-list">
-          {organizations.length > 0 ? (
-            organizations.map((org) => (
-              <span key={org.organization_id} className="org-pill">
-                {org.organization_name}
-              </span>
-            ))
-          ) : (
-            <span className="muted">{t("projects.noOrganizations")}</span>
-          )}
-        </div>
-      </div>
-      {error && <div className="error">{error}</div>}
-    </section>
-  );
-}
-
-function WorkspacePage({
-  projects,
-  organizations,
-  authUser,
-  t
-}: {
-  projects: Project[];
-  organizations: OrganizationMembership[];
   authUser: AuthUser;
+  refreshProjects: () => Promise<void>;
   t: (key: string) => string;
 }) {
   const setWorkspaceTopbar = useContext(WorkspaceTopbarContext);
@@ -849,6 +625,8 @@ function WorkspacePage({
   const previewPanCleanupRef = useRef<(() => void) | null>(null);
   const lastSavedDocRef = useRef<string>("");
   const copyNoticeTimerRef = useRef<number | null>(null);
+  const thumbnailUploadTimerRef = useRef<number | null>(null);
+  const lastUploadedThumbnailRef = useRef<string>("");
 
   const [nodes, setNodes] = useState<{ path: string; kind: "file" | "directory" }[]>([]);
   const [entryFilePath, setEntryFilePath] = useState("main.typ");
@@ -894,7 +672,12 @@ function WorkspacePage({
   const [filesDropActive, setFilesDropActive] = useState(false);
   const [shareLinks, setShareLinks] = useState<ProjectShareLink[]>([]);
   const [projectOrgAccess, setProjectOrgAccess] = useState<ProjectOrganizationAccess[]>([]);
+  const [projectTemplateOrgAccess, setProjectTemplateOrgAccess] = useState<ProjectTemplateOrganizationAccess[]>([]);
   const [projectAccessUsers, setProjectAccessUsers] = useState<ProjectAccessUser[]>([]);
+  const [templateEnabled, setTemplateEnabled] = useState(false);
+  const [pathDialog, setPathDialog] = useState<PathDialogState | null>(null);
+  const [copyDialog, setCopyDialog] = useState<ProjectCopyDialogState | null>(null);
+  const [copyBusy, setCopyBusy] = useState(false);
   const [typstRuntimeStatus, setTypstRuntimeStatus] = useState<TypstRuntimeStatus>({ stage: "idle" });
   const [apiReachable, setApiReachable] = useState(true);
   const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>("connecting");
@@ -1003,8 +786,28 @@ function WorkspacePage({
   const realtimeRequired = isActiveTextDoc && !isRevisionMode;
   const serverReachable = apiReachable && (!realtimeRequired || realtimeStatus !== "disconnected");
 
+  useEffect(() => {
+    if (!project?.is_template) return;
+    setCopyDialog((current) => {
+      if (current && current.projectId === project.id) return current;
+      return {
+        projectId: project.id,
+        sourceName: project.name,
+        suggestedName: `${project.name} ${t("projects.copySuffix")}`
+      };
+    });
+  }, [project?.id, project?.is_template, project?.name, t]);
+
+  useEffect(() => {
+    setTemplateEnabled(!!project?.is_template);
+  }, [project?.id, project?.is_template]);
+
   const refreshProjectData = async () => {
     if (!projectId) return;
+    if (project?.is_template && !project.can_read) {
+      setWorkspaceLoaded(true);
+      return;
+    }
     setWorkspaceLoaded(false);
     const cached = loadProjectSnapshotFromCache(projectId);
     if (cached) {
@@ -1024,6 +827,9 @@ function WorkspacePage({
     const orgAccessPromise = canManageProject
       ? listProjectOrganizationAccess(projectId).catch(() => [])
       : Promise.resolve([]);
+    const templateOrgAccessPromise = canManageProject
+      ? listProjectTemplateOrganizationAccess(projectId).catch(() => [])
+      : Promise.resolve([]);
     const accessUsersPromise = canManageProject
       ? listProjectAccessUsers(projectId).then((res) => res.users).catch(() => [])
       : Promise.resolve([]);
@@ -1036,6 +842,7 @@ function WorkspacePage({
         listProjectAssets(projectId).catch(() => ({ assets: [] })),
         sharePromise,
         orgAccessPromise,
+        templateOrgAccessPromise,
         accessUsersPromise
       ]).catch((err) => {
         if (cached) {
@@ -1046,7 +853,7 @@ function WorkspacePage({
         throw err;
       });
     if (!responseTuple) return;
-    let [treeRes, settings, git, docsRes, revisionsRes, assetsRes, shareRes, orgAccessRes, accessUsersRes] = responseTuple;
+    let [treeRes, settings, git, docsRes, revisionsRes, assetsRes, shareRes, orgAccessRes, templateOrgAccessRes, accessUsersRes] = responseTuple;
     if (!treeRes.nodes.some((node) => node.kind === "file")) {
       await createProjectFile(projectId, {
         path: "main.typ",
@@ -1063,6 +870,7 @@ function WorkspacePage({
     setRevisions(revisionsRes.revisions || []);
     setShareLinks(shareRes);
     setProjectOrgAccess(orgAccessRes);
+    setProjectTemplateOrgAccess(templateOrgAccessRes);
     setProjectAccessUsers(accessUsersRes);
 
     const nextDocs: Record<string, string> = {};
@@ -1117,6 +925,9 @@ function WorkspacePage({
       if (copyNoticeTimerRef.current) {
         window.clearTimeout(copyNoticeTimerRef.current);
       }
+      if (thumbnailUploadTimerRef.current) {
+        window.clearTimeout(thumbnailUploadTimerRef.current);
+      }
     };
   }, []);
 
@@ -1156,6 +967,7 @@ function WorkspacePage({
     setPresence([]);
     setDocText("");
     setContextMenu(null);
+    setProjectTemplateOrgAccess([]);
     refreshProjectData().catch((err) => {
       const message = err instanceof Error ? err.message : "Unable to load workspace";
       setWorkspaceError(message);
@@ -1183,11 +995,13 @@ function WorkspacePage({
     Promise.all([
       listProjectShareLinks(projectId).catch(() => []),
       listProjectOrganizationAccess(projectId).catch(() => []),
+      listProjectTemplateOrganizationAccess(projectId).catch(() => []),
       listProjectAccessUsers(projectId).then((res) => res.users).catch(() => [])
     ])
-      .then(([shares, orgAccess, users]) => {
+      .then(([shares, orgAccess, templateOrgAccess, users]) => {
         setShareLinks(shares);
         setProjectOrgAccess(orgAccess);
+        setProjectTemplateOrgAccess(templateOrgAccess);
         setProjectAccessUsers(users);
       })
       .catch(() => undefined);
@@ -1479,6 +1293,51 @@ function WorkspacePage({
   }, [previewPixelPerPt, showPreviewPanel, vectorData]);
 
   useEffect(() => {
+    if (!projectId || !workspaceLoaded || isRevisionMode || !showPreviewPanel) return;
+    if (!vectorData || compileDiagnostics.length > 0 || compileErrors.length > 0) return;
+    const frame = canvasPreviewRef.current;
+    if (!frame) return;
+    const firstCanvas = frame.querySelector(".pdf-pages canvas") as HTMLCanvasElement | null;
+    if (!firstCanvas) return;
+    if (thumbnailUploadTimerRef.current) {
+      window.clearTimeout(thumbnailUploadTimerRef.current);
+    }
+    thumbnailUploadTimerRef.current = window.setTimeout(() => {
+      const latestCanvas = (canvasPreviewRef.current?.querySelector(".pdf-pages canvas") ||
+        firstCanvas) as HTMLCanvasElement | null;
+      if (!latestCanvas) return;
+      const dataUrl = latestCanvas.toDataURL("image/png");
+      const base64 = dataUrl.split(",")[1] || "";
+      if (!base64) return;
+      const digest = `${base64.length}:${base64.slice(0, 128)}`;
+      if (digest === lastUploadedThumbnailRef.current) return;
+      uploadProjectThumbnail(projectId, {
+        content_base64: base64,
+        content_type: "image/png"
+      })
+        .then(() => {
+          lastUploadedThumbnailRef.current = digest;
+        })
+        .catch(() => undefined);
+    }, 1200);
+    return () => {
+      if (thumbnailUploadTimerRef.current) {
+        window.clearTimeout(thumbnailUploadTimerRef.current);
+        thumbnailUploadTimerRef.current = null;
+      }
+    };
+  }, [
+    compileDiagnostics.length,
+    compileErrors.length,
+    isRevisionMode,
+    previewRenderTick,
+    projectId,
+    showPreviewPanel,
+    vectorData,
+    workspaceLoaded
+  ]);
+
+  useEffect(() => {
     const frame = canvasPreviewRef.current;
     if (!frame) return;
     const pages = frame.querySelector(".pdf-pages") as HTMLElement | null;
@@ -1565,65 +1424,73 @@ function WorkspacePage({
     });
   }
 
-  async function addPath(kind: "file" | "directory", parentPath = "") {
+  function addPath(kind: "file" | "directory", parentPath = "") {
     if (!projectId || !canWrite || isRevisionMode) return;
     const placeholder = kind === "file" ? "untitled.typ" : "folder";
-    const suggested = joinProjectPath(parentPath, placeholder);
-    const raw = window.prompt(kind === "file" ? "New file path" : "New directory path", suggested);
-    if (!raw) return;
-    let normalized = normalizePath(raw);
-    if (parentPath && !normalized.includes("/")) {
-      normalized = joinProjectPath(parentPath, normalized);
-    }
-    try {
-      setContextMenu(null);
-      await createProjectFile(projectId, {
-        path: normalized,
-        kind,
-        content: kind === "file" ? "" : undefined
-      });
-      await refreshProjectData();
-      if (kind === "file") setActivePath(normalized);
-      setWorkspaceError(null);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to create path";
-      setWorkspaceError(message);
-    }
+    setPathDialog({
+      mode: "create",
+      kind,
+      parentPath,
+      value: joinProjectPath(parentPath, placeholder)
+    });
   }
 
-  async function renamePath(path: string) {
+  function renamePath(path: string) {
     if (!projectId || !canWrite || isRevisionMode) return;
-    const to = window.prompt("Rename to", path);
-    if (!to) return;
-    let normalizedTo = normalizePath(to);
-    const parentPath = parentProjectPath(path);
-    if (parentPath && !normalizedTo.includes("/")) {
-      normalizedTo = joinProjectPath(parentPath, normalizedTo);
-    }
-    if (normalizedTo === path) return;
-    try {
-      await moveProjectFile(projectId, path, normalizedTo);
-      setContextMenu(null);
-      await refreshProjectData();
-      if (activePath === path) setActivePath(normalizedTo);
-      setWorkspaceError(null);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to rename path";
-      setWorkspaceError(message);
-    }
+    setPathDialog({
+      mode: "rename",
+      path,
+      value: path
+    });
   }
 
-  async function removePath(path: string) {
+  function removePath(path: string) {
     if (!projectId || !canWrite || isRevisionMode) return;
-    if (!window.confirm(`Delete ${path}?`)) return;
+    setPathDialog({
+      mode: "delete",
+      path
+    });
+  }
+
+  async function submitPathDialog() {
+    if (!projectId || !pathDialog || !canWrite || isRevisionMode) return;
     try {
-      await deleteProjectFile(projectId, path);
       setContextMenu(null);
-      if (activePath === path) setActivePath(entryFilePath);
-      await refreshProjectData();
+      if (pathDialog.mode === "create") {
+        let normalized = normalizePath(pathDialog.value);
+        if (pathDialog.parentPath && !normalized.includes("/")) {
+          normalized = joinProjectPath(pathDialog.parentPath, normalized);
+        }
+        if (!normalized) return;
+        await createProjectFile(projectId, {
+          path: normalized,
+          kind: pathDialog.kind,
+          content: pathDialog.kind === "file" ? "" : undefined
+        });
+        await refreshProjectData();
+        if (pathDialog.kind === "file") setActivePath(normalized);
+      } else if (pathDialog.mode === "rename") {
+        let normalizedTo = normalizePath(pathDialog.value);
+        const parentPath = parentProjectPath(pathDialog.path);
+        if (parentPath && !normalizedTo.includes("/")) {
+          normalizedTo = joinProjectPath(parentPath, normalizedTo);
+        }
+        if (!normalizedTo || normalizedTo === pathDialog.path) {
+          setPathDialog(null);
+          return;
+        }
+        await moveProjectFile(projectId, pathDialog.path, normalizedTo);
+        await refreshProjectData();
+        if (activePath === pathDialog.path) setActivePath(normalizedTo);
+      } else {
+        await deleteProjectFile(projectId, pathDialog.path);
+        if (activePath === pathDialog.path) setActivePath(entryFilePath);
+        await refreshProjectData();
+      }
+      setPathDialog(null);
       setWorkspaceError(null);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to delete path";
+      const message = err instanceof Error ? err.message : "Unable to update path";
       setWorkspaceError(message);
     }
   }
@@ -1804,6 +1671,24 @@ function WorkspacePage({
     }
   }
 
+  async function createProjectFromTemplate() {
+    if (!copyDialog || !copyDialog.suggestedName.trim()) return;
+    try {
+      setCopyBusy(true);
+      const created = await copyProject(copyDialog.projectId, {
+        name: copyDialog.suggestedName.trim()
+      });
+      setCopyDialog(null);
+      await refreshProjects().catch(() => undefined);
+      navigate(`/project/${created.id}`, { replace: true });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : t("projects.copyFailed");
+      setWorkspaceError(message);
+    } finally {
+      setCopyBusy(false);
+    }
+  }
+
   async function upsertOrgAccessGrant(organizationId: string, permission: "read" | "write") {
     if (!projectId) return;
     try {
@@ -1821,6 +1706,25 @@ function WorkspacePage({
     }
   }
 
+  async function setTemplateState(next: boolean) {
+    if (!projectId) return;
+    try {
+      await updateProjectTemplate(projectId, next);
+      setTemplateEnabled(next);
+      await refreshProjects().catch(() => undefined);
+      if (next) {
+        const grants = await listProjectTemplateOrganizationAccess(projectId).catch(() => []);
+        setProjectTemplateOrgAccess(grants);
+      } else {
+        setProjectTemplateOrgAccess([]);
+      }
+      setWorkspaceError(null);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to update template settings";
+      setWorkspaceError(message);
+    }
+  }
+
   async function removeOrgAccessGrant(organizationId: string) {
     if (!projectId) return;
     try {
@@ -1834,6 +1738,36 @@ function WorkspacePage({
       setWorkspaceError(null);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unable to remove organization access";
+      setWorkspaceError(message);
+    }
+  }
+
+  async function upsertTemplateOrgAccessGrant(organizationId: string) {
+    if (!projectId) return;
+    try {
+      await upsertProjectTemplateOrganizationAccess(projectId, organizationId);
+      const [grants] = await Promise.all([
+        listProjectTemplateOrganizationAccess(projectId).catch(() => [])
+      ]);
+      setProjectTemplateOrgAccess(grants);
+      setWorkspaceError(null);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to update template access";
+      setWorkspaceError(message);
+    }
+  }
+
+  async function removeTemplateOrgAccessGrant(organizationId: string) {
+    if (!projectId) return;
+    try {
+      await deleteProjectTemplateOrganizationAccess(projectId, organizationId);
+      const [grants] = await Promise.all([
+        listProjectTemplateOrganizationAccess(projectId).catch(() => [])
+      ]);
+      setProjectTemplateOrgAccess(grants);
+      setWorkspaceError(null);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to update template access";
       setWorkspaceError(message);
     }
   }
@@ -2006,16 +1940,16 @@ function WorkspacePage({
     () => (
       <div className="workspace-topbar-controls">
         <label className="workspace-project-picker workspace-topbar-project" aria-label={t("nav.projects")}>
-          <select value={projectId} onChange={(e) => navigate(`/project/${e.target.value}`)}>
+          <UiSelect value={projectId} onChange={(e) => navigate(`/project/${e.target.value}`)}>
             {projects.map((item) => (
               <option value={item.id} key={item.id}>
                 {item.name}
               </option>
             ))}
-          </select>
+          </UiSelect>
         </label>
         <div className="workspace-icon-toggles">
-          <button
+          <UiButton
             className={`icon-toggle ${showFilesPanel ? "active" : ""}`}
             aria-label={t("workspace.files")}
             title={t("workspace.files")}
@@ -2023,8 +1957,8 @@ function WorkspacePage({
           >
             <span aria-hidden>☰</span>
             <span>{t("workspace.files")}</span>
-          </button>
-          <button
+          </UiButton>
+          <UiButton
             className={`icon-toggle ${showPreviewPanel ? "active" : ""}`}
             aria-label={t("workspace.preview")}
             title={t("workspace.preview")}
@@ -2032,8 +1966,8 @@ function WorkspacePage({
           >
             <span aria-hidden>▭</span>
             <span>{t("workspace.preview")}</span>
-          </button>
-          <button
+          </UiButton>
+          <UiButton
             className={`icon-toggle ${showProjectSettingsPanel ? "active" : ""}`}
             aria-label={t("workspace.settings")}
             title={t("workspace.settings")}
@@ -2041,8 +1975,8 @@ function WorkspacePage({
           >
             <span aria-hidden>⚙</span>
             <span>{t("workspace.settings")}</span>
-          </button>
-          <button
+          </UiButton>
+          <UiButton
             className={`icon-toggle ${showRevisionPanel ? "active" : ""}`}
             aria-label={t("workspace.revisions")}
             title={t("workspace.revisions")}
@@ -2050,7 +1984,7 @@ function WorkspacePage({
           >
             <span aria-hidden>↺</span>
             <span>{t("workspace.revisions")}</span>
-          </button>
+          </UiButton>
         </div>
       </div>
     ),
@@ -2074,6 +2008,64 @@ function WorkspacePage({
   if (!projectId) return <Navigate to="/projects" replace />;
   if (!project && projects.length > 0) {
     return <Navigate to={`/project/${projects[0].id}`} replace />;
+  }
+  if (project?.is_template) {
+    return (
+      <section className="page">
+        <UiCard className="template-open-card">
+          <h2>{t("projects.useTemplate")}</h2>
+          <p>{`${t("projects.copyDialogHint")} ${project.name}`}</p>
+          <div className="toolbar">
+            <UiButton onClick={() => navigate("/projects")}>{t("nav.backToProjects")}</UiButton>
+            <UiButton
+              variant="primary"
+              onClick={() =>
+                setCopyDialog({
+                  projectId: project.id,
+                  sourceName: project.name,
+                  suggestedName: `${project.name} ${t("projects.copySuffix")}`
+                })
+              }
+            >
+              {t("projects.copyAction")}
+            </UiButton>
+          </div>
+        </UiCard>
+        <UiDialog
+          open={!!copyDialog}
+          title={t("projects.copyDialogTitle")}
+          description={copyDialog ? `${t("projects.copyDialogHint")} ${copyDialog.sourceName}` : undefined}
+          onClose={() => setCopyDialog(null)}
+          actions={
+            <>
+              <UiButton onClick={() => setCopyDialog(null)}>{t("common.cancel")}</UiButton>
+              <UiButton
+                variant="primary"
+                onClick={createProjectFromTemplate}
+                disabled={copyBusy || !copyDialog?.suggestedName.trim()}
+              >
+                {copyBusy ? t("projects.copying") : t("projects.copyAction")}
+              </UiButton>
+            </>
+          }
+        >
+          <UiInput
+            value={copyDialog?.suggestedName ?? ""}
+            onChange={(e) =>
+              setCopyDialog((current) =>
+                current
+                  ? {
+                      ...current,
+                      suggestedName: e.target.value
+                    }
+                  : current
+              )
+            }
+            placeholder={t("projects.namePlaceholder")}
+          />
+        </UiDialog>
+      </section>
+    );
   }
 
   return (
@@ -2106,15 +2098,22 @@ function WorkspacePage({
                 onDrop={onTreeDrop}
               >
                 <div className="toolbar compact-left">
-                  <button className="button" onClick={() => addPath("file")} disabled={!canWrite || isRevisionMode}>
+                  <UiButton onClick={() => addPath("file")} disabled={!canWrite || isRevisionMode}>
+                    <FilePlus2 size={16} />
                     {t("workspace.newFile")}
-                  </button>
-                  <button className="button" onClick={() => addPath("directory")} disabled={!canWrite || isRevisionMode}>
+                  </UiButton>
+                  <UiButton onClick={() => addPath("directory")} disabled={!canWrite || isRevisionMode}>
+                    <FolderPlus size={16} />
                     {t("workspace.newFolder")}
-                  </button>
-                  <button className="button" onClick={() => uploadFromPicker()} disabled={!canWrite || isRevisionMode}>
-                    {t("workspace.upload")}
-                  </button>
+                  </UiButton>
+                  <UiIconButton
+                    tooltip={t("workspace.upload")}
+                    label={t("workspace.upload")}
+                    onClick={() => uploadFromPicker()}
+                    disabled={!canWrite || isRevisionMode}
+                  >
+                    <Upload size={16} />
+                  </UiIconButton>
                 </div>
                 <div className="tree">
                   {tree.map((node) => (
@@ -2242,56 +2241,40 @@ function WorkspacePage({
               <div className="panel-header">
                 <h2>{t("workspace.preview")}</h2>
                 <div className="toolbar compact">
-                  <button
-                    className={`icon-button ${previewFitMode === "page" ? "filled" : ""}`}
-                    title="Fit Whole Page"
-                    aria-label="Fit Whole Page"
+                  <UiIconButton
+                    tooltip={t("preview.fitWhole")}
+                    label={t("preview.fitWhole")}
+                    className={previewFitMode === "page" ? "active" : ""}
                     onClick={setPreviewFitWholePage}
                   >
                     ⤢
-                  </button>
-                  <button
-                    className={`icon-button ${previewFitMode === "width" ? "filled" : ""}`}
-                    title="Fit Page Width"
-                    aria-label="Fit Page Width"
+                  </UiIconButton>
+                  <UiIconButton
+                    tooltip={t("preview.fitWidth")}
+                    label={t("preview.fitWidth")}
+                    className={previewFitMode === "width" ? "active" : ""}
                     onClick={setPreviewFitPageWidth}
                   >
                     ↔
-                  </button>
-                  <button
-                    className="icon-button"
-                    title="Zoom Out"
-                    aria-label="Zoom Out"
-                    onClick={decreasePreviewZoom}
-                  >
-                    －
-                  </button>
+                  </UiIconButton>
+                  <UiIconButton tooltip={t("preview.zoomOut")} label={t("preview.zoomOut")} onClick={decreasePreviewZoom}>
+                    <ZoomOut size={16} />
+                  </UiIconButton>
                   <span className="zoom-indicator">{previewPercent}%</span>
-                  <button
-                    className="icon-button"
-                    title="Zoom In"
-                    aria-label="Zoom In"
-                    onClick={increasePreviewZoom}
-                  >
-                    ＋
-                  </button>
-                  <button
-                    className="icon-button"
-                    title={t("preview.downloadPdf")}
-                    aria-label={t("preview.downloadPdf")}
+                  <UiIconButton tooltip={t("preview.zoomIn")} label={t("preview.zoomIn")} onClick={increasePreviewZoom}>
+                    <ZoomIn size={16} />
+                  </UiIconButton>
+                  <UiIconButton
+                    tooltip={t("preview.downloadPdf")}
+                    label={t("preview.downloadPdf")}
                     onClick={downloadCompiledPdf}
                     disabled={!pdfData}
                   >
-                    ↓PDF
-                  </button>
-                  <button
-                    className="icon-button"
-                    title={t("preview.downloadZip")}
-                    aria-label={t("preview.downloadZip")}
-                    onClick={downloadArchive}
-                  >
-                    ↓ZIP
-                  </button>
+                    <Download size={16} />
+                  </UiIconButton>
+                  <UiIconButton tooltip={t("preview.downloadZip")} label={t("preview.downloadZip")} onClick={downloadArchive}>
+                    <Archive size={16} />
+                  </UiIconButton>
                 </div>
               </div>
               <div className="panel-content flush">
@@ -2364,10 +2347,10 @@ function WorkspacePage({
               </div>
               <div className="panel-content">
                 <div className="settings-section">
-                  <strong>Compilation</strong>
+                  <strong>{t("settings.compilation")}</strong>
                   <label>
-                    Entry file
-                    <select
+                    {t("settings.entryFile")}
+                    <UiSelect
                       value={entryFilePath}
                       onChange={async (e) => {
                         const next = e.target.value.trim();
@@ -2382,49 +2365,98 @@ function WorkspacePage({
                           {path}
                         </option>
                       ))}
-                    </select>
+                    </UiSelect>
                   </label>
-                  <small>Preview and PDF export compile from this file.</small>
+                  <small>{t("settings.entryFileHint")}</small>
                 </div>
                 <div className="settings-section">
-                  <strong>Git access</strong>
-                  <code>{gitRepoUrl || "Loading..."}</code>
+                  <strong>{t("settings.gitAccess")}</strong>
+                  <code>{gitRepoUrl || t("common.loading")}</code>
                   <div className="toolbar compact-left">
-                    <button
-                      className="button button-small"
+                    <UiButton
+                      size="sm"
                       onClick={() => copyToClipboard("git-access-url", gitRepoUrl)}
                       disabled={!gitRepoUrl}
                     >
                       {copiedControl === "git-access-url" ? t("share.copied") : t("share.copy")}
-                    </button>
+                    </UiButton>
                   </div>
-                  <small>Use PAT as HTTP password. Force push is rejected.</small>
+                  <small>{t("settings.gitHint")}</small>
+                </div>
+                <div className="settings-section">
+                  <strong>{t("settings.templateTitle")}</strong>
+                  <div className="toolbar compact-left">
+                    <UiButton
+                      variant={templateEnabled ? "primary" : "secondary"}
+                      onClick={() => setTemplateState(!templateEnabled)}
+                      disabled={!canManageProject}
+                    >
+                      {templateEnabled ? t("settings.templateEnabled") : t("settings.templateDisabled")}
+                    </UiButton>
+                  </div>
+                  <small>{t("settings.templateHint")}</small>
+                  {templateEnabled && (
+                    <div className="card-list">
+                      {myOrganizations.length > 0 ? (
+                        myOrganizations.map((org) => {
+                          const granted = projectTemplateOrgAccess.some(
+                            (item) => item.organization_id === org.organization_id
+                          );
+                          return (
+                            <div className="card" key={`tpl-${org.organization_id}`}>
+                              <strong>{org.organization_name}</strong>
+                              <div className="toolbar compact-left">
+                                {granted ? (
+                                  <UiButton
+                                    size="sm"
+                                    variant="danger"
+                                    onClick={() => removeTemplateOrgAccessGrant(org.organization_id)}
+                                    disabled={!canManageProject}
+                                  >
+                                    {t("common.revoke")}
+                                  </UiButton>
+                                ) : (
+                                  <UiButton
+                                    size="sm"
+                                    onClick={() => upsertTemplateOrgAccessGrant(org.organization_id)}
+                                    disabled={!canManageProject}
+                                  >
+                                    {t("settings.templateGrant")}
+                                  </UiButton>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })
+                      ) : (
+                        <small>{t("projects.noOrganizations")}</small>
+                      )}
+                    </div>
+                  )}
                 </div>
                 <div className="settings-section">
                   <strong>{t("share.title")}</strong>
                   <div className="settings-share-grid">
                     <div className="card">
-                      <strong>Read link</strong>
+                      <strong>{t("share.readLink")}</strong>
                       <div className="toolbar compact-left">
                         {activeReadShare ? (
-                          <button
-                            className="button"
+                          <UiButton
                             onClick={() => revokeShare(activeReadShare.id)}
                             disabled={!canManageProject}
                           >
-                            Disable
-                          </button>
+                            {t("common.disable")}
+                          </UiButton>
                         ) : (
-                          <button className="button" onClick={() => createShare("read")} disabled={!canManageProject}>
-                            Enable
-                          </button>
+                          <UiButton onClick={() => createShare("read")} disabled={!canManageProject}>
+                            {t("common.enable")}
+                          </UiButton>
                         )}
                       </div>
                       {activeReadShare?.token_value ? (
                         <>
                           <code>{`${window.location.origin}/share/${activeReadShare.token_value}`}</code>
-                          <button
-                            className="button"
+                          <UiButton
                             onClick={async () => {
                               await copyToClipboard(
                                 "share-read-link",
@@ -2433,34 +2465,32 @@ function WorkspacePage({
                             }}
                           >
                             {copiedControl === "share-read-link" ? t("share.copied") : t("share.copy")}
-                          </button>
+                          </UiButton>
                         </>
                       ) : (
                         <small>{t("share.none")}</small>
                       )}
                     </div>
                     <div className="card">
-                      <strong>Write link</strong>
+                      <strong>{t("share.writeLink")}</strong>
                       <div className="toolbar compact-left">
                         {activeWriteShare ? (
-                          <button
-                            className="button"
+                          <UiButton
                             onClick={() => revokeShare(activeWriteShare.id)}
                             disabled={!canManageProject}
                           >
-                            Disable
-                          </button>
+                            {t("common.disable")}
+                          </UiButton>
                         ) : (
-                          <button className="button" onClick={() => createShare("write")} disabled={!canManageProject}>
-                            Enable
-                          </button>
+                          <UiButton onClick={() => createShare("write")} disabled={!canManageProject}>
+                            {t("common.enable")}
+                          </UiButton>
                         )}
                       </div>
                       {activeWriteShare?.token_value ? (
                         <>
                           <code>{`${window.location.origin}/share/${activeWriteShare.token_value}`}</code>
-                          <button
-                            className="button"
+                          <UiButton
                             onClick={async () => {
                               await copyToClipboard(
                                 "share-write-link",
@@ -2469,7 +2499,7 @@ function WorkspacePage({
                             }}
                           >
                             {copiedControl === "share-write-link" ? t("share.copied") : t("share.copy")}
-                          </button>
+                          </UiButton>
                         </>
                       ) : (
                         <small>{t("share.none")}</small>
@@ -2478,7 +2508,7 @@ function WorkspacePage({
                   </div>
                 </div>
                 <div className="settings-section">
-                  <strong>Organization access</strong>
+                  <strong>{t("settings.organizationAccess")}</strong>
                   {myOrganizations.length > 0 ? (
                     <div className="card-list">
                       {myOrganizations.map((org) => {
@@ -2486,7 +2516,7 @@ function WorkspacePage({
                         return (
                           <div className="card" key={org.organization_id}>
                             <strong>{org.organization_name}</strong>
-                            <select
+                            <UiSelect
                               value={existing?.permission ?? ""}
                               onChange={(e) => {
                                 const value = e.target.value;
@@ -2498,34 +2528,34 @@ function WorkspacePage({
                               }}
                               disabled={!canManageProject}
                             >
-                              <option value="">No access</option>
-                              <option value="read">Read only</option>
-                              <option value="write">Read + write</option>
-                            </select>
+                              <option value="">{t("settings.noAccess")}</option>
+                              <option value="read">{t("settings.readOnly")}</option>
+                              <option value="write">{t("settings.readWrite")}</option>
+                            </UiSelect>
                           </div>
                         );
                       })}
                     </div>
                   ) : (
-                    <small>No organization memberships available for this account.</small>
+                    <small>{t("projects.noOrganizations")}</small>
                   )}
                 </div>
                 <div className="settings-section">
-                  <strong>Project access users</strong>
+                  <strong>{t("settings.projectUsers")}</strong>
                   {projectAccessUsers.length > 0 ? (
                     <div className="card-list">
                       {projectAccessUsers.map((user) => (
                         <div className="card" key={user.user_id}>
                           <strong>{user.display_name || user.email}</strong>
                           <span>{user.email}</span>
-                          <span>{`Access type: ${formatAccessType(user.access_type, user.role)}`}</span>
-                          <span>{`Role: ${formatRoleLabel(user.role)}`}</span>
-                          <span>{`Source: ${user.sources.map((source) => formatAccessSource(source)).join(", ")}`}</span>
+                          <span>{`${t("settings.accessType")}: ${formatAccessType(user.access_type, user.role)}`}</span>
+                          <span>{`${t("settings.role")}: ${formatRoleLabel(user.role)}`}</span>
+                          <span>{`${t("settings.source")}: ${user.sources.map((source) => formatAccessSource(source)).join(", ")}`}</span>
                         </div>
                       ))}
                     </div>
                   ) : (
-                    <small>No users currently have access.</small>
+                    <small>{t("settings.noUsers")}</small>
                   )}
                 </div>
               </div>
@@ -2576,28 +2606,78 @@ function WorkspacePage({
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
           {contextMenu.kind === "directory" && (
-            <button className="mini" onClick={() => addPath("file", contextMenu.path)}>
+            <UiButton className="mini" size="sm" onClick={() => addPath("file", contextMenu.path)}>
               {t("workspace.newFile")}
-            </button>
+            </UiButton>
           )}
           {contextMenu.kind === "directory" && (
-            <button className="mini" onClick={() => addPath("directory", contextMenu.path)}>
+            <UiButton className="mini" size="sm" onClick={() => addPath("directory", contextMenu.path)}>
               {t("workspace.newFolder")}
-            </button>
+            </UiButton>
           )}
           {contextMenu.kind === "directory" && (
-            <button className="mini" onClick={() => uploadFromPicker(contextMenu.path)}>
+            <UiButton className="mini" size="sm" onClick={() => uploadFromPicker(contextMenu.path)}>
               {t("workspace.upload")}
-            </button>
+            </UiButton>
           )}
-          <button className="mini" onClick={() => renamePath(contextMenu.path)}>
-            Rename
-          </button>
-          <button className="mini" onClick={() => removePath(contextMenu.path)}>
-            Delete
-          </button>
+          <UiButton className="mini" size="sm" onClick={() => renamePath(contextMenu.path)}>
+            {t("common.rename")}
+          </UiButton>
+          <UiButton className="mini" size="sm" variant="danger" onClick={() => removePath(contextMenu.path)}>
+            {t("common.delete")}
+          </UiButton>
         </div>
       )}
+      <UiDialog
+        open={!!pathDialog}
+        title={
+          pathDialog?.mode === "create"
+            ? pathDialog.kind === "file"
+              ? t("workspace.newFile")
+              : t("workspace.newFolder")
+            : pathDialog?.mode === "rename"
+              ? t("common.rename")
+              : t("common.delete")
+        }
+        description={
+          pathDialog?.mode === "delete"
+            ? `${t("settings.deletePathConfirm")} ${pathDialog.path}`
+            : undefined
+        }
+        onClose={() => setPathDialog(null)}
+        actions={
+          <>
+            <UiButton onClick={() => setPathDialog(null)}>{t("common.cancel")}</UiButton>
+            <UiButton
+              variant={pathDialog?.mode === "delete" ? "danger" : "primary"}
+              onClick={submitPathDialog}
+              disabled={
+                !!pathDialog &&
+                pathDialog.mode !== "delete" &&
+                !pathDialog.value.trim()
+              }
+            >
+              {pathDialog?.mode === "delete" ? t("common.delete") : t("common.save")}
+            </UiButton>
+          </>
+        }
+      >
+        {pathDialog && pathDialog.mode !== "delete" && (
+          <UiInput
+            value={pathDialog.value}
+            onChange={(event) =>
+              setPathDialog((current) => {
+                if (!current || current.mode === "delete") return current;
+                return {
+                  ...current,
+                  value: event.target.value
+                };
+              })
+            }
+            placeholder={t("workspace.pathPlaceholder")}
+          />
+        )}
+      </UiDialog>
     </section>
   );
 }
@@ -2680,9 +2760,10 @@ function UnsupportedFilePane({
     <div className="file-preview file-preview-asset">
       <div className="file-preview-media">{media}</div>
       <div className="file-preview-meta">
-        <div className="file-preview-name">{path}</div>
-        <a className="button button-small" href={dataUrl} download={downloadName}>
-          {t("workspace.download")}
+        <div className="file-preview-name">{downloadName}</div>
+        <small className="muted">{path}</small>
+        <a className="ui-icon-button" href={dataUrl} download={downloadName} title={t("workspace.download")} aria-label={t("workspace.download")}>
+          <Download size={16} />
         </a>
       </div>
     </div>
@@ -2779,387 +2860,5 @@ function TreeNodeRow({
         </div>
       )}
     </div>
-  );
-}
-
-function AdminPage({ t }: { t: (key: string) => string }) {
-  const defaultOrgId = "00000000-0000-0000-0000-000000000001";
-  const roleOptions: Array<{ value: ProjectRole; label: string }> = [
-    { value: "Owner", label: "Owner" },
-    { value: "Teacher", label: "Manager" },
-    { value: "TA", label: "Maintainer" },
-    { value: "Student", label: "Contributor" },
-    { value: "Viewer", label: "Viewer" }
-  ];
-  const [orgId, setOrgId] = useState(defaultOrgId);
-  const [mappings, setMappings] = useState<OrgGroupRoleMapping[]>([]);
-  const [groupName, setGroupName] = useState("");
-  const [role, setRole] = useState<ProjectRole>("Student");
-  const [settings, setSettings] = useState<AdminAuthSettings | null>(null);
-  const [discoveryUrl, setDiscoveryUrl] = useState("");
-  const [error, setError] = useState<string | null>(null);
-
-  async function refresh() {
-    try {
-      const [groupMappings, authSettings] = await Promise.all([
-        listOrgGroupRoleMappings(orgId),
-        getAdminAuthSettings()
-      ]);
-      setMappings(groupMappings);
-      setSettings(authSettings);
-      setDiscoveryUrl(authSettings.oidc_issuer || "");
-      setError(null);
-    } catch (err) {
-      setMappings([]);
-      setSettings(null);
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Unable to load admin settings. Organization admin permission required."
-      );
-    }
-  }
-
-  useEffect(() => {
-    refresh().catch(() => undefined);
-  }, [orgId]);
-
-  return (
-    <section className="page">
-      <h2>{t("admin.title")}</h2>
-      <div className="card-list">
-        <div className="card">
-          <strong>{t("admin.authSettings")}</strong>
-          {settings ? (
-            <>
-              <input
-                value={settings.site_name || ""}
-                onChange={(e) => setSettings({ ...settings, site_name: e.target.value })}
-                placeholder={t("admin.siteName")}
-              />
-              <label>
-                <input
-                  type="checkbox"
-                  checked={settings.allow_local_login}
-                  onChange={(e) => setSettings({ ...settings, allow_local_login: e.target.checked })}
-                />
-                Allow local login
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={settings.allow_local_registration}
-                  onChange={(e) =>
-                    setSettings({ ...settings, allow_local_registration: e.target.checked })
-                  }
-                />
-                Allow self registration
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={settings.allow_oidc}
-                  onChange={(e) => setSettings({ ...settings, allow_oidc: e.target.checked })}
-                />
-                Allow OIDC
-              </label>
-              <input
-                value={discoveryUrl}
-                onChange={(e) => setDiscoveryUrl(e.target.value)}
-                placeholder="OIDC discovery URL or issuer URL"
-              />
-              <input
-                value={settings.oidc_client_id || ""}
-                onChange={(e) => setSettings({ ...settings, oidc_client_id: e.target.value })}
-                placeholder="OIDC client id"
-              />
-              <input
-                value={settings.oidc_client_secret || ""}
-                onChange={(e) => setSettings({ ...settings, oidc_client_secret: e.target.value })}
-                placeholder="OIDC client secret"
-              />
-              <input
-                value={settings.oidc_redirect_uri || ""}
-                onChange={(e) => setSettings({ ...settings, oidc_redirect_uri: e.target.value })}
-                placeholder="OIDC redirect URI"
-              />
-              <input
-                value={settings.oidc_groups_claim || "groups"}
-                onChange={(e) => setSettings({ ...settings, oidc_groups_claim: e.target.value })}
-                placeholder="OIDC groups claim"
-              />
-              <button
-                className="button"
-                onClick={async () => {
-                  if (!settings) return;
-                  const updated = await upsertAdminAuthSettings({
-                    allow_local_login: settings.allow_local_login,
-                    allow_local_registration: settings.allow_local_registration,
-                    allow_oidc: settings.allow_oidc,
-                    site_name: settings.site_name || null,
-                    oidc_discovery_url: discoveryUrl || null,
-                    oidc_client_id: settings.oidc_client_id || null,
-                    oidc_client_secret: settings.oidc_client_secret || null,
-                    oidc_redirect_uri: settings.oidc_redirect_uri || null,
-                    oidc_groups_claim: settings.oidc_groups_claim || "groups"
-                  });
-                  setSettings(updated);
-                }}
-              >
-                Save Auth Settings
-              </button>
-            </>
-          ) : (
-            <span>Loading...</span>
-          )}
-        </div>
-
-        <div className="card">
-          <strong>OIDC Group to Project Role Mapping</strong>
-          <div className="toolbar">
-            <input value={orgId} onChange={(e) => setOrgId(e.target.value)} placeholder="Organization ID" />
-            <input
-              value={groupName}
-              onChange={(e) => setGroupName(e.target.value)}
-              placeholder="OIDC group"
-            />
-            <select value={role} onChange={(e) => setRole(e.target.value as ProjectRole)}>
-              {roleOptions.map((option) => (
-                <option value={option.value} key={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-            <button
-              className="button"
-              onClick={async () => {
-                if (!groupName.trim()) return;
-                await upsertOrgGroupRoleMapping(orgId, { group_name: groupName.trim(), role });
-                setGroupName("");
-                await refresh();
-              }}
-            >
-              Save
-            </button>
-          </div>
-          <div className="card-list">
-            {mappings.map((mapping) => (
-              <div className="card" key={mapping.group_name}>
-                <strong>{mapping.group_name}</strong>
-                <span>{roleOptions.find((option) => option.value === mapping.role)?.label ?? mapping.role}</span>
-                <button
-                  className="button"
-                  onClick={async () => {
-                    await deleteOrgGroupRoleMapping(orgId, mapping.group_name);
-                    await refresh();
-                  }}
-                >
-                  Remove
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-      {error && <div className="error">{error}</div>}
-    </section>
-  );
-}
-
-function ProfilePage({ t }: { t: (key: string) => string }) {
-  type CreatePatReveal = {
-    token: string;
-    token_prefix: string;
-    label: string;
-    expires_at?: string | null;
-    created_at?: string;
-  };
-
-  const [tokens, setTokens] = useState<PersonalAccessTokenInfo[]>([]);
-  const [tokenLabel, setTokenLabel] = useState("CLI token");
-  const [tokenExpiryPreset, setTokenExpiryPreset] = useState<"never" | "7d" | "30d" | "90d" | "custom">("30d");
-  const [tokenCustomExpiresAtLocal, setTokenCustomExpiresAtLocal] = useState("");
-  const [newToken, setNewToken] = useState<CreatePatReveal | null>(null);
-  const [creating, setCreating] = useState(false);
-  const [busyTokenId, setBusyTokenId] = useState<string | null>(null);
-  const [copiedToken, setCopiedToken] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function refresh() {
-    try {
-      const res = await listPersonalAccessTokens();
-      setTokens(res.tokens);
-      setError(null);
-    } catch (err) {
-      setTokens([]);
-      setError(err instanceof Error ? err.message : "Unable to load tokens");
-    }
-  }
-
-  useEffect(() => {
-    refresh().catch(() => undefined);
-  }, []);
-
-  function formatOptionalDate(value: string | null) {
-    if (!value) return "never";
-    return new Date(value).toLocaleString();
-  }
-
-  function computeExpiresAt(): string | null {
-    if (tokenExpiryPreset === "never") return null;
-    if (tokenExpiryPreset === "custom") {
-      if (!tokenCustomExpiresAtLocal.trim()) return null;
-      const parsed = new Date(tokenCustomExpiresAtLocal);
-      if (Number.isNaN(parsed.getTime())) {
-        throw new Error("Invalid custom expiry time");
-      }
-      return parsed.toISOString();
-    }
-    const days = tokenExpiryPreset === "7d" ? 7 : tokenExpiryPreset === "30d" ? 30 : 90;
-    return new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
-  }
-
-  async function createToken() {
-    if (!tokenLabel.trim()) return;
-    try {
-      setCreating(true);
-      setError(null);
-      const created = await createPersonalAccessToken({
-        label: tokenLabel.trim(),
-        expires_at: computeExpiresAt()
-      });
-      setNewToken({
-        token: created.token,
-        token_prefix: created.token_prefix,
-        label: created.label,
-        expires_at: created.expires_at,
-        created_at: created.created_at
-      });
-      setCopiedToken(false);
-      await refresh();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to create token";
-      setError(message);
-    } finally {
-      setCreating(false);
-    }
-  }
-
-  return (
-    <section className="page profile-page">
-      <h2>{t("profile.title")}</h2>
-      <div className="card-list">
-        <div className="card profile-token-create">
-          <strong>Personal Access Tokens</strong>
-          <span className="muted">
-            Use token as Git HTTP password. Each token is shown once on creation.
-          </span>
-          <div className="profile-token-form">
-            <label>
-              <span>Token label</span>
-              <input
-                value={tokenLabel}
-                onChange={(e) => setTokenLabel(e.target.value)}
-                placeholder="e.g. Laptop Git, CI runner"
-              />
-            </label>
-            <label>
-              <span>Expires</span>
-              <select
-                value={tokenExpiryPreset}
-                onChange={(e) =>
-                  setTokenExpiryPreset(e.target.value as "never" | "7d" | "30d" | "90d" | "custom")
-                }
-              >
-                <option value="never">Never</option>
-                <option value="7d">7 days</option>
-                <option value="30d">30 days</option>
-                <option value="90d">90 days</option>
-                <option value="custom">Custom date/time</option>
-              </select>
-            </label>
-            {tokenExpiryPreset === "custom" && (
-              <label>
-                <span>Custom expiry</span>
-                <input
-                  type="datetime-local"
-                  value={tokenCustomExpiresAtLocal}
-                  onChange={(e) => setTokenCustomExpiresAtLocal(e.target.value)}
-                />
-              </label>
-            )}
-          </div>
-          <div className="toolbar">
-            <button className="button filled" onClick={createToken} disabled={creating || !tokenLabel.trim()}>
-              {creating ? "Creating..." : "Create Token"}
-            </button>
-          </div>
-        </div>
-        {newToken && (
-          <div className="card profile-new-token">
-            <strong>New token (shown once)</strong>
-            <div className="token-reveal">{newToken.token}</div>
-            <div className="toolbar">
-              <button
-                className="button button-small"
-                onClick={async () => {
-                  await navigator.clipboard.writeText(newToken.token);
-                  setCopiedToken(true);
-                  window.setTimeout(() => setCopiedToken(false), 1200);
-                }}
-              >
-                {copiedToken ? "Copied" : "Copy token"}
-              </button>
-            </div>
-            <small className="muted">
-              Label: {newToken.label} · Prefix: {newToken.token_prefix} · Expires:{" "}
-              {formatOptionalDate(newToken.expires_at || null)}
-            </small>
-          </div>
-        )}
-        {error && <div className="error">{error}</div>}
-        <div className="card">
-          <strong>Token list</strong>
-          <div className="card-list">
-            {tokens.map((token) => (
-              <div className="card" key={token.id}>
-                <strong>{token.label}</strong>
-                <span>Prefix: {token.token_prefix}</span>
-                <span>Created: {new Date(token.created_at).toLocaleString()}</span>
-                <span>Expires: {formatOptionalDate(token.expires_at)}</span>
-                <span>Last used: {formatOptionalDate(token.last_used_at)}</span>
-                <span>Status: {token.revoked_at ? `Revoked at ${formatOptionalDate(token.revoked_at)}` : "Active"}</span>
-                <div className="toolbar">
-                  <button
-                    className="button button-small"
-                    onClick={async () => {
-                      await navigator.clipboard.writeText(token.token_prefix);
-                    }}
-                  >
-                    Copy prefix
-                  </button>
-                  <button
-                    className="button button-small"
-                    disabled={!!token.revoked_at || busyTokenId === token.id}
-                    onClick={async () => {
-                      try {
-                        setBusyTokenId(token.id);
-                        await revokePersonalAccessToken(token.id);
-                        await refresh();
-                      } finally {
-                        setBusyTokenId(null);
-                      }
-                    }}
-                  >
-                    {token.revoked_at ? "Revoked" : "Revoke"}
-                  </button>
-                </div>
-              </div>
-            ))}
-            {tokens.length === 0 && <div className="card muted">No tokens yet.</div>}
-          </div>
-        </div>
-      </div>
-    </section>
   );
 }

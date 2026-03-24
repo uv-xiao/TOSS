@@ -85,6 +85,9 @@ export type Project = {
   owner_user_id: string | null;
   owner_display_name: string;
   my_role: ProjectRole | "Viewer";
+  can_read: boolean;
+  is_template: boolean;
+  has_thumbnail: boolean;
   created_at: string;
   last_edited_at: string;
   archived: boolean;
@@ -259,6 +262,20 @@ export type ProjectOrganizationAccess = {
   granted_at: string;
 };
 
+export type ProjectTemplateOrganizationAccess = {
+  project_id: string;
+  organization_id: string;
+  organization_name: string;
+  granted_by: string | null;
+  granted_at: string;
+};
+
+export type ProjectTemplateState = {
+  project_id: string;
+  is_template: boolean;
+  updated_at: string;
+};
+
 export type ProjectAccessUser = {
   user_id: string;
   email: string;
@@ -347,6 +364,16 @@ export async function createProject(input: { name: string }) {
     body: JSON.stringify(input)
   });
   return parseJsonOrThrow<Project>(res, "Unable to create project");
+}
+
+export async function copyProject(projectId: string, input: { name: string }) {
+  const res = await fetch(apiUrl(`/v1/projects/${projectId}/copy`), {
+    method: "POST",
+    credentials: authCredentials(),
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify(input)
+  });
+  return parseJsonOrThrow<Project>(res, "Unable to copy project");
 }
 
 export async function setProjectArchived(projectId: string, archived: boolean) {
@@ -511,6 +538,16 @@ export async function upsertProjectSettings(projectId: string, entryFilePath: st
   return parseJsonOrThrow<ProjectSettings>(res, "Unable to save project settings");
 }
 
+export async function updateProjectTemplate(projectId: string, isTemplate: boolean) {
+  const res = await fetch(apiUrl(`/v1/projects/${projectId}/template`), {
+    method: "PUT",
+    credentials: authCredentials(),
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify({ is_template: isTemplate })
+  });
+  return parseJsonOrThrow<ProjectTemplateState>(res, "Unable to update template state");
+}
+
 export function projectArchiveUrl(projectId: string) {
   return apiUrl(`/v1/projects/${projectId}/archive`);
 }
@@ -664,6 +701,45 @@ export async function listProjectOrganizationAccess(projectId: string) {
   );
 }
 
+export async function listProjectTemplateOrganizationAccess(projectId: string) {
+  const res = await fetch(apiUrl(`/v1/projects/${projectId}/template-organization-access`), {
+    cache: "no-store",
+    credentials: authCredentials(),
+    headers: authHeaders()
+  });
+  return parseJsonOrThrow<ProjectTemplateOrganizationAccess[]>(
+    res,
+    "Unable to list template organizations"
+  );
+}
+
+export async function upsertProjectTemplateOrganizationAccess(projectId: string, organizationId: string) {
+  const res = await fetch(
+    apiUrl(`/v1/projects/${projectId}/template-organization-access/${organizationId}`),
+    {
+      method: "PUT",
+      credentials: authCredentials(),
+      headers: authHeaders()
+    }
+  );
+  return parseJsonOrThrow<ProjectTemplateOrganizationAccess>(
+    res,
+    "Unable to grant template organization access"
+  );
+}
+
+export async function deleteProjectTemplateOrganizationAccess(projectId: string, organizationId: string) {
+  const res = await fetch(
+    apiUrl(`/v1/projects/${projectId}/template-organization-access/${organizationId}`),
+    {
+      method: "DELETE",
+      credentials: authCredentials(),
+      headers: authHeaders()
+    }
+  );
+  if (!res.ok) await throwApiError(res, "Unable to revoke template organization access");
+}
+
 export async function upsertProjectOrganizationAccess(
   projectId: string,
   organizationId: string,
@@ -697,6 +773,23 @@ export async function listProjectAccessUsers(projectId: string) {
     headers: authHeaders()
   });
   return parseJsonOrThrow<{ users: ProjectAccessUser[] }>(res, "Unable to list access users");
+}
+
+export function projectThumbnailUrl(projectId: string) {
+  return apiUrl(`/v1/projects/${projectId}/thumbnail`);
+}
+
+export async function uploadProjectThumbnail(
+  projectId: string,
+  input: { content_base64: string; content_type?: string }
+) {
+  const res = await fetch(apiUrl(`/v1/projects/${projectId}/thumbnail`), {
+    method: "PUT",
+    credentials: authCredentials(),
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify(input)
+  });
+  if (!res.ok) await throwApiError(res, "Unable to upload project thumbnail");
 }
 
 export async function joinProjectShareLink(token: string) {

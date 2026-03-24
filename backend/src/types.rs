@@ -89,6 +89,9 @@ pub struct Project {
     pub owner_user_id: Option<Uuid>,
     pub owner_display_name: String,
     pub my_role: String,
+    pub can_read: bool,
+    pub is_template: bool,
+    pub has_thumbnail: bool,
     pub created_at: DateTime<Utc>,
     pub last_edited_at: DateTime<Utc>,
     pub archived: bool,
@@ -115,6 +118,11 @@ pub struct OrganizationMembershipListResponse {
 
 #[derive(Deserialize)]
 pub struct CreateProjectInput {
+    pub name: String,
+}
+
+#[derive(Deserialize)]
+pub struct CreateProjectCopyInput {
     pub name: String,
 }
 
@@ -334,6 +342,33 @@ pub struct CreatePatResponse {
 #[derive(Deserialize)]
 pub struct UpsertProjectSettingsInput {
     pub entry_file_path: String,
+}
+
+#[derive(Deserialize)]
+pub struct UpdateProjectTemplateInput {
+    pub is_template: bool,
+}
+
+#[derive(Serialize)]
+pub struct ProjectTemplateResponse {
+    pub project_id: Uuid,
+    pub is_template: bool,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+pub struct ProjectTemplateOrganizationAccess {
+    pub project_id: Uuid,
+    pub organization_id: Uuid,
+    pub organization_name: String,
+    pub granted_by: Option<Uuid>,
+    pub granted_at: DateTime<Utc>,
+}
+
+#[derive(Deserialize)]
+pub struct UploadProjectThumbnailInput {
+    pub content_base64: String,
+    pub content_type: Option<String>,
 }
 
 #[derive(Serialize)]

@@ -18,6 +18,8 @@ async fn list_projects(
                 p.name,
                 p.owner_user_id,
                 coalesce(owner.display_name, 'Unknown') as owner_display_name,
+                p.is_template,
+                exists(select 1 from project_thumbnails pt where pt.project_id = p.id) as has_thumbnail,
                 p.created_at,
                 greatest(
                   p.created_at,
@@ -50,6 +52,8 @@ async fn list_projects(
                     p.name,
                     p.owner_user_id,
                     coalesce(owner.display_name, 'Unknown') as owner_display_name,
+                    p.is_template,
+                    exists(select 1 from project_thumbnails pt where pt.project_id = p.id) as has_thumbnail,
                     p.created_at,
                     greatest(
                       p.created_at,
@@ -75,6 +79,41 @@ async fn list_projects(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     };
+    let template_rows = if org_ids.is_empty() {
+        Vec::new()
+    } else {
+        sqlx::query(
+            "select p.id,
+                    p.name,
+                    p.owner_user_id,
+                    coalesce(owner.display_name, 'Unknown') as owner_display_name,
+                    p.is_template,
+                    exists(select 1 from project_thumbnails pt where pt.project_id = p.id) as has_thumbnail,
+                    p.created_at,
+                    greatest(
+                      p.created_at,
+                      coalesce((select max(d.updated_at) from documents d where d.project_id = p.id), p.created_at),
+                      coalesce((select max(r.created_at) from revisions r where r.project_id = p.id), p.created_at),
+                      coalesce((select max(a.created_at) from project_assets a where a.project_id = p.id), p.created_at)
+                    ) as last_edited_at,
+                    pua.archived_at as user_archived_at
+             from projects p
+             join project_template_organization_access ptoa on ptoa.project_id = p.id
+             left join users owner on owner.id = p.owner_user_id
+             left join project_user_archives pua on pua.project_id = p.id and pua.user_id = $2
+             where ptoa.organization_id = any($1::uuid[])
+               and p.is_template = true
+               and ($3::boolean = true or pua.archived_at is null)
+               and ($4::text is null or p.name ilike $4)",
+        )
+        .bind(&org_ids)
+        .bind(actor)
+        .bind(include_archived)
+        .bind(search.as_deref())
+        .fetch_all(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    };
     let mut projects_by_id: HashMap<Uuid, Project> = HashMap::new();
     for row in direct_rows {
         let project_id: Uuid = row.get("id");
@@ -86,6 +125,9 @@ async fn list_projects(
                 owner_user_id: row.get("owner_user_id"),
                 owner_display_name: row.get("owner_display_name"),
                 my_role: row.get("my_role"),
+                can_read: true,
+                is_template: row.get("is_template"),
+                has_thumbnail: row.get("has_thumbnail"),
                 created_at: row.get("created_at"),
                 last_edited_at: row.get("last_edited_at"),
                 archived: row
@@ -117,6 +159,36 @@ async fn list_projects(
                 owner_user_id: row.get("owner_user_id"),
                 owner_display_name: row.get("owner_display_name"),
                 my_role: derived_role,
+                can_read: true,
+                is_template: row.get("is_template"),
+                has_thumbnail: row.get("has_thumbnail"),
+                created_at: row.get("created_at"),
+                last_edited_at: row.get("last_edited_at"),
+                archived: row
+                    .get::<Option<DateTime<Utc>>, _>("user_archived_at")
+                    .is_some(),
+                archived_at: row.get("user_archived_at"),
+            },
+        );
+    }
+    for row in template_rows {
+        let project_id: Uuid = row.get("id");
+        if let Some(existing) = projects_by_id.get_mut(&project_id) {
+            existing.is_template = row.get("is_template");
+            existing.has_thumbnail = row.get("has_thumbnail");
+            continue;
+        }
+        projects_by_id.insert(
+            project_id,
+            Project {
+                id: project_id,
+                name: row.get("name"),
+                owner_user_id: row.get("owner_user_id"),
+                owner_display_name: row.get("owner_display_name"),
+                my_role: "Viewer".to_string(),
+                can_read: false,
+                is_template: row.get("is_template"),
+                has_thumbnail: row.get("has_thumbnail"),
                 created_at: row.get("created_at"),
                 last_edited_at: row.get("last_edited_at"),
                 archived: row
@@ -341,11 +413,574 @@ async fn create_project(
         owner_user_id: row.get("owner_user_id"),
         owner_display_name,
         my_role: "Owner".to_string(),
+        can_read: true,
+        is_template: false,
+        has_thumbnail: false,
         created_at: row.get("created_at"),
         last_edited_at: row.get("created_at"),
         archived: false,
         archived_at: None,
     }))
+}
+
+async fn has_template_organization_access(
+    db: &PgPool,
+    actor: Uuid,
+    project_id: Uuid,
+) -> Result<bool, StatusCode> {
+    let row = sqlx::query(
+        "select 1
+         from projects p
+         join project_template_organization_access ptoa on ptoa.project_id = p.id
+         join (
+           select organization_id from organization_memberships where user_id = $1
+           union
+           select organization_id from org_admins where user_id = $1
+         ) my_orgs on my_orgs.organization_id = ptoa.organization_id
+         where p.id = $2
+           and p.is_template = true
+         limit 1",
+    )
+    .bind(actor)
+    .bind(project_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(row.is_some())
+}
+
+async fn can_copy_project_for_user(
+    db: &PgPool,
+    actor: Uuid,
+    project_id: Uuid,
+) -> Result<bool, StatusCode> {
+    if ensure_project_role_for_user(db, actor, project_id, AccessNeed::Read)
+        .await
+        .is_ok()
+    {
+        return Ok(true);
+    }
+    has_template_organization_access(db, actor, project_id).await
+}
+
+async fn copy_project(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Json(input): Json<CreateProjectCopyInput>,
+) -> Result<Json<Project>, StatusCode> {
+    let Some(actor) = request_user_id(&state.db, &headers).await else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+    if !can_copy_project_for_user(&state.db, actor, project_id).await? {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let name = input.name.trim().to_string();
+    if name.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let source_docs =
+        sqlx::query("select path, content from documents where project_id = $1 order by path asc")
+            .bind(project_id)
+            .fetch_all(&state.db)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let source_dirs = sqlx::query(
+        "select path from project_directories where project_id = $1 order by path asc",
+    )
+    .bind(project_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let source_assets = sqlx::query(
+        "select path, object_key, content_type, size_bytes, inline_data
+         from project_assets
+         where project_id = $1
+         order by path asc",
+    )
+    .bind(project_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let source_entry_file = sqlx::query(
+        "select entry_file_path from project_settings where project_id = $1",
+    )
+    .bind(project_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .map(|row| row.get::<String, _>("entry_file_path"))
+    .unwrap_or_else(|| "main.typ".to_string());
+    let source_thumbnail = sqlx::query(
+        "select content_type, image_data from project_thumbnails where project_id = $1",
+    )
+    .bind(project_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let source_has_thumbnail = source_thumbnail.is_some();
+
+    let now = Utc::now();
+    let new_project_id = Uuid::new_v4();
+    let org_id = resolve_project_organization_id(&state.db, actor).await?;
+
+    struct CopiedAsset {
+        id: Uuid,
+        path: String,
+        object_key: String,
+        content_type: String,
+        size_bytes: i64,
+        inline_data: Option<Vec<u8>>,
+    }
+    let mut copied_assets: Vec<CopiedAsset> = Vec::new();
+    for row in source_assets {
+        let source_path: String = row.get("path");
+        let content_type: String = row.get("content_type");
+        let size_bytes: i64 = row.get("size_bytes");
+        let bytes = if let Some(inline) = row.get::<Option<Vec<u8>>, _>("inline_data") {
+            inline
+        } else {
+            let source_object_key: String = row.get("object_key");
+            let Some(storage) = state.storage.clone() else {
+                return Err(StatusCode::SERVICE_UNAVAILABLE);
+            };
+            get_object(&storage, &source_object_key)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        };
+        let new_asset_id = Uuid::new_v4();
+        let (object_key, inline_data) = if let Some(storage) = state.storage.clone() {
+            let key = format!("projects/{new_project_id}/assets/{new_asset_id}");
+            put_object(&storage, &key, &content_type, bytes.clone())
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            (key, None)
+        } else {
+            (format!("inline://{new_asset_id}"), Some(bytes))
+        };
+        copied_assets.push(CopiedAsset {
+            id: new_asset_id,
+            path: source_path,
+            object_key,
+            content_type,
+            size_bytes,
+            inline_data,
+        });
+    }
+
+    let owner_display_name = sqlx::query("select display_name from users where id = $1")
+        .bind(actor)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .map(|r| r.get::<String, _>("display_name"))
+        .unwrap_or_else(|| "Unknown".to_string());
+
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    sqlx::query(
+        "insert into projects (id, organization_id, owner_user_id, name, description, created_at, is_template)
+         values ($1, $2, $3, $4, $5, $6, false)",
+    )
+    .bind(new_project_id)
+    .bind(org_id)
+    .bind(actor)
+    .bind(&name)
+    .bind(Option::<String>::None)
+    .bind(now)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    sqlx::query(
+        "insert into project_roles (project_id, user_id, role, granted_at)
+         values ($1, $2, 'Owner', $3)",
+    )
+    .bind(new_project_id)
+    .bind(actor)
+    .bind(now)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    sqlx::query(
+        "insert into git_sync_states (project_id, branch, has_conflicts, status)
+         values ($1, 'main', false, 'clean')
+         on conflict (project_id) do nothing",
+    )
+    .bind(new_project_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    sqlx::query(
+        "insert into project_settings (project_id, entry_file_path, updated_at)
+         values ($1, $2, $3)",
+    )
+    .bind(new_project_id)
+    .bind(&source_entry_file)
+    .bind(now)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    for row in source_dirs {
+        let dir_path: String = row.get("path");
+        sqlx::query(
+            "insert into project_directories (project_id, path, created_at)
+             values ($1, $2, $3)
+             on conflict (project_id, path) do nothing",
+        )
+        .bind(new_project_id)
+        .bind(dir_path)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+    for row in source_docs {
+        let doc_path: String = row.get("path");
+        let content: String = row.get("content");
+        sqlx::query(
+            "insert into documents (id, project_id, path, content, updated_at)
+             values ($1, $2, $3, $4, $5)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(new_project_id)
+        .bind(doc_path)
+        .bind(content)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+    for asset in copied_assets {
+        sqlx::query(
+            "insert into project_assets
+             (id, project_id, path, object_key, content_type, size_bytes, uploaded_by, created_at, inline_data)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        )
+        .bind(asset.id)
+        .bind(new_project_id)
+        .bind(asset.path)
+        .bind(asset.object_key)
+        .bind(asset.content_type)
+        .bind(asset.size_bytes)
+        .bind(actor)
+        .bind(now)
+        .bind(asset.inline_data)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+    if let Some(thumbnail_row) = source_thumbnail {
+        let content_type: String = thumbnail_row.get("content_type");
+        let image_data: Vec<u8> = thumbnail_row.get("image_data");
+        sqlx::query(
+            "insert into project_thumbnails (project_id, content_type, image_data, updated_by, updated_at)
+             values ($1, $2, $3, $4, $5)
+             on conflict (project_id) do update
+             set content_type = excluded.content_type,
+                 image_data = excluded.image_data,
+                 updated_by = excluded.updated_by,
+                 updated_at = excluded.updated_at",
+        )
+        .bind(new_project_id)
+        .bind(content_type)
+        .bind(image_data)
+        .bind(actor)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+    tx.commit()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    write_audit(
+        &state.db,
+        Some(actor),
+        "project.copy",
+        serde_json::json!({
+            "source_project_id": project_id,
+            "project_id": new_project_id,
+            "name": name
+        }),
+    )
+    .await;
+
+    Ok(Json(Project {
+        id: new_project_id,
+        name,
+        owner_user_id: Some(actor),
+        owner_display_name,
+        my_role: "Owner".to_string(),
+        can_read: true,
+        is_template: false,
+        has_thumbnail: source_has_thumbnail,
+        created_at: now,
+        last_edited_at: now,
+        archived: false,
+        archived_at: None,
+    }))
+}
+
+async fn update_project_template(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Json(input): Json<UpdateProjectTemplateInput>,
+) -> Result<Json<ProjectTemplateResponse>, StatusCode> {
+    let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Manage).await?;
+    let now = Utc::now();
+    let row = sqlx::query(
+        "update projects
+         set is_template = $2
+         where id = $1
+         returning id, is_template",
+    )
+    .bind(project_id)
+    .bind(input.is_template)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let Some(row) = row else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    let is_template: bool = row.get("is_template");
+    if !is_template {
+        let _ = sqlx::query(
+            "delete from project_template_organization_access where project_id = $1",
+        )
+        .bind(project_id)
+        .execute(&state.db)
+        .await;
+    }
+    write_audit(
+        &state.db,
+        Some(actor),
+        "project.template.update",
+        serde_json::json!({ "project_id": project_id, "is_template": is_template }),
+    )
+    .await;
+    Ok(Json(ProjectTemplateResponse {
+        project_id,
+        is_template,
+        updated_at: now,
+    }))
+}
+
+async fn list_project_template_organization_access(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+) -> Result<Json<Vec<ProjectTemplateOrganizationAccess>>, StatusCode> {
+    ensure_project_role(&state.db, &headers, project_id, AccessNeed::Manage).await?;
+    let rows = sqlx::query(
+        "select ptoa.project_id, ptoa.organization_id, o.name as organization_name,
+                ptoa.granted_by, ptoa.granted_at
+         from project_template_organization_access ptoa
+         join organizations o on o.id = ptoa.organization_id
+         where ptoa.project_id = $1
+         order by o.name asc",
+    )
+    .bind(project_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let items = rows
+        .into_iter()
+        .map(|row| ProjectTemplateOrganizationAccess {
+            project_id: row.get("project_id"),
+            organization_id: row.get("organization_id"),
+            organization_name: row.get("organization_name"),
+            granted_by: row.get("granted_by"),
+            granted_at: row.get("granted_at"),
+        })
+        .collect();
+    Ok(Json(items))
+}
+
+async fn upsert_project_template_organization_access(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, org_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<ProjectTemplateOrganizationAccess>, StatusCode> {
+    let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Manage).await?;
+    let is_template_row = sqlx::query("select is_template from projects where id = $1")
+        .bind(project_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let Some(is_template_row) = is_template_row else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    if !is_template_row.get::<bool, _>("is_template") {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if !user_is_org_member(&state.db, actor, org_id).await? {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let row = sqlx::query(
+        "insert into project_template_organization_access
+         (project_id, organization_id, granted_by, granted_at)
+         values ($1, $2, $3, $4)
+         on conflict (project_id, organization_id) do update
+         set granted_by = excluded.granted_by, granted_at = excluded.granted_at
+         returning project_id, organization_id, granted_by, granted_at",
+    )
+    .bind(project_id)
+    .bind(org_id)
+    .bind(actor)
+    .bind(Utc::now())
+    .fetch_one(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let org_name = sqlx::query("select name from organizations where id = $1")
+        .bind(org_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map(|r| r.get::<String, _>("name"))
+        .unwrap_or_else(|| org_id.to_string());
+    write_audit(
+        &state.db,
+        Some(actor),
+        "project.template.organization_access.upsert",
+        serde_json::json!({ "project_id": project_id, "organization_id": org_id }),
+    )
+    .await;
+    Ok(Json(ProjectTemplateOrganizationAccess {
+        project_id: row.get("project_id"),
+        organization_id: row.get("organization_id"),
+        organization_name: org_name,
+        granted_by: row.get("granted_by"),
+        granted_at: row.get("granted_at"),
+    }))
+}
+
+async fn delete_project_template_organization_access(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, org_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, StatusCode> {
+    let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Manage).await?;
+    let result = sqlx::query(
+        "delete from project_template_organization_access where project_id = $1 and organization_id = $2",
+    )
+    .bind(project_id)
+    .bind(org_id)
+    .execute(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if result.rows_affected() == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    write_audit(
+        &state.db,
+        Some(actor),
+        "project.template.organization_access.delete",
+        serde_json::json!({ "project_id": project_id, "organization_id": org_id }),
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn upload_project_thumbnail(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Json(input): Json<UploadProjectThumbnailInput>,
+) -> Result<StatusCode, StatusCode> {
+    let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Write).await?;
+    let bytes = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        input.content_base64,
+    )
+    .map_err(|_| StatusCode::BAD_REQUEST)?;
+    if bytes.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let content_type = input
+        .content_type
+        .unwrap_or_else(|| "image/png".to_string())
+        .trim()
+        .to_string();
+    if !content_type.starts_with("image/") {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let now = Utc::now();
+    sqlx::query(
+        "insert into project_thumbnails (project_id, content_type, image_data, updated_by, updated_at)
+         values ($1, $2, $3, $4, $5)
+         on conflict (project_id) do update
+         set content_type = excluded.content_type,
+             image_data = excluded.image_data,
+             updated_by = excluded.updated_by,
+             updated_at = excluded.updated_at",
+    )
+    .bind(project_id)
+    .bind(content_type)
+    .bind(bytes)
+    .bind(actor)
+    .bind(now)
+    .execute(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    write_audit(
+        &state.db,
+        Some(actor),
+        "project.thumbnail.upload",
+        serde_json::json!({ "project_id": project_id }),
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn get_project_thumbnail(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let Some(actor) = request_user_id(&state.db, &headers).await else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+    let mut readable = ensure_project_role_for_user(&state.db, actor, project_id, AccessNeed::Read)
+        .await
+        .is_ok();
+    if !readable {
+        readable = has_template_organization_access(&state.db, actor, project_id).await?;
+    }
+    if !readable {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let row = sqlx::query(
+        "select content_type, image_data
+         from project_thumbnails
+         where project_id = $1",
+    )
+    .bind(project_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let Some(row) = row else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    let content_type: String = row.get("content_type");
+    let image_data: Vec<u8> = row.get("image_data");
+    let mut resp = axum::http::Response::new(Body::from(image_data));
+    resp.headers_mut().insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_str(&content_type)
+            .unwrap_or_else(|_| header::HeaderValue::from_static("application/octet-stream")),
+    );
+    resp.headers_mut().insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("private, max-age=60"),
+    );
+    Ok(resp)
 }
 
 fn normalized_share_permission(raw: &str) -> Option<&'static str> {
