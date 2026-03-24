@@ -120,7 +120,11 @@ async function main() {
       { timeout: 10000 }
     );
     await page.waitForFunction(
-      () => !(document.querySelector(".connectivity-badge")?.textContent || "").includes("Offline"),
+      () => {
+        const status = document.querySelector(".status-pill.ok, .status-pill.warn");
+        if (!status) return false;
+        return status.classList.contains("ok") && !/offline/i.test(status.textContent || "");
+      },
       undefined,
       { timeout: 15000 }
     );
