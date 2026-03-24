@@ -1190,33 +1190,105 @@ export function WorkspacePage({
       loadedBytes: 0,
       totalBytes: null
     });
-    try {
-      const response = await getRevisionDocuments(projectId, revisionId, (progress) => {
-        if (revisionLoadSeqRef.current !== requestSeq) return;
-        setRevisionLoading({
-          active: true,
-          revisionId,
-          loadedBytes: progress.loadedBytes,
-          totalBytes: progress.totalBytes
-        });
-      });
+    const currentRevisionAnchorId = activeRevisionId;
+    const progressHandler = (progress: { loadedBytes: number; totalBytes: number | null }) => {
       if (revisionLoadSeqRef.current !== requestSeq) return;
-      const map: Record<string, string> = {};
-      for (const doc of response.documents) map[doc.path] = doc.content;
-      const revisionAssets: Record<string, string> = {};
-      const revisionAssetMetaMap: Record<string, AssetMeta> = {};
+      setRevisionLoading({
+        active: true,
+        revisionId,
+        loadedBytes: progress.loadedBytes,
+        totalBytes: progress.totalBytes
+      });
+    };
+
+    const applyRevisionTransfer = (
+      response: Awaited<ReturnType<typeof getRevisionDocuments>>,
+      forceFull = false
+    ): boolean => {
+      const transferMode =
+        !forceFull && response.transfer_mode === "delta" ? "delta" : "full";
+      const baseAnchor = response.base_anchor ?? "none";
+      const baseRevisionId = response.base_revision_id ?? null;
+
+      let map: Record<string, string> = {};
+      let revisionAssets: Record<string, string> = {};
+      let revisionAssetMetaMap: Record<string, AssetMeta> = {};
+
+      if (transferMode === "delta") {
+        if (
+          baseAnchor === "revision" &&
+          baseRevisionId &&
+          currentRevisionAnchorId &&
+          baseRevisionId === currentRevisionAnchorId
+        ) {
+          map = { ...revisionDocs };
+          revisionAssets = { ...revisionAssetBase64 };
+          revisionAssetMetaMap = { ...revisionAssetMeta };
+        } else if (baseAnchor === "live") {
+          map = { ...docs };
+          revisionAssets = { ...assetBase64 };
+          revisionAssetMetaMap = { ...assetMeta };
+        } else if (baseAnchor === "none") {
+          map = {};
+          revisionAssets = {};
+          revisionAssetMetaMap = {};
+        } else {
+          return false;
+        }
+      }
+
+      for (const path of response.deleted_documents || []) {
+        delete map[path];
+      }
+      for (const doc of response.documents || []) {
+        map[doc.path] = doc.content;
+      }
+
+      for (const path of response.deleted_assets || []) {
+        delete revisionAssets[path];
+        delete revisionAssetMetaMap[path];
+      }
       for (const asset of response.assets || []) {
         revisionAssets[asset.path] = asset.content_base64;
         revisionAssetMetaMap[asset.path] = {
           contentType: asset.content_type
         };
       }
+
       setRevisionDocs(map);
       setRevisionNodes(response.nodes || []);
       setRevisionAssetBase64(revisionAssets);
       setRevisionAssetMeta(revisionAssetMetaMap);
       setRevisionEntryFilePath(response.entry_file_path || "main.typ");
       setActiveRevisionId(revisionId);
+      return true;
+    };
+
+    try {
+      const response = await getRevisionDocuments(
+        projectId,
+        revisionId,
+        {
+          currentRevisionId: currentRevisionAnchorId,
+          includeLiveAnchor: true
+        },
+        progressHandler
+      );
+      if (revisionLoadSeqRef.current !== requestSeq) return;
+      let applied = applyRevisionTransfer(response);
+      if (!applied && response.transfer_mode === "delta") {
+        const fallback = await getRevisionDocuments(
+          projectId,
+          revisionId,
+          { includeLiveAnchor: false },
+          progressHandler
+        );
+        if (revisionLoadSeqRef.current !== requestSeq) return;
+        applied = applyRevisionTransfer(fallback, true);
+      }
+      if (!applied) {
+        throw new Error("Unable to apply revision delta; please retry.");
+      }
       setWorkspaceError(null);
     } catch (err) {
       if (revisionLoadSeqRef.current !== requestSeq) return;

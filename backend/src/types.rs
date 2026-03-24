@@ -422,9 +422,14 @@ pub struct RevisionAuthor {
 pub struct RevisionDocumentsResponse {
     pub revision_id: Uuid,
     pub entry_file_path: String,
+    pub transfer_mode: String,
+    pub base_anchor: String,
+    pub base_revision_id: Option<Uuid>,
     pub nodes: Vec<ProjectFileNode>,
     pub documents: Vec<RevisionDocument>,
+    pub deleted_documents: Vec<String>,
     pub assets: Vec<RevisionAsset>,
+    pub deleted_assets: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -525,6 +530,12 @@ pub struct UpsertDocumentByPathInput {
 #[derive(Deserialize)]
 pub struct ListDocumentsQuery {
     pub path: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+pub struct RevisionDocumentsQuery {
+    pub current_revision_id: Option<Uuid>,
+    pub include_live_anchor: Option<bool>,
 }
 
 #[derive(Serialize)]

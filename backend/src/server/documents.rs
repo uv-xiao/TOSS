@@ -90,9 +90,191 @@ async fn create_revision(
     }))
 }
 
+#[derive(Clone)]
+enum RevisionAnchorKind {
+    None,
+    Live,
+    Revision(Uuid),
+}
+
+#[derive(Clone)]
+struct RevisionTransferCandidate {
+    transfer_mode: &'static str,
+    anchor_kind: RevisionAnchorKind,
+    document_upserts: HashMap<String, String>,
+    deleted_documents: Vec<String>,
+    asset_upserts: HashMap<String, RevisionStoredAsset>,
+    deleted_assets: Vec<String>,
+    estimated_bytes: usize,
+}
+
+fn estimate_asset_b64_bytes(size_bytes: i64) -> usize {
+    let size = usize::try_from(size_bytes.max(0)).unwrap_or(0);
+    ((size + 2) / 3) * 4
+}
+
+fn build_transfer_candidate(
+    target: &RevisionStateData,
+    baseline: Option<&RevisionStateData>,
+    anchor_kind: RevisionAnchorKind,
+) -> RevisionTransferCandidate {
+    let mut document_upserts: HashMap<String, String> = HashMap::new();
+    let mut deleted_documents: Vec<String> = Vec::new();
+    let mut asset_upserts: HashMap<String, RevisionStoredAsset> = HashMap::new();
+    let mut deleted_assets: Vec<String> = Vec::new();
+    let mut estimated_bytes = 0usize;
+
+    if let Some(base) = baseline {
+        for (path, content) in target.documents.iter() {
+            let needs_upsert = base
+                .documents
+                .get(path)
+                .map(|previous| previous != content)
+                .unwrap_or(true);
+            if needs_upsert {
+                estimated_bytes = estimated_bytes
+                    .saturating_add(path.len())
+                    .saturating_add(content.len())
+                    .saturating_add(24);
+                document_upserts.insert(path.clone(), content.clone());
+            }
+        }
+        for path in base.documents.keys() {
+            if target.documents.contains_key(path) {
+                continue;
+            }
+            estimated_bytes = estimated_bytes.saturating_add(path.len()).saturating_add(12);
+            deleted_documents.push(path.clone());
+        }
+
+        for (path, target_asset) in target.assets.iter() {
+            let needs_upsert = base
+                .assets
+                .get(path)
+                .map(|previous| !same_asset(previous, target_asset))
+                .unwrap_or(true);
+            if needs_upsert {
+                estimated_bytes = estimated_bytes
+                    .saturating_add(path.len())
+                    .saturating_add(target_asset.content_type.len())
+                    .saturating_add(estimate_asset_b64_bytes(target_asset.size_bytes))
+                    .saturating_add(32);
+                asset_upserts.insert(path.clone(), target_asset.clone());
+            }
+        }
+        for path in base.assets.keys() {
+            if target.assets.contains_key(path) {
+                continue;
+            }
+            estimated_bytes = estimated_bytes.saturating_add(path.len()).saturating_add(12);
+            deleted_assets.push(path.clone());
+        }
+    } else {
+        for (path, content) in target.documents.iter() {
+            estimated_bytes = estimated_bytes
+                .saturating_add(path.len())
+                .saturating_add(content.len())
+                .saturating_add(24);
+            document_upserts.insert(path.clone(), content.clone());
+        }
+        for (path, target_asset) in target.assets.iter() {
+            estimated_bytes = estimated_bytes
+                .saturating_add(path.len())
+                .saturating_add(target_asset.content_type.len())
+                .saturating_add(estimate_asset_b64_bytes(target_asset.size_bytes))
+                .saturating_add(32);
+            asset_upserts.insert(path.clone(), target_asset.clone());
+        }
+    }
+
+    RevisionTransferCandidate {
+        transfer_mode: if baseline.is_some() { "delta" } else { "full" },
+        anchor_kind,
+        document_upserts,
+        deleted_documents,
+        asset_upserts,
+        deleted_assets,
+        estimated_bytes,
+    }
+}
+
+async fn stored_asset_bytes(
+    state: &AppState,
+    asset: &RevisionStoredAsset,
+) -> Result<Vec<u8>, StatusCode> {
+    if let Some(inline) = asset.inline_data.clone() {
+        return Ok(inline);
+    }
+    let Some(storage) = state.storage.clone() else {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    };
+    get_object(&storage, &asset.object_key)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+fn build_nodes_from_state(state: &RevisionStateData) -> Result<Vec<ProjectFileNode>, StatusCode> {
+    let mut dirs: HashSet<String> = HashSet::new();
+    let mut nodes: Vec<ProjectFileNode> = Vec::new();
+
+    for (path, _) in state.documents.iter() {
+        let clean = sanitize_project_path(path)?;
+        let mut acc = String::new();
+        let parts: Vec<&str> = clean.split('/').collect();
+        for part in parts.iter().take(parts.len().saturating_sub(1)) {
+            if acc.is_empty() {
+                acc.push_str(part);
+            } else {
+                acc.push('/');
+                acc.push_str(part);
+            }
+            dirs.insert(acc.clone());
+        }
+        nodes.push(ProjectFileNode {
+            path: clean,
+            kind: "file".to_string(),
+        });
+    }
+
+    for dir in state.directories.iter() {
+        let clean = sanitize_project_path(dir)?;
+        dirs.insert(clean);
+    }
+
+    for (path, _) in state.assets.iter() {
+        let clean = sanitize_project_path(path)?;
+        let mut acc = String::new();
+        let parts: Vec<&str> = clean.split('/').collect();
+        for part in parts.iter().take(parts.len().saturating_sub(1)) {
+            if acc.is_empty() {
+                acc.push_str(part);
+            } else {
+                acc.push('/');
+                acc.push_str(part);
+            }
+            dirs.insert(acc.clone());
+        }
+        nodes.push(ProjectFileNode {
+            path: clean,
+            kind: "file".to_string(),
+        });
+    }
+
+    for dir in dirs {
+        nodes.push(ProjectFileNode {
+            path: dir,
+            kind: "directory".to_string(),
+        });
+    }
+    nodes.sort_by(|a, b| a.path.cmp(&b.path));
+    nodes.dedup_by(|a, b| a.path == b.path && a.kind == b.kind);
+    Ok(nodes)
+}
+
 async fn get_revision_documents(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(query): Query<RevisionDocumentsQuery>,
     Path((project_id, revision_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<RevisionDocumentsResponse>, StatusCode> {
     ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
@@ -117,109 +299,127 @@ async fn get_revision_documents(
     let state_data = load_materialized_revision_state(&state.db, project_id, revision_id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let Some(state_data) = state_data else {
+    let Some(target_state) = state_data else {
         return Err(StatusCode::NOT_FOUND);
     };
-    let RevisionStateData {
-        documents: revision_documents,
-        directories: revision_directories,
-        assets: revision_assets,
-    } = state_data;
+    let nodes = build_nodes_from_state(&target_state)?;
 
-    let mut document_pairs = revision_documents.into_iter().collect::<Vec<_>>();
+    let mut candidates = vec![build_transfer_candidate(
+        &target_state,
+        None,
+        RevisionAnchorKind::None,
+    )];
+
+    if let Some(base_revision_id) = query.current_revision_id {
+        if base_revision_id != revision_id {
+            if let Some(base_revision_state) =
+                load_materialized_revision_state(&state.db, project_id, base_revision_id)
+                    .await
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            {
+                candidates.push(build_transfer_candidate(
+                    &target_state,
+                    Some(&base_revision_state),
+                    RevisionAnchorKind::Revision(base_revision_id),
+                ));
+            }
+        }
+    }
+
+    if query.include_live_anchor.unwrap_or(false) {
+        let live_state = load_project_state(&state.db, project_id)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        candidates.push(build_transfer_candidate(
+            &target_state,
+            Some(&live_state),
+            RevisionAnchorKind::Live,
+        ));
+    }
+
+    let selected = candidates
+        .into_iter()
+        .min_by_key(|item| {
+            (
+                item.estimated_bytes,
+                if item.transfer_mode == "full" { 1usize } else { 0usize },
+            )
+        })
+        .unwrap_or_else(|| {
+            build_transfer_candidate(&target_state, None, RevisionAnchorKind::None)
+        });
+
+    let RevisionTransferCandidate {
+        transfer_mode,
+        anchor_kind,
+        document_upserts,
+        deleted_documents: raw_deleted_documents,
+        asset_upserts,
+        deleted_assets: raw_deleted_assets,
+        ..
+    } = selected;
+
+    let mut document_pairs = document_upserts.into_iter().collect::<Vec<_>>();
     document_pairs.sort_by(|a, b| a.0.cmp(&b.0));
     let documents: Vec<RevisionDocument> = document_pairs
         .into_iter()
-        .map(|(path, content)| RevisionDocument { path, content })
-        .collect();
+        .map(|(path, content)| {
+            let clean = sanitize_project_path(&path)?;
+            Ok(RevisionDocument {
+                path: clean,
+                content,
+            })
+        })
+        .collect::<Result<Vec<_>, StatusCode>>()?;
 
-    let mut dirs: HashSet<String> = HashSet::new();
-    let mut nodes: Vec<ProjectFileNode> = Vec::new();
-    for doc in &documents {
-        let clean = sanitize_project_path(&doc.path)?;
-        let mut acc = String::new();
-        let parts: Vec<&str> = clean.split('/').collect();
-        for part in parts.iter().take(parts.len().saturating_sub(1)) {
-            if acc.is_empty() {
-                acc.push_str(part);
-            } else {
-                acc.push('/');
-                acc.push_str(part);
-            }
-            dirs.insert(acc.clone());
-        }
-        nodes.push(ProjectFileNode {
-            path: clean,
-            kind: "file".to_string(),
-        });
-    }
+    let mut deleted_documents = raw_deleted_documents
+        .into_iter()
+        .map(|path| sanitize_project_path(&path))
+        .collect::<Result<Vec<_>, StatusCode>>()?;
+    deleted_documents.sort();
+    deleted_documents.dedup();
 
-    for dir in revision_directories {
-        let clean = sanitize_project_path(&dir)?;
-        dirs.insert(clean);
-    }
-
-    let mut assets: Vec<RevisionAsset> = Vec::new();
-    let mut asset_pairs = revision_assets.into_iter().collect::<Vec<_>>();
+    let mut asset_pairs = asset_upserts.into_iter().collect::<Vec<_>>();
     asset_pairs.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut assets: Vec<RevisionAsset> = Vec::with_capacity(asset_pairs.len());
     for (path, asset_meta) in asset_pairs {
-        let RevisionStoredAsset {
-            object_key,
-            content_type,
-            size_bytes,
-            inline_data,
-        } = asset_meta;
         let clean = sanitize_project_path(&path)?;
-        let mut acc = String::new();
-        let parts: Vec<&str> = clean.split('/').collect();
-        for part in parts.iter().take(parts.len().saturating_sub(1)) {
-            if acc.is_empty() {
-                acc.push_str(part);
-            } else {
-                acc.push('/');
-                acc.push_str(part);
-            }
-            dirs.insert(acc.clone());
-        }
-        nodes.push(ProjectFileNode {
-            path: clean.clone(),
-            kind: "file".to_string(),
-        });
-        let bytes = if let Some(inline) = inline_data {
-            inline
-        } else {
-            let Some(storage) = state.storage.clone() else {
-                return Err(StatusCode::SERVICE_UNAVAILABLE);
-            };
-            get_object(&storage, &object_key)
-                .await
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        };
+        let bytes = stored_asset_bytes(&state, &asset_meta).await?;
         assets.push(RevisionAsset {
             path: clean,
-            content_type,
-            size_bytes,
+            content_type: asset_meta.content_type,
+            size_bytes: asset_meta.size_bytes,
             content_base64: base64::Engine::encode(
                 &base64::engine::general_purpose::STANDARD,
                 bytes,
             ),
         });
     }
-    for dir in dirs {
-        nodes.push(ProjectFileNode {
-            path: dir,
-            kind: "directory".to_string(),
-        });
-    }
-    nodes.sort_by(|a, b| a.path.cmp(&b.path));
-    nodes.dedup_by(|a, b| a.path == b.path && a.kind == b.kind);
+
+    let mut deleted_assets = raw_deleted_assets
+        .into_iter()
+        .map(|path| sanitize_project_path(&path))
+        .collect::<Result<Vec<_>, StatusCode>>()?;
+    deleted_assets.sort();
+    deleted_assets.dedup();
+
+    let (base_anchor, base_revision_id) = match anchor_kind {
+        RevisionAnchorKind::None => ("none".to_string(), None),
+        RevisionAnchorKind::Live => ("live".to_string(), None),
+        RevisionAnchorKind::Revision(id) => ("revision".to_string(), Some(id)),
+    };
 
     Ok(Json(RevisionDocumentsResponse {
         revision_id,
         entry_file_path,
+        transfer_mode: transfer_mode.to_string(),
+        base_anchor,
+        base_revision_id,
         nodes,
         documents,
+        deleted_documents,
         assets,
+        deleted_assets,
     }))
 }
 

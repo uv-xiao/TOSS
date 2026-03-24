@@ -142,14 +142,24 @@ export type RevisionAsset = {
 export type RevisionDocumentsResponse = {
   revision_id: string;
   entry_file_path: string;
+  transfer_mode?: "full" | "delta" | string;
+  base_anchor?: "none" | "live" | "revision" | string;
+  base_revision_id?: string | null;
   nodes: ProjectTreeNode[];
   documents: RevisionDocument[];
+  deleted_documents?: string[];
   assets: RevisionAsset[];
+  deleted_assets?: string[];
 };
 
 export type DownloadProgress = {
   loadedBytes: number;
   totalBytes: number | null;
+};
+
+export type RevisionDocumentsFetchOptions = {
+  currentRevisionId?: string | null;
+  includeLiveAnchor?: boolean;
 };
 
 export type ProjectAsset = {
@@ -478,9 +488,16 @@ export async function listRevisions(projectId: string) {
 export async function getRevisionDocuments(
   projectId: string,
   revisionId: string,
+  options?: RevisionDocumentsFetchOptions,
   onProgress?: (progress: DownloadProgress) => void
 ) {
-  const res = await fetch(apiUrl(`/v1/projects/${projectId}/revisions/${revisionId}/documents`), {
+  const params = new URLSearchParams();
+  if (options?.currentRevisionId) params.set("current_revision_id", options.currentRevisionId);
+  if (typeof options?.includeLiveAnchor === "boolean") {
+    params.set("include_live_anchor", options.includeLiveAnchor ? "true" : "false");
+  }
+  const query = params.size > 0 ? `?${params.toString()}` : "";
+  const res = await fetch(apiUrl(`/v1/projects/${projectId}/revisions/${revisionId}/documents${query}`), {
     cache: "no-store",
     credentials: authCredentials(),
     headers: authHeaders()
