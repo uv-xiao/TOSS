@@ -77,7 +77,9 @@ pub async fn run() {
         oidc,
         storage,
         realtime_channels: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+        git_project_locks: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
     };
+    spawn_git_flush_worker(state.clone());
     let static_dir = env::var("WEB_STATIC_DIR").unwrap_or_else(|_| "./web-dist".to_string());
     let static_service = get_service(
         ServeDir::new(&static_dir)

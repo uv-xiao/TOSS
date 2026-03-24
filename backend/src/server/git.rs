@@ -135,6 +135,7 @@ async fn git_pull(
     Json(input): Json<SyncRequest>,
 ) -> Result<Json<GitSyncState>, StatusCode> {
     let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::GitSync).await?;
+    let _git_lock = acquire_git_project_lock(&state, project_id).await;
     let config = load_git_config(&state.db, project_id).await?;
     ensure_git_repo_initialized(&config.local_path, &config.default_branch)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -227,6 +228,7 @@ async fn git_push(
     Json(input): Json<SyncRequest>,
 ) -> Result<Json<GitSyncState>, StatusCode> {
     let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::GitSync).await?;
+    let _git_lock = acquire_git_project_lock(&state, project_id).await;
     let config = load_git_config(&state.db, project_id).await?;
     ensure_git_repo_initialized(&config.local_path, &config.default_branch)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -333,6 +335,7 @@ async fn git_http_backend(
     {
         return (StatusCode::FORBIDDEN, "Forbidden").into_response();
     }
+    let _git_lock = acquire_git_project_lock(&state, project_id).await;
 
     if flush_pending_server_commit(&state.db, project_id, None)
         .await
@@ -438,4 +441,3 @@ async fn git_http_backend(
         .body(Body::from(response_body))
         .unwrap_or_else(|_| axum::http::Response::new(Body::from("backend response error")))
 }
-

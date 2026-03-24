@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, Mutex, RwLock};
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -13,6 +13,7 @@ pub struct AppState {
     pub oidc: OidcSettings,
     pub storage: Option<ObjectStorage>,
     pub realtime_channels: Arc<RwLock<HashMap<String, broadcast::Sender<CollabEvent>>>>,
+    pub git_project_locks: Arc<RwLock<HashMap<Uuid, Arc<Mutex<()>>>>>,
 }
 
 #[derive(Clone)]

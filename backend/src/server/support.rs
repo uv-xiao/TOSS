@@ -10,6 +10,30 @@ fn error_response(status: StatusCode, message: impl Into<String>) -> axum::respo
     (status, Json(payload)).into_response()
 }
 
+async fn get_or_create_git_project_lock(
+    state: &AppState,
+    project_id: Uuid,
+) -> Arc<tokio::sync::Mutex<()>> {
+    if let Some(lock) = state.git_project_locks.read().await.get(&project_id).cloned() {
+        return lock;
+    }
+    let mut write = state.git_project_locks.write().await;
+    if let Some(lock) = write.get(&project_id).cloned() {
+        return lock;
+    }
+    let lock = Arc::new(tokio::sync::Mutex::new(()));
+    write.insert(project_id, lock.clone());
+    lock
+}
+
+async fn acquire_git_project_lock(
+    state: &AppState,
+    project_id: Uuid,
+) -> tokio::sync::OwnedMutexGuard<()> {
+    let lock = get_or_create_git_project_lock(state, project_id).await;
+    lock.lock_owned().await
+}
+
 fn extract_groups_from_id_token(raw_id_token: String, claim_name: &str) -> Vec<String> {
     let mut groups = Vec::new();
     let claims = decode_jwt_claims(&raw_id_token);
@@ -1194,6 +1218,66 @@ async fn flush_pending_server_commit(
         .execute(db)
         .await;
     Ok(())
+}
+
+fn git_flush_worker_interval_seconds() -> u64 {
+    env::var("GIT_FLUSH_WORKER_INTERVAL_SECONDS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|v| *v >= 1)
+        .unwrap_or(3)
+}
+
+fn git_flush_worker_batch_size() -> i64 {
+    env::var("GIT_FLUSH_WORKER_BATCH_SIZE")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|v| *v >= 1)
+        .unwrap_or(64)
+}
+
+async fn list_pending_sync_projects(db: &PgPool, limit: i64) -> Result<Vec<Uuid>, sqlx::Error> {
+    let rows = sqlx::query(
+        "select project_id
+         from git_repositories
+         where pending_sync = true
+         order by updated_at asc
+         limit $1",
+    )
+    .bind(limit)
+    .fetch_all(db)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| row.get::<Uuid, _>("project_id"))
+        .collect())
+}
+
+fn spawn_git_flush_worker(state: AppState) {
+    let interval = Duration::from_secs(git_flush_worker_interval_seconds());
+    let batch_size = git_flush_worker_batch_size();
+    tokio::spawn(async move {
+        loop {
+            match list_pending_sync_projects(&state.db, batch_size).await {
+                Ok(projects) => {
+                    for project_id in projects {
+                        let _git_lock = acquire_git_project_lock(&state, project_id).await;
+                        if let Err(err) = flush_pending_server_commit(&state.db, project_id, None).await
+                        {
+                            error!(
+                                "git flush worker failed for project {}: {}",
+                                project_id, err
+                            );
+                        }
+                    }
+                }
+                Err(err) => {
+                    error!("git flush worker could not load pending projects: {}", err);
+                }
+            }
+            tokio::time::sleep(interval).await;
+        }
+    });
 }
 
 fn parse_cgi_http_backend_output(raw: &[u8]) -> (StatusCode, Vec<(String, String)>, Vec<u8>) {
