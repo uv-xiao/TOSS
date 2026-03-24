@@ -1,3 +1,4 @@
+import { File, FileCode2, FileImage, FileText, Folder } from "lucide-react";
 import type { ContextMenuState, ProjectTreeNodeView } from "@/pages/workspace/types";
 
 export function TreeNodeRow({
@@ -19,6 +20,9 @@ export function TreeNodeRow({
 }) {
   const isExpanded = expanded.has(node.path);
   const isActive = activePath === node.path;
+  const isTypstFile = node.kind === "file" && /\.typ$/i.test(node.path);
+  const isImageFile = node.kind === "file" && /\.(png|jpe?g|gif|bmp|webp|svg)$/i.test(node.path);
+  const isTextLikeFile = node.kind === "file" && /\.(txt|md|json|toml|yaml|yml|csv|xml|html|css|js|ts|tsx|jsx)$/i.test(node.path);
 
   const toggleDirectory = () => {
     if (node.kind !== "directory") return;
@@ -51,7 +55,19 @@ export function TreeNodeRow({
           <span className="tree-toggle tree-placeholder" />
         )}
         <button className="tree-label" onClick={() => (node.kind === "file" ? onOpen(node.path) : toggleDirectory())}>
-          <span className={`tree-kind ${node.kind}`}>{node.kind === "directory" ? "Dir" : "File"}</span>
+          <span className={`tree-icon ${node.kind}`} aria-hidden>
+            {node.kind === "directory" ? (
+              <Folder size={14} />
+            ) : isTypstFile ? (
+              <FileCode2 size={14} />
+            ) : isImageFile ? (
+              <FileImage size={14} />
+            ) : isTextLikeFile ? (
+              <FileText size={14} />
+            ) : (
+              <File size={14} />
+            )}
+          </span>
           <span className="tree-name">{node.name}</span>
         </button>
         {canManage && (
@@ -91,4 +107,3 @@ export function TreeNodeRow({
     </div>
   );
 }
-

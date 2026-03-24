@@ -26,8 +26,24 @@ export function usePreviewCanvas({
 }: UsePreviewCanvasParams) {
   const canvasPreviewRef = useRef<HTMLDivElement | null>(null);
   const previewPanCleanupRef = useRef<(() => void) | null>(null);
+  const onRenderErrorRef = useRef(onRenderError);
+  const previewFitModeRef = useRef(previewFitMode);
+  const previewZoomRef = useRef(previewZoom);
+  const lastRenderSignatureRef = useRef<string>("");
   const [previewRenderTick, setPreviewRenderTick] = useState(0);
   const [previewIsPanning, setPreviewIsPanning] = useState(false);
+
+  useEffect(() => {
+    onRenderErrorRef.current = onRenderError;
+  }, [onRenderError]);
+
+  useEffect(() => {
+    previewFitModeRef.current = previewFitMode;
+  }, [previewFitMode]);
+
+  useEffect(() => {
+    previewZoomRef.current = previewZoom;
+  }, [previewZoom]);
 
   useEffect(() => {
     return () => {
@@ -43,6 +59,16 @@ export function usePreviewCanvas({
     const frame = canvasPreviewRef.current;
     if (!frame) return;
     if (!vectorData) {
+      lastRenderSignatureRef.current = "";
+      setPreviewRenderTick((value) => value + 1);
+      return;
+    }
+    const renderSignature = `${previewPixelPerPt}:${vectorData.byteLength}:${vectorData[0] ?? 0}:${
+      vectorData[Math.floor(vectorData.byteLength / 2)] ?? 0
+    }:${vectorData[vectorData.byteLength - 1] ?? 0}`;
+    const alreadyRendered =
+      lastRenderSignatureRef.current === renderSignature && !!frame.querySelector(".pdf-pages .typst-page, .pdf-pages canvas");
+    if (alreadyRendered) {
       setPreviewRenderTick((value) => value + 1);
       return;
     }
@@ -50,11 +76,14 @@ export function usePreviewCanvas({
     renderTypstVectorToCanvas(frame, vectorData, { pixelPerPt: previewPixelPerPt })
       .then(() => {
         if (cancelled) return;
+        lastRenderSignatureRef.current = renderSignature;
         const pages = frame.querySelector(".pdf-pages") as HTMLElement | null;
         if (pages) {
-          const zoom = previewFitMode === "manual" ? previewZoom : deriveFitZoom(frame, pages, previewFitMode);
+          const fitMode = previewFitModeRef.current;
+          const currentZoom = previewZoomRef.current;
+          const zoom = fitMode === "manual" ? currentZoom : deriveFitZoom(frame, pages, fitMode);
           applyPreviewZoom(frame, zoom);
-          if (previewFitMode !== "manual" && Math.abs(zoom - previewZoom) > 0.01) {
+          if (fitMode !== "manual" && Math.abs(zoom - currentZoom) > 0.01) {
             setPreviewZoom(zoom);
           }
         }
@@ -62,16 +91,13 @@ export function usePreviewCanvas({
       })
       .catch((err) => {
         const message = err instanceof Error ? err.message : "Preview render failed";
-        onRenderError(message);
+        onRenderErrorRef.current(message);
       });
     return () => {
       cancelled = true;
     };
   }, [
-    onRenderError,
-    previewFitMode,
     previewPixelPerPt,
-    previewZoom,
     setPreviewZoom,
     showPreviewPanel,
     vectorData
@@ -99,7 +125,7 @@ export function usePreviewCanvas({
       if (!pages || previewFitMode === "manual") return;
       const zoom = deriveFitZoom(frame, pages, previewFitMode);
       applyPreviewZoom(frame, zoom);
-      setPreviewZoom(zoom);
+      setPreviewZoom((current) => (Math.abs(current - zoom) > 0.01 ? zoom : current));
     });
     observer.observe(frame);
     return () => observer.disconnect();
@@ -115,7 +141,7 @@ export function usePreviewCanvas({
       if (!pages) return;
       const zoom = deriveFitZoom(frame, pages, previewFitMode);
       applyPreviewZoom(frame, zoom);
-      setPreviewZoom(zoom);
+      setPreviewZoom((current) => (Math.abs(current - zoom) > 0.01 ? zoom : current));
     };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
@@ -162,4 +188,3 @@ export function usePreviewCanvas({
     beginPreviewPan
   };
 }
-

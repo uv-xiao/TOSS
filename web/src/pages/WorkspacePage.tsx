@@ -53,6 +53,7 @@ import { loadProjectSnapshotFromCache, saveProjectSnapshotToCache } from "@/lib/
 import {
   compileTypstClientSide,
   subscribeTypstRuntimeStatus,
+  type CompileOutput,
   type CompileDiagnostic,
   type TypstRuntimeStatus
 } from "@/lib/typst";
@@ -74,6 +75,29 @@ type UploadCandidate = {
   relativePath: string;
   file: File;
 };
+
+function summarizeContentForHash(content: string) {
+  if (content.length <= 96) return content;
+  return `${content.slice(0, 48)}::${content.slice(-48)}`;
+}
+
+function buildCompileInputKey(params: {
+  entryFilePath: string;
+  documents: Array<{ path: string; content: string }>;
+  assets: Array<{ path: string; contentBase64: string }>;
+  fontData: Uint8Array[];
+}) {
+  const docsPart = params.documents
+    .map((doc) => `${doc.path}:${doc.content.length}:${summarizeContentForHash(doc.content)}`)
+    .join("|");
+  const assetsPart = params.assets
+    .map((asset) => `${asset.path}:${asset.contentBase64.length}:${summarizeContentForHash(asset.contentBase64)}`)
+    .join("|");
+  const fontsPart = params.fontData
+    .map((font) => `${font.byteLength}:${font[0] ?? 0}:${font[Math.floor(font.byteLength / 2)] ?? 0}:${font[font.byteLength - 1] ?? 0}`)
+    .join("|");
+  return `${params.entryFilePath}::${docsPart}::${assetsPart}::${fontsPart}`;
+}
 
 type WorkspacePageProps = {
   projects: Project[];
@@ -100,6 +124,8 @@ export function WorkspacePage({
   const copyNoticeTimerRef = useRef<number | null>(null);
   const thumbnailUploadTimerRef = useRef<number | null>(null);
   const lastUploadedThumbnailRef = useRef<string>("");
+  const lastCompileInputKeyRef = useRef<string>("");
+  const lastCompileOutputRef = useRef<CompileOutput | null>(null);
 
   const [nodes, setNodes] = useState<ProjectNode[]>([]);
   const [entryFilePath, setEntryFilePath] = useState("main.typ");
@@ -219,6 +245,16 @@ export function WorkspacePage({
     [sourceAssetBase64]
   );
   const fontData = useMemo(() => assetFontData, [assetFontData]);
+  const compileInputKey = useMemo(
+    () =>
+      buildCompileInputKey({
+        entryFilePath: sourceEntryFilePath,
+        documents: compileDocuments,
+        assets: compileAssets,
+        fontData
+      }),
+    [compileAssets, compileDocuments, fontData, sourceEntryFilePath]
+  );
 
   const previewPixelPerPt = pixelPerPtForZoom(previewFitMode, previewZoom);
   const {
@@ -540,13 +576,26 @@ export function WorkspacePage({
 
   useEffect(() => {
     if (!projectId || !workspaceLoaded) return;
+    const applyCompileOutput = (output: CompileOutput) => {
+      setVectorData(output.vectorData);
+      setPdfData(output.pdfData);
+      setCompileErrors(output.errors);
+      setCompileDiagnostics(output.diagnostics);
+      setCompiledAt(output.compiledAt);
+    };
     let cancelled = false;
     if (compileDocuments.length === 0) {
+      lastCompileInputKeyRef.current = "";
+      lastCompileOutputRef.current = null;
       setVectorData(null);
       setPdfData(null);
       setCompileErrors(["Project has no source documents"]);
       setCompileDiagnostics([]);
       setCompiledAt(Date.now());
+      return;
+    }
+    if (compileInputKey === lastCompileInputKeyRef.current && lastCompileOutputRef.current) {
+      applyCompileOutput(lastCompileOutputRef.current);
       return;
     }
     startTransition(() => {
@@ -559,17 +608,15 @@ export function WorkspacePage({
         appOrigin: window.location.origin
       }).then((output) => {
         if (cancelled) return;
-        setVectorData(output.vectorData);
-        setPdfData(output.pdfData);
-        setCompileErrors(output.errors);
-        setCompileDiagnostics(output.diagnostics);
-        setCompiledAt(output.compiledAt);
+        lastCompileInputKeyRef.current = compileInputKey;
+        lastCompileOutputRef.current = output;
+        applyCompileOutput(output);
       });
     });
     return () => {
       cancelled = true;
     };
-  }, [compileAssets, compileDocuments, fontData, projectId, sourceEntryFilePath, workspaceLoaded]);
+  }, [compileAssets, compileDocuments, compileInputKey, fontData, projectId, sourceEntryFilePath, workspaceLoaded]);
 
   useEffect(() => {
     if (!projectId || !workspaceLoaded || isRevisionMode || !showPreviewPanel) return;

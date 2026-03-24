@@ -176,6 +176,29 @@ async function getRenderer() {
   return rendererPromise;
 }
 
+function isNoisyRendererPerfLog(args: unknown[]) {
+  if (args.length === 0 || typeof args[0] !== "string") return false;
+  const message = args[0];
+  return (
+    message.startsWith("layer used: retrieve =") ||
+    message.startsWith("display layer used: render =") ||
+    message.startsWith("text layer used: render =")
+  );
+}
+
+async function withMutedRendererPerfLogs<T>(task: () => Promise<T>) {
+  const originalLog = console.log;
+  console.log = (...args: unknown[]) => {
+    if (isNoisyRendererPerfLog(args)) return;
+    originalLog(...args);
+  };
+  try {
+    return await task();
+  } finally {
+    console.log = originalLog;
+  }
+}
+
 const runtime = new TypstWorkerRuntime();
 
 export async function compileTypstClientSide(options: CompileOptions): Promise<CompileOutput> {
@@ -230,12 +253,14 @@ export async function renderTypstVectorToCanvas(
     const pages = document.createElement("div");
     pages.className = "pdf-pages";
     staging.appendChild(pages);
-    await renderer.renderToCanvas({
-      format: "vector",
-      container: pages,
-      artifactContent: vectorData,
-      backgroundColor: "#ffffff",
-      pixelPerPt
+    await withMutedRendererPerfLogs(async () => {
+      await renderer.renderToCanvas({
+        format: "vector",
+        container: pages,
+        artifactContent: vectorData,
+        backgroundColor: "#ffffff",
+        pixelPerPt
+      } as unknown as Parameters<typeof renderer.renderToCanvas>[0]);
     });
     for (const semanticLayer of Array.from(pages.querySelectorAll(".typst-html-semantics"))) {
       semanticLayer.remove();
