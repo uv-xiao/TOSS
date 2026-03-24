@@ -6,7 +6,7 @@ async fn list_revisions(
     ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
     let rows = sqlx::query(
         "select id, project_id, actor_user_id, summary, created_at
-         from revisions where project_id = $1 order by created_at desc limit 200",
+         from revisions where project_id = $1 and is_complete = true order by created_at desc limit 200",
     )
     .bind(project_id)
     .fetch_all(&state.db)
@@ -281,7 +281,7 @@ async fn get_revision_documents(
     let revision_row = sqlx::query(
         "select entry_file_path
          from revisions
-         where id = $1 and project_id = $2",
+         where id = $1 and project_id = $2 and is_complete = true",
     )
         .bind(revision_id)
         .bind(project_id)

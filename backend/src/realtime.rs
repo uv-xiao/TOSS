@@ -93,6 +93,10 @@ async fn get_or_create_sender(state: &AppState, doc_id: &str) -> broadcast::Send
     tx
 }
 
+fn realtime_channel_key(project_id: Uuid, doc_id: &str) -> String {
+    format!("{project_id}:{doc_id}")
+}
+
 fn collab_update_retention() -> i64 {
     std::env::var("COLLAB_DOC_UPDATE_RETAIN")
         .ok()
@@ -315,7 +319,8 @@ async fn handle_socket(
     user_name: Option<String>,
     state: AppState,
 ) {
-    let sender = get_or_create_sender(&state, &doc_id).await;
+    let channel_key = realtime_channel_key(auth.project_id, &doc_id);
+    let sender = get_or_create_sender(&state, &channel_key).await;
     let mut rx = sender.subscribe();
     let (mut ws_tx, mut ws_rx) = socket.split();
     let user_id = auth.user_id.to_string();
@@ -410,7 +415,6 @@ async fn handle_socket(
                                     }),
                                     at: Utc::now(),
                                 });
-                                continue;
                             }
                         }
                     }
@@ -448,4 +452,12 @@ async fn handle_socket(
     };
     let _ = sender.send(left);
     send_task.abort();
+    if sender.receiver_count() == 0 {
+        let mut write = state.realtime_channels.write().await;
+        if let Some(existing) = write.get(&channel_key) {
+            if existing.same_channel(&sender) && sender.receiver_count() == 0 {
+                write.remove(&channel_key);
+            }
+        }
+    }
 }

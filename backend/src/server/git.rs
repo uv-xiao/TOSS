@@ -402,6 +402,14 @@ async fn git_http_backend(
     let Ok(output) = child.wait_with_output() else {
         return (StatusCode::INTERNAL_SERVER_ERROR, "git http-backend failed").into_response();
     };
+    if !output.status.success() && output.stdout.is_empty() {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("git http-backend exited with failure: {stderr}"),
+        )
+            .into_response();
+    }
 
     let (status, response_headers, response_body) = parse_cgi_http_backend_output(&output.stdout);
     let mut post_sync_error: Option<String> = None;

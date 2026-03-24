@@ -913,7 +913,7 @@ async fn load_revision_storage_meta(
     let row = sqlx::query(
         "select id, parent_revision_id, coalesce(storage_kind, 'full') as storage_kind
          from revisions
-         where project_id = $1 and id = $2",
+         where project_id = $1 and id = $2 and is_complete = true",
     )
     .bind(project_id)
     .bind(revision_id)
@@ -937,7 +937,11 @@ async fn load_materialized_revision_state(
     loop {
         guard += 1;
         if guard > 2048 {
-            break;
+            error!(
+                "revision chain exceeded safety guard for project {} revision {}",
+                project_id, revision_id
+            );
+            return Ok(None);
         }
         let Some(meta) = load_revision_storage_meta(db, project_id, cursor).await? else {
             return Ok(None);
@@ -1105,7 +1109,7 @@ async fn latest_project_revision_id(db: &PgPool, project_id: Uuid) -> Result<Opt
     let row = sqlx::query(
         "select id
          from revisions
-         where project_id = $1
+         where project_id = $1 and is_complete = true
          order by created_at desc, id desc
          limit 1",
     )
@@ -1182,8 +1186,8 @@ async fn create_project_revision(
 
     let row = sqlx::query(
         "insert into revisions
-           (id, project_id, actor_user_id, summary, created_at, entry_file_path, parent_revision_id, storage_kind)
-         values ($1, $2, $3, $4, $5, $6, $7, $8)
+           (id, project_id, actor_user_id, summary, created_at, entry_file_path, parent_revision_id, storage_kind, is_complete)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, false)
          returning id, project_id, actor_user_id, summary, created_at",
     )
     .bind(revision_id)
@@ -1197,13 +1201,24 @@ async fn create_project_revision(
     .fetch_one(db)
     .await?;
 
-    if storage_kind == "full" {
-        snapshot_revision_state(db, project_id, revision_id).await?;
+    let snapshot_result = if storage_kind == "full" {
+        snapshot_revision_state(db, project_id, revision_id).await
     } else if let Some(parent_id) = parent_revision_id {
-        snapshot_revision_diff(db, project_id, parent_id, revision_id).await?;
+        snapshot_revision_diff(db, project_id, parent_id, revision_id).await
     } else {
-        snapshot_revision_state(db, project_id, revision_id).await?;
+        snapshot_revision_state(db, project_id, revision_id).await
+    };
+    if let Err(err) = snapshot_result {
+        let _ = sqlx::query("delete from revisions where id = $1")
+            .bind(revision_id)
+            .execute(db)
+            .await;
+        return Err(err);
     }
+    sqlx::query("update revisions set is_complete = true where id = $1")
+        .bind(revision_id)
+        .execute(db)
+        .await?;
 
     Ok(CreatedRevisionRecord {
         id: row.get("id"),
@@ -1256,7 +1271,7 @@ async fn mark_project_dirty(db: &PgPool, project_id: Uuid, actor_user_id: Option
         .filter(|v| *v >= 10)
         .unwrap_or(30);
     let recent_created_at = sqlx::query(
-        "select created_at from revisions where project_id = $1 order by created_at desc limit 1",
+        "select created_at from revisions where project_id = $1 and is_complete = true order by created_at desc limit 1",
     )
     .bind(project_id)
     .fetch_optional(db)
