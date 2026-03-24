@@ -138,6 +138,8 @@ a {
 
 .page {
   padding: 14px;
+  width: min(1240px, 100%);
+  margin: 0 auto;
 }
 
 .profile-page {
@@ -213,7 +215,7 @@ a {
 }
 
 .projects-table-shell {
-  padding: 0;
+  padding: 10px;
   overflow: hidden;
 }
 
@@ -472,7 +474,7 @@ a {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 12px;
-  overflow: hidden;
+  overflow: visible;
   box-shadow: 0 10px 24px rgba(11, 28, 45, 0.05);
   display: flex;
   flex-direction: column;
@@ -1293,20 +1295,18 @@ label {
   display: inline-flex;
 }
 
-.ui-tooltip:hover::after {
-  content: attr(data-tooltip);
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  bottom: calc(100% + 6px);
-  background: rgba(20, 32, 51, 0.95);
+.ui-tooltip-popup {
+  position: fixed;
+  transform: translate(-50%, -100%);
+  background: rgba(20, 32, 51, 0.96);
   color: #fff;
   font-size: 11px;
   border-radius: 6px;
-  padding: 4px 8px;
+  padding: 5px 8px;
   white-space: nowrap;
   pointer-events: none;
-  z-index: 30;
+  z-index: 9999;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.2);
 }
 
 .ui-badge {
@@ -1402,6 +1402,7 @@ label {
 .projects-list {
   display: grid;
   gap: 8px;
+  padding: 2px;
 }
 
 .projects-row {
@@ -1438,6 +1439,11 @@ label {
 
 .project-thumb.placeholder {
   background: linear-gradient(135deg, #f2f5fa, #e8edf5);
+  display: grid;
+  place-items: center;
+  color: #5f738a;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .project-main {
@@ -1467,6 +1473,10 @@ label {
 .template-open-card {
   width: min(680px, 100%);
   margin: 32px auto;
+}
+
+.workspace-shell {
+  width: 100%;
 }
 
 .panel-content {

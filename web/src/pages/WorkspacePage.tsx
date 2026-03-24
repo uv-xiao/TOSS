@@ -1259,70 +1259,28 @@ export function WorkspacePage({
     return <Navigate to={`/project/${projects[0].id}`} replace />;
   }
 
-  if (project?.is_template) {
-    return (
-      <section className="page">
-        <UiCard className="template-open-card">
-          <h2>{t("projects.useTemplate")}</h2>
-          <p>{`${t("projects.copyDialogHint")} ${project.name}`}</p>
-          <div className="toolbar">
-            <UiButton onClick={() => navigate("/projects")}>{t("nav.backToProjects")}</UiButton>
-            <UiButton
-              variant="primary"
-              onClick={() =>
-                setCopyDialog({
-                  projectId: project.id,
-                  sourceName: project.name,
-                  suggestedName: `${project.name} ${t("projects.copySuffix")}`
-                })
-              }
-            >
-              {t("projects.copyAction")}
-            </UiButton>
-          </div>
-        </UiCard>
-        <UiDialog
-          open={!!copyDialog}
-          title={t("projects.copyDialogTitle")}
-          description={copyDialog ? `${t("projects.copyDialogHint")} ${copyDialog.sourceName}` : undefined}
-          onClose={() => setCopyDialog(null)}
-          actions={
-            <>
-              <UiButton onClick={() => setCopyDialog(null)}>{t("common.cancel")}</UiButton>
-              <UiButton
-                variant="primary"
-                onClick={createProjectFromTemplate}
-                disabled={copyBusy || !copyDialog?.suggestedName.trim()}
-              >
-                {copyBusy ? t("projects.copying") : t("projects.copyAction")}
-              </UiButton>
-            </>
-          }
-        >
-          <UiInput
-            value={copyDialog?.suggestedName ?? ""}
-            onChange={(e) =>
-              setCopyDialog((current) =>
-                current
-                  ? {
-                      ...current,
-                      suggestedName: e.target.value
-                    }
-                  : current
-              )
-            }
-            placeholder={t("projects.namePlaceholder")}
-          />
-        </UiDialog>
-      </section>
-    );
-  }
-
   return (
     <section className="workspace-shell">
       {!canWrite && (
         <div className="workspace-access-banner" role="status">
           {t("workspace.readOnlyProject")}
+        </div>
+      )}
+      {project?.is_template && (
+        <div className="workspace-access-banner template-banner" role="status">
+          <span>{`${t("settings.templateEnabled")} · ${t("projects.copyDialogHint")} ${project.name}`}</span>
+          <UiButton
+            size="sm"
+            onClick={() =>
+              setCopyDialog({
+                projectId: project.id,
+                sourceName: project.name,
+                suggestedName: `${project.name} ${t("projects.copySuffix")}`
+              })
+            }
+          >
+            {t("projects.copyAction")}
+          </UiButton>
         </div>
       )}
       <section className="workspace-stage">
@@ -1557,6 +1515,39 @@ export function WorkspacePage({
           </UiButton>
         </div>
       )}
+      <UiDialog
+        open={!!copyDialog}
+        title={t("projects.copyDialogTitle")}
+        description={copyDialog ? `${t("projects.copyDialogHint")} ${copyDialog.sourceName}` : undefined}
+        onClose={() => setCopyDialog(null)}
+        actions={
+          <>
+            <UiButton onClick={() => setCopyDialog(null)}>{t("common.cancel")}</UiButton>
+            <UiButton
+              variant="primary"
+              onClick={createProjectFromTemplate}
+              disabled={copyBusy || !copyDialog?.suggestedName.trim()}
+            >
+              {copyBusy ? t("projects.copying") : t("projects.copyAction")}
+            </UiButton>
+          </>
+        }
+      >
+        <UiInput
+          value={copyDialog?.suggestedName ?? ""}
+          onChange={(e) =>
+            setCopyDialog((current) =>
+              current
+                ? {
+                    ...current,
+                    suggestedName: e.target.value
+                  }
+                : current
+            )
+          }
+          placeholder={t("projects.namePlaceholder")}
+        />
+      </UiDialog>
       <UiDialog
         open={!!pathDialog}
         title={

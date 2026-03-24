@@ -1,6 +1,6 @@
 import type { DragEvent as ReactDragEvent } from "react";
 import { FilePlus2, FolderPlus, Upload } from "lucide-react";
-import { UiButton, UiIconButton } from "@/components/ui";
+import { UiIconButton } from "@/components/ui";
 import { TreeNodeRow } from "@/pages/workspace/components/TreeNodeRow";
 import type { ContextMenuState, ProjectTreeNodeView } from "@/pages/workspace/types";
 
@@ -53,14 +53,22 @@ export function FileTreePanel({
         onDrop={onDrop}
       >
         <div className="toolbar compact-left">
-          <UiButton onClick={onAddFile} disabled={!canWrite || isRevisionMode}>
+          <UiIconButton
+            tooltip={t("workspace.newFile")}
+            label={t("workspace.newFile")}
+            onClick={onAddFile}
+            disabled={!canWrite || isRevisionMode}
+          >
             <FilePlus2 size={16} />
-            {t("workspace.newFile")}
-          </UiButton>
-          <UiButton onClick={onAddDirectory} disabled={!canWrite || isRevisionMode}>
+          </UiIconButton>
+          <UiIconButton
+            tooltip={t("workspace.newFolder")}
+            label={t("workspace.newFolder")}
+            onClick={onAddDirectory}
+            disabled={!canWrite || isRevisionMode}
+          >
             <FolderPlus size={16} />
-            {t("workspace.newFolder")}
-          </UiButton>
+          </UiIconButton>
           <UiIconButton
             tooltip={t("workspace.upload")}
             label={t("workspace.upload")}
@@ -88,4 +96,3 @@ export function FileTreePanel({
     </aside>
   );
 }
-

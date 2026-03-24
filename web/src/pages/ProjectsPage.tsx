@@ -12,6 +12,57 @@ import {
 } from "@/lib/api";
 import type { ProjectCopyDialogState } from "@/types/project-ui";
 
+function ProjectThumbnail({
+  project,
+  t
+}: {
+  project: Project;
+  t: (key: string) => string;
+}) {
+  const [src, setSrc] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl = "";
+    if (!project.has_thumbnail) {
+      setSrc(null);
+      return () => undefined;
+    }
+    const url = projectThumbnailUrl(project.id, project.last_edited_at);
+    fetch(url, { credentials: "include", cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) return null;
+        const blob = await response.blob();
+        return URL.createObjectURL(blob);
+      })
+      .then((next) => {
+        if (cancelled) {
+          if (next) URL.revokeObjectURL(next);
+          return;
+        }
+        objectUrl = next || "";
+        setSrc(next);
+      })
+      .catch(() => {
+        if (!cancelled) setSrc(null);
+      });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [project.has_thumbnail, project.id, project.last_edited_at]);
+
+  if (!src) {
+    return (
+      <div className="project-thumb placeholder" aria-label={t("workspace.preview")}>
+        PDF
+      </div>
+    );
+  }
+
+  return <img className="project-thumb loaded" src={src} alt={project.name} loading="lazy" />;
+}
+
 function formatRelativeTime(iso: string) {
   const at = Date.parse(iso);
   if (!Number.isFinite(at)) return iso;
@@ -73,7 +124,6 @@ export function ProjectsPage({
   const [busyProjectId, setBusyProjectId] = useState<string | null>(null);
   const [copyDialog, setCopyDialog] = useState<ProjectCopyDialogState | null>(null);
   const [copyBusy, setCopyBusy] = useState(false);
-  const [brokenThumbnailIds, setBrokenThumbnailIds] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const filteredProjects = useMemo(() => {
     const keyword = search.trim().toLowerCase();
@@ -88,17 +138,6 @@ export function ProjectsPage({
       })
       .sort((a, b) => Date.parse(b.last_edited_at) - Date.parse(a.last_edited_at));
   }, [projects, search, view]);
-
-  useEffect(() => {
-    setBrokenThumbnailIds((previous) => {
-      const allowed = new Set(projects.map((project) => project.id));
-      const next = new Set<string>();
-      for (const id of previous) {
-        if (allowed.has(id)) next.add(id);
-      }
-      return next;
-    });
-  }, [projects]);
 
   async function createFromCopy() {
     if (!copyDialog || !copyDialog.suggestedName.trim()) return;
@@ -117,14 +156,6 @@ export function ProjectsPage({
   }
 
   function openProject(project: Project) {
-    if (project.is_template) {
-      setCopyDialog({
-        projectId: project.id,
-        sourceName: project.name,
-        suggestedName: `${project.name} ${t("projects.copySuffix")}`
-      });
-      return;
-    }
     navigate(`/project/${project.id}`);
   }
 
@@ -184,23 +215,7 @@ export function ProjectsPage({
           {filteredProjects.map((project) => (
             <div className="projects-row" key={project.id}>
               <button className="project-title-cell" onClick={() => openProject(project)}>
-                {project.has_thumbnail && !brokenThumbnailIds.has(project.id) ? (
-                  <img
-                    className="project-thumb loaded"
-                    src={projectThumbnailUrl(project.id)}
-                    alt={project.name}
-                    loading="lazy"
-                    onError={() =>
-                      setBrokenThumbnailIds((previous) => {
-                        const next = new Set(previous);
-                        next.add(project.id);
-                        return next;
-                      })
-                    }
-                  />
-                ) : (
-                  <div className="project-thumb placeholder" aria-hidden />
-                )}
+                <ProjectThumbnail project={project} t={t} />
                 <div className="project-main">
                   <strong>{project.name}</strong>
                   <div className="project-tags">
@@ -215,11 +230,11 @@ export function ProjectsPage({
               </span>
               <div className="projects-row-actions">
                 <UiIconButton
-                  tooltip={project.is_template ? t("projects.useTemplate") : t("projects.open")}
-                  label={project.is_template ? t("projects.useTemplate") : t("projects.open")}
+                  tooltip={t("projects.open")}
+                  label={t("projects.open")}
                   onClick={() => openProject(project)}
                 >
-                  {project.is_template ? <Copy size={16} /> : <ArrowRight size={16} />}
+                  <ArrowRight size={16} />
                 </UiIconButton>
                 <UiIconButton
                   tooltip={t("projects.copy")}
@@ -312,4 +327,3 @@ export function ProjectsPage({
     </section>
   );
 }
-

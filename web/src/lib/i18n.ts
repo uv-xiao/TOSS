@@ -125,7 +125,7 @@ const messages: Record<UiLocale, Record<string, string>> = {
   },
   "zh-CN": {
     "brand.name": "Typst 协作平台",
-    "nav.backToProjects": "返回项目",
+    "nav.backToProjects": "返回项目列表",
     "nav.logout": "退出登录",
     "nav.projects": "项目",
     "nav.profile": "个人资料",

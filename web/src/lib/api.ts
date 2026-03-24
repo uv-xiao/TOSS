@@ -775,8 +775,11 @@ export async function listProjectAccessUsers(projectId: string) {
   return parseJsonOrThrow<{ users: ProjectAccessUser[] }>(res, "Unable to list access users");
 }
 
-export function projectThumbnailUrl(projectId: string) {
-  return apiUrl(`/v1/projects/${projectId}/thumbnail`);
+export function projectThumbnailUrl(projectId: string, versionHint?: string) {
+  const base = apiUrl(`/v1/projects/${projectId}/thumbnail`);
+  if (!versionHint) return base;
+  const safe = encodeURIComponent(versionHint);
+  return `${base}${base.includes("?") ? "&" : "?"}v=${safe}`;
 }
 
 export async function uploadProjectThumbnail(

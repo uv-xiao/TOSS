@@ -1,4 +1,14 @@
-import { useEffect, type ButtonHTMLAttributes, type HTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ButtonHTMLAttributes,
+  type HTMLAttributes,
+  type InputHTMLAttributes,
+  type ReactNode,
+  type SelectHTMLAttributes
+} from "react";
+import { createPortal } from "react-dom";
 
 type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
 type ButtonSize = "sm" | "md" | "lg";
@@ -60,9 +70,62 @@ export function UiTooltip({
   children: ReactNode;
   className?: string;
 }) {
+  const anchorRef = useRef<HTMLSpanElement | null>(null);
+  const [visible, setVisible] = useState(false);
+  const [position, setPosition] = useState<{ left: number; top: number }>({ left: 0, top: 0 });
+
+  const updatePosition = () => {
+    const anchor = anchorRef.current;
+    if (!anchor) return;
+    const rect = anchor.getBoundingClientRect();
+    setPosition({
+      left: rect.left + rect.width / 2,
+      top: Math.max(8, rect.top - 8)
+    });
+  };
+
+  useEffect(() => {
+    if (!visible) return;
+    updatePosition();
+    const onLayout = () => updatePosition();
+    window.addEventListener("scroll", onLayout, true);
+    window.addEventListener("resize", onLayout);
+    return () => {
+      window.removeEventListener("scroll", onLayout, true);
+      window.removeEventListener("resize", onLayout);
+    };
+  }, [visible]);
+
   return (
-    <span className={`ui-tooltip ${className}`.trim()} data-tooltip={content}>
+    <span
+      ref={anchorRef}
+      className={`ui-tooltip ${className}`.trim()}
+      onMouseEnter={() => {
+        updatePosition();
+        setVisible(true);
+      }}
+      onMouseLeave={() => setVisible(false)}
+      onFocus={() => {
+        updatePosition();
+        setVisible(true);
+      }}
+      onBlur={() => setVisible(false)}
+    >
       {children}
+      {visible &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <span
+            className="ui-tooltip-popup"
+            style={{
+              left: `${position.left}px`,
+              top: `${position.top}px`
+            }}
+          >
+            {content}
+          </span>,
+          document.body
+        )}
     </span>
   );
 }
@@ -126,4 +189,3 @@ export function UiDialog({
 export function UiCard(props: HTMLAttributes<HTMLDivElement>) {
   return <div {...props} className={`ui-card ${props.className || ""}`.trim()} />;
 }
-
