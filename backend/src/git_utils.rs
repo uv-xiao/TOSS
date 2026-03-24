@@ -65,7 +65,7 @@ pub fn run_git(repo_path: &str, args: &[&str]) -> Result<String, String> {
     }
 }
 
-pub fn collect_repo_files(repo_path: &str) -> Result<HashMap<String, String>, String> {
+pub fn collect_repo_files(repo_path: &str) -> Result<HashMap<String, Vec<u8>>, String> {
     let root = PathBuf::from(repo_path);
     let mut out = HashMap::new();
     collect_repo_files_recursive(&root, &root, &mut out)?;
@@ -75,7 +75,7 @@ pub fn collect_repo_files(repo_path: &str) -> Result<HashMap<String, String>, St
 fn collect_repo_files_recursive(
     root: &PathBuf,
     current: &PathBuf,
-    out: &mut HashMap<String, String>,
+    out: &mut HashMap<String, Vec<u8>>,
 ) -> Result<(), String> {
     let entries = std::fs::read_dir(current).map_err(|e| e.to_string())?;
     for entry in entries {
@@ -94,10 +94,7 @@ fn collect_repo_files_recursive(
                 .to_string_lossy()
                 .to_string();
             let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
-            let Ok(content) = String::from_utf8(bytes) else {
-                continue;
-            };
-            out.insert(rel, content);
+            out.insert(rel, bytes);
         }
     }
     Ok(())

@@ -74,7 +74,10 @@ async fn authorize_ws_user(
     let user_id = ensure_project_role(&state.db, &auth_headers, project_id, AccessNeed::Read)
         .await
         .map_err(|_| "forbidden".to_string())?;
-    Ok(WsAuth { project_id, user_id })
+    Ok(WsAuth {
+        project_id,
+        user_id,
+    })
 }
 
 async fn get_or_create_sender(state: &AppState, doc_id: &str) -> broadcast::Sender<CollabEvent> {
@@ -257,7 +260,12 @@ async fn load_collab_bootstrap(
 
     let updates = rows
         .into_iter()
-        .map(|row| (row.get::<String, _>("kind"), row.get::<Vec<u8>, _>("payload")))
+        .map(|row| {
+            (
+                row.get::<String, _>("kind"),
+                row.get::<Vec<u8>, _>("payload"),
+            )
+        })
         .collect();
 
     Ok(CollabBootstrapState {

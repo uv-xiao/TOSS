@@ -294,73 +294,273 @@ async fn create_git_bundle_artifact(
     Ok(())
 }
 
+fn clear_repo_working_tree(repo_path: &str) -> Result<(), String> {
+    let root = std::path::Path::new(repo_path);
+    let entries = std::fs::read_dir(root).map_err(|e| e.to_string())?;
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+        if name == ".git" {
+            continue;
+        }
+        let file_type = entry.file_type().map_err(|e| e.to_string())?;
+        if file_type.is_dir() {
+            std::fs::remove_dir_all(&path).map_err(|e| e.to_string())?;
+        } else {
+            std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn looks_like_text(bytes: &[u8]) -> bool {
+    std::str::from_utf8(bytes).is_ok()
+}
+
 async fn sync_project_documents_to_repo(
-    db: &PgPool,
+    state: &AppState,
     project_id: Uuid,
     repo_path: &str,
 ) -> Result<(), String> {
-    let rows = sqlx::query("select path, content from documents where project_id = $1")
+    clear_repo_working_tree(repo_path)?;
+    let doc_rows = sqlx::query("select path, content from documents where project_id = $1")
         .bind(project_id)
-        .fetch_all(db)
+        .fetch_all(&state.db)
         .await
         .map_err(|e| e.to_string())?;
-    for row in rows {
+    let asset_rows = sqlx::query(
+        "select path, object_key, inline_data
+         from project_assets
+         where project_id = $1",
+    )
+    .bind(project_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| e.to_string())?;
+    let dir_rows = sqlx::query("select path from project_directories where project_id = $1")
+        .bind(project_id)
+        .fetch_all(&state.db)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    for row in dir_rows {
+        let dir_path: String = row.get("path");
+        let target = sanitize_repo_relative_path(repo_path, &dir_path)?;
+        std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
+    }
+
+    for row in doc_rows {
         let doc_path: String = row.get("path");
         let content: String = row.get("content");
         let target = sanitize_repo_relative_path(repo_path, &doc_path)?;
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        std::fs::write(&target, content).map_err(|e| e.to_string())?;
+        std::fs::write(&target, content.as_bytes()).map_err(|e| e.to_string())?;
+    }
+
+    for row in asset_rows {
+        let asset_path: String = row.get("path");
+        let bytes = if let Some(inline) = row.get::<Option<Vec<u8>>, _>("inline_data") {
+            inline
+        } else {
+            let object_key: String = row.get("object_key");
+            let Some(storage) = state.storage.clone() else {
+                return Err("object storage unavailable for asset sync".to_string());
+            };
+            get_object(&storage, &object_key)
+                .await
+                .map_err(|e| e.to_string())?
+        };
+        let target = sanitize_repo_relative_path(repo_path, &asset_path)?;
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&target, bytes).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
 async fn sync_repo_documents_to_project(
-    db: &PgPool,
+    state: &AppState,
     project_id: Uuid,
     repo_path: &str,
 ) -> Result<(), String> {
     let repo_files = collect_repo_files(repo_path)?;
-    let db_rows = sqlx::query("select id, path from documents where project_id = $1")
+    let doc_rows = sqlx::query("select id, path from documents where project_id = $1")
         .bind(project_id)
-        .fetch_all(db)
+        .fetch_all(&state.db)
         .await
         .map_err(|e| e.to_string())?;
+    let asset_rows = sqlx::query(
+        "select id, path, object_key
+         from project_assets
+         where project_id = $1",
+    )
+    .bind(project_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| e.to_string())?;
 
-    let mut current: HashMap<String, Uuid> = HashMap::new();
-    for row in db_rows {
-        current.insert(row.get("path"), row.get("id"));
+    let mut current_docs: HashMap<String, Uuid> = HashMap::new();
+    for row in doc_rows {
+        current_docs.insert(row.get("path"), row.get("id"));
+    }
+    let mut current_assets: HashMap<String, (Uuid, String)> = HashMap::new();
+    for row in asset_rows {
+        current_assets.insert(row.get("path"), (row.get("id"), row.get("object_key")));
     }
 
     let now = Utc::now();
-    let repo_paths: HashSet<String> = repo_files.keys().cloned().collect();
-    for (path, content) in repo_files {
+    let mut repo_paths: HashSet<String> = HashSet::new();
+    let mut repo_dirs: HashSet<String> = HashSet::new();
+
+    for (path, bytes) in repo_files {
+        repo_paths.insert(path.clone());
+        let clean_path = sanitize_project_path(&path).map_err(|_| "invalid repo path".to_string())?;
+        let parts = clean_path.split('/').collect::<Vec<_>>();
+        let mut acc = String::new();
+        for part in parts.iter().take(parts.len().saturating_sub(1)) {
+            if acc.is_empty() {
+                acc.push_str(part);
+            } else {
+                acc.push('/');
+                acc.push_str(part);
+            }
+            repo_dirs.insert(acc.clone());
+        }
+
+        if looks_like_text(&bytes) {
+            let content = String::from_utf8(bytes).map_err(|e| e.to_string())?;
+            sqlx::query(
+                "insert into documents (id, project_id, path, content, updated_at)
+                 values ($1, $2, $3, $4, $5)
+                 on conflict (project_id, path)
+                 do update set content = excluded.content, updated_at = excluded.updated_at",
+            )
+            .bind(Uuid::new_v4())
+            .bind(project_id)
+            .bind(&clean_path)
+            .bind(content)
+            .bind(now)
+            .execute(&state.db)
+            .await
+            .map_err(|e| e.to_string())?;
+            if let Some((asset_id, object_key)) = current_assets.get(&clean_path) {
+                if !object_key.starts_with("inline://") {
+                    if let Some(storage) = state.storage.clone() {
+                        let _ = delete_object(&storage, object_key).await;
+                    }
+                }
+                let _ = sqlx::query("delete from project_assets where project_id = $1 and id = $2")
+                    .bind(project_id)
+                    .bind(asset_id)
+                    .execute(&state.db)
+                    .await;
+            }
+            continue;
+        }
+
+        let existing = current_assets.get(&clean_path).cloned();
+        let asset_id = existing
+            .as_ref()
+            .map(|value| value.0)
+            .unwrap_or_else(Uuid::new_v4);
+        let object_key = if let Some((_, key)) = existing.clone() {
+            key
+        } else {
+            format!("projects/{project_id}/assets/{asset_id}")
+        };
+        let (stored_object_key, inline_data) = if let Some(storage) = state.storage.clone() {
+            put_object(&storage, &object_key, "application/octet-stream", bytes.clone())
+                .await
+                .map_err(|e| e.to_string())?;
+            (object_key, None)
+        } else {
+            (format!("inline://{asset_id}"), Some(bytes.clone()))
+        };
         sqlx::query(
-            "insert into documents (id, project_id, path, content, updated_at)
-             values ($1, $2, $3, $4, $5)
-             on conflict (project_id, path) do update set content = excluded.content, updated_at = excluded.updated_at",
+            "insert into project_assets
+             (id, project_id, path, object_key, content_type, size_bytes, uploaded_by, created_at, inline_data)
+             values ($1, $2, $3, $4, $5, $6, null, $7, $8)
+             on conflict (project_id, path)
+             do update set
+               object_key = excluded.object_key,
+               content_type = excluded.content_type,
+               size_bytes = excluded.size_bytes,
+               created_at = excluded.created_at,
+               inline_data = excluded.inline_data",
         )
-        .bind(Uuid::new_v4())
+        .bind(asset_id)
         .bind(project_id)
-        .bind(path)
-        .bind(content)
+        .bind(&clean_path)
+        .bind(stored_object_key)
+        .bind("application/octet-stream")
+        .bind(bytes.len() as i64)
         .bind(now)
-        .execute(db)
+        .bind(inline_data)
+        .execute(&state.db)
         .await
         .map_err(|e| e.to_string())?;
+        let _ = sqlx::query("delete from documents where project_id = $1 and path = $2")
+            .bind(project_id)
+            .bind(&clean_path)
+            .execute(&state.db)
+            .await;
     }
 
-    for (path, doc_id) in current {
+    for (path, doc_id) in current_docs {
         if !repo_paths.contains(&path) {
             sqlx::query("delete from documents where project_id = $1 and id = $2")
                 .bind(project_id)
                 .bind(doc_id)
-                .execute(db)
+                .execute(&state.db)
                 .await
                 .map_err(|e| e.to_string())?;
         }
     }
+
+    for (path, (asset_id, object_key)) in current_assets {
+        if repo_paths.contains(&path) {
+            continue;
+        }
+        if !object_key.starts_with("inline://") {
+            if let Some(storage) = state.storage.clone() {
+                let _ = delete_object(&storage, &object_key).await;
+            }
+        }
+        sqlx::query("delete from project_assets where project_id = $1 and id = $2")
+            .bind(project_id)
+            .bind(asset_id)
+            .execute(&state.db)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    sqlx::query("delete from project_directories where project_id = $1")
+        .bind(project_id)
+        .execute(&state.db)
+        .await
+        .map_err(|e| e.to_string())?;
+    for dir_path in repo_dirs {
+        sqlx::query(
+            "insert into project_directories (project_id, path, created_at)
+             values ($1, $2, $3)
+             on conflict (project_id, path) do nothing",
+        )
+        .bind(project_id)
+        .bind(dir_path)
+        .bind(now)
+        .execute(&state.db)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+
     Ok(())
 }
 
@@ -1125,7 +1325,7 @@ async fn mark_project_dirty(db: &PgPool, project_id: Uuid, actor_user_id: Option
 }
 
 async fn flush_pending_server_commit(
-    db: &PgPool,
+    state: &AppState,
     project_id: Uuid,
     force_author: Option<Uuid>,
 ) -> Result<(), String> {
@@ -1133,23 +1333,23 @@ async fn flush_pending_server_commit(
         "select local_path, default_branch, pending_sync from git_repositories where project_id = $1",
     )
     .bind(project_id)
-    .fetch_optional(db)
+    .fetch_optional(&state.db)
     .await
     .map_err(|e| e.to_string())?;
     let Some(row) = row else {
-        clear_project_sync_queue_item(db, project_id).await;
+        clear_project_sync_queue_item(&state.db, project_id).await;
         return Ok(());
     };
     let pending_sync: bool = row.get("pending_sync");
     if !pending_sync {
-        clear_project_sync_queue_item(db, project_id).await;
+        clear_project_sync_queue_item(&state.db, project_id).await;
         return Ok(());
     }
     let local_path: String = row.get("local_path");
     let default_branch: String = row.get("default_branch");
     ensure_git_repo_initialized(&local_path, &default_branch)?;
     ensure_git_branch_checked_out(&local_path, &default_branch)?;
-    sync_project_documents_to_repo(db, project_id, &local_path).await?;
+    sync_project_documents_to_repo(state, project_id, &local_path).await?;
     let _ = run_git(&local_path, &["add", "."]);
 
     let clean = run_git(&local_path, &["status", "--porcelain"]).unwrap_or_default();
@@ -1159,13 +1359,13 @@ async fn flush_pending_server_commit(
         )
         .bind(project_id)
         .bind(Utc::now())
-        .execute(db)
+        .execute(&state.db)
         .await;
         let _ = sqlx::query("delete from git_pending_authors where project_id = $1")
             .bind(project_id)
-            .execute(db)
+            .execute(&state.db)
             .await;
-        clear_project_sync_queue_item(db, project_id).await;
+        clear_project_sync_queue_item(&state.db, project_id).await;
         return Ok(());
     }
 
@@ -1177,7 +1377,7 @@ async fn flush_pending_server_commit(
          order by g.touched_at asc",
     )
     .bind(project_id)
-    .fetch_all(db)
+    .fetch_all(&state.db)
     .await
     .map_err(|e| e.to_string())?;
 
@@ -1191,7 +1391,7 @@ async fn flush_pending_server_commit(
         if let Some(user_id) = force_author {
             let u = sqlx::query("select display_name, email from users where id = $1")
                 .bind(user_id)
-                .fetch_optional(db)
+                .fetch_optional(&state.db)
                 .await
                 .map_err(|e| e.to_string())?;
             if let Some(row) = u {
@@ -1226,13 +1426,13 @@ async fn flush_pending_server_commit(
     )
     .bind(project_id)
     .bind(Utc::now())
-    .execute(db)
+    .execute(&state.db)
     .await;
     let _ = sqlx::query("delete from git_pending_authors where project_id = $1")
         .bind(project_id)
-        .execute(db)
+        .execute(&state.db)
         .await;
-    clear_project_sync_queue_item(db, project_id).await;
+    clear_project_sync_queue_item(&state.db, project_id).await;
     Ok(())
 }
 
@@ -1310,7 +1510,7 @@ fn spawn_git_flush_worker(state: AppState) {
                     for project_id in projects {
                         mark_project_sync_attempt(&state.db, project_id).await;
                         let _git_lock = acquire_git_project_lock(&state, project_id).await;
-                        if let Err(err) = flush_pending_server_commit(&state.db, project_id, None).await
+                        if let Err(err) = flush_pending_server_commit(&state, project_id, None).await
                         {
                             error!(
                                 "git flush worker failed for project {}: {}",

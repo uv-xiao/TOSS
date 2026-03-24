@@ -191,7 +191,7 @@ async fn git_pull(
             .await;
             return Err(StatusCode::CONFLICT);
         }
-        sync_repo_documents_to_project(&state.db, project_id, &config.local_path)
+        sync_repo_documents_to_project(&state, project_id, &config.local_path)
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     } else {
@@ -234,7 +234,7 @@ async fn git_push(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     ensure_git_branch_checked_out(&config.local_path, &config.default_branch)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    sync_project_documents_to_repo(&state.db, project_id, &config.local_path)
+    sync_project_documents_to_repo(&state, project_id, &config.local_path)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let _ = run_git(&config.local_path, &["add", "."]);
@@ -337,7 +337,7 @@ async fn git_http_backend(
     }
     let _git_lock = acquire_git_project_lock(&state, project_id).await;
 
-    if flush_pending_server_commit(&state.db, project_id, None)
+    if flush_pending_server_commit(&state, project_id, None)
         .await
         .is_err()
     {
@@ -405,7 +405,7 @@ async fn git_http_backend(
 
     let (status, response_headers, response_body) = parse_cgi_http_backend_output(&output.stdout);
     if can_push && status.is_success() {
-        if sync_repo_documents_to_project(&state.db, project_id, &config.local_path)
+        if sync_repo_documents_to_project(&state, project_id, &config.local_path)
             .await
             .is_ok()
         {
