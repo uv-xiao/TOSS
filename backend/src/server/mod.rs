@@ -7,7 +7,7 @@ use crate::typst_cache::typst_package_proxy;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
 use axum::body::{Body, Bytes};
-use axum::extract::{Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{header, HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Redirect};
 use axum::routing::{any, delete, get, get_service, patch, post, put};
@@ -67,6 +67,11 @@ pub async fn run() {
     };
 
     let storage = init_object_storage_from_env().await;
+    let max_request_body_bytes = env::var("MAX_REQUEST_BODY_BYTES")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|v| *v >= 1024 * 1024)
+        .unwrap_or(64 * 1024 * 1024);
     let state = AppState {
         db,
         oidc,
@@ -231,6 +236,7 @@ pub async fn run() {
             "/v1/admin/settings/auth",
             get(get_admin_auth_settings).put(upsert_admin_auth_settings),
         )
+        .layer(DefaultBodyLimit::max(max_request_body_bytes))
         .fallback_service(static_service)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -241,6 +247,7 @@ pub async fn run() {
         .unwrap_or(8080);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     info!("core-api listening on {}", addr);
+    info!("max request body bytes: {}", max_request_body_bytes);
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();

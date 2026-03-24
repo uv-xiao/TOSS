@@ -41,6 +41,7 @@ DATABASE_URL=postgres://typstapp:iv61v6mRPCGxvWjt@127.0.0.1:5432/typstappdb \
 CORE_API_PORT=18080 \
 GIT_STORAGE_PATH=/tmp/typst-git \
 WEB_STATIC_DIR=../web/dist \
+MAX_REQUEST_BODY_BYTES=$((64 * 1024 * 1024)) \
 cargo run
 ```
 
@@ -125,6 +126,8 @@ Optional variables:
 ## Notes
 
 - Non-WASM browsers can still edit source but do not get live Typst preview.
+- Upload/API payload size is controlled by `MAX_REQUEST_BODY_BYTES` (default 64 MiB).
+  Increase it if you upload large base64-encoded assets (fonts, figures, etc).
 - Browser Typst preview uses Typst's default embedded text-font asset set
   (`Libertinus Serif`, `New Computer Modern`, `DejaVu Sans Mono`) plus any
   project-uploaded font files, to best match offline CLI output.
