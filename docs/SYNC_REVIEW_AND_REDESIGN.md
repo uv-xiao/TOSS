@@ -1,6 +1,6 @@
 # Sync Systems Review and Redesign Tracker
 
-Last updated: 2026-03-24
+Last updated: 2026-03-25
 Scope: CRDT realtime sync, revision storage, Git server integration, and cross-system consistency.
 
 ## Current Architecture Summary
@@ -18,6 +18,50 @@ Scope: CRDT realtime sync, revision storage, Git server integration, and cross-s
   - otherwise parent-based diffs for docs/directories/assets.
 
 ## Findings (Prioritized)
+
+## Latest Review Cycle (2026-03-25)
+
+Status legend:
+- `OPEN`: confirmed issue not fixed yet
+- `IN_PROGRESS`: patch in progress
+- `FIXED`: code patch landed and tests rerun
+- `MONITOR`: no concrete bug found now, keep observing under scale
+
+1. `FIXED` Realtime channel isolation keyed only by `doc_id` (cross-project leakage risk).
+  - Fix: realtime broadcaster key is now `(project_id, doc_id)` composed key.
+  - Also added idle channel cleanup when receiver count reaches zero.
+  - Ref: `backend/src/realtime.rs`.
+
+2. `FIXED` Realtime updates dropped on persistence failure.
+  - Fix: server still relays event to connected collaborators even if durable write fails, while emitting `server.error`.
+  - Ref: `backend/src/realtime.rs`.
+
+3. `FIXED` Incomplete revision visibility / partial-materialization hazard.
+  - Fix: added `revisions.is_complete`, only complete revisions are visible/queryable/used as parents.
+  - Creation now inserts `is_complete=false`, snapshots/diffs, then flips to `true`; on snapshot failure row is deleted.
+  - Ref: `backend/migrations/202603250001_revision_completeness.sql`, `backend/src/server/support.rs`, `backend/src/server/documents.rs`, `backend/src/server/projects.rs`.
+
+4. `FIXED` Path alias safety issue (`./` segments could alias repo files).
+  - Fix: stricter canonicalization rejects `CurDir` and normalizes components into a canonical slash-joined path.
+  - Ref: `backend/src/server/projects.rs`.
+
+5. `MONITOR` Revision materialization cost can still be high for very large projects.
+  - Current mitigation: diff chain bounded by periodic full snapshots (`REVISION_FULL_SNAPSHOT_INTERVAL`), adaptive delta/full transfer.
+  - Future options: hot-state cache, streaming assets, and payload budgets.
+
+6. `FIXED` Git HTTP backend process-level failure propagation.
+  - Fix: if `git http-backend` exits non-zero without CGI output, API returns 500 with stderr context.
+  - Ref: `backend/src/server/git.rs`.
+
+7. `FIXED` Defensive cap behavior for abnormal revision chain depth.
+  - Fix: guard overflow now fails safely (`None`) instead of silently materializing a truncated state.
+  - Ref: `backend/src/server/support.rs`.
+
+## Current Residual Risk (After This Cycle)
+
+- `MONITOR` Revision browse CPU/memory can still be heavy for very large projects with many large assets because server currently materializes full in-memory state to choose best transfer anchor.
+  - Not a correctness/safety bug observed in tests.
+  - Candidate future optimization: bounded in-memory materialized-state cache keyed by `(project_id, revision_id)`.
 
 ## P0 Critical
 
@@ -64,20 +108,20 @@ Scope: CRDT realtime sync, revision storage, Git server integration, and cross-s
 
 ## Phase 1: Correctness and Safety (Blockers)
 
-- [ ] Add per-project sync lock (cover `git_pull`, `git_push`, `git_http_backend`, flush job).
-- [ ] Make Git receive-pack apply path fail hard if DB import fails (or rollback strategy with reject).
-- [ ] Redesign repo import/export to include binary assets and deletion parity.
+- [x] Add per-project sync lock (cover `git_pull`, `git_push`, `git_http_backend`, flush job).
+- [x] Make Git receive-pack apply path fail hard if DB import fails (or rollback strategy with reject).
+- [x] Redesign repo import/export to include binary assets and deletion parity.
 - [ ] Add explicit end-to-end consistency checks after sync (repo head, DB file count/hash summary).
 
 ## Phase 2: Transactional Integrity
 
-- [ ] Wrap revision creation (header + full/diff rows + authors) in one DB transaction.
+- [x] Guard revision visibility/materialization with `is_complete` lifecycle (practical atomicity boundary for readers).
 - [ ] Introduce save precondition/version token for document upsert.
 - [ ] Ensure dirty mark + author touch + auto snapshot decision use transaction/locking semantics.
 
 ## Phase 3: Performance and Scalability
 
-- [ ] Add realtime channel eviction/TTL when no subscribers remain.
+- [x] Add realtime channel eviction when no subscribers remain.
 - [ ] Cache/materialize revision states for hot revisions (bounded cache).
 - [ ] Add payload budget controls and streaming for large revision assets.
 - [ ] Add metrics: sync latency, snapshot cost, revision materialization cost, DB write amplification.
@@ -120,4 +164,3 @@ Recommended target architecture for a clean rebuild:
   - old path + new path write in parallel,
   - compare effective project state hashes,
   - cut over only when drift is zero over sustained period.
-
