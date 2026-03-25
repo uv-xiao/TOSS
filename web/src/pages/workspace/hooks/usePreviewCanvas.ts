@@ -14,6 +14,19 @@ type UsePreviewCanvasParams = {
   onRenderError: (message: string) => void;
 };
 
+function previewScrollbarWidth(frame: HTMLElement) {
+  const style = window.getComputedStyle(frame);
+  const borderLeft = Number.parseFloat(style.borderLeftWidth || "0") || 0;
+  const borderRight = Number.parseFloat(style.borderRightWidth || "0") || 0;
+  const width = frame.getBoundingClientRect().width;
+  return Math.max(0, width - frame.clientWidth - borderLeft - borderRight);
+}
+
+function syncPreviewScrollbarWidth(frame: HTMLElement) {
+  const width = previewScrollbarWidth(frame);
+  frame.style.setProperty("--preview-scrollbar-width", `${Math.round(width * 10) / 10}px`);
+}
+
 export function usePreviewCanvas({
   showPreviewPanel,
   vectorData,
@@ -59,6 +72,7 @@ export function usePreviewCanvas({
     if (!showPreviewPanel) return;
     const frame = canvasPreviewRef.current;
     if (!frame) return;
+    syncPreviewScrollbarWidth(frame);
     if (!vectorData) {
       lastRenderSignatureRef.current = "";
       setHasPreviewPage(!!frame.querySelector(".pdf-pages .typst-page, .pdf-pages canvas"));
@@ -86,6 +100,7 @@ export function usePreviewCanvas({
           const currentZoom = previewZoomRef.current;
           const zoom = fitMode === "manual" ? currentZoom : deriveFitZoom(frame, pages, fitMode);
           applyPreviewZoom(frame, zoom);
+          syncPreviewScrollbarWidth(frame);
           if (fitMode !== "manual" && frame.scrollLeft !== 0) {
             frame.scrollLeft = 0;
           }
@@ -118,6 +133,7 @@ export function usePreviewCanvas({
     if (!pages) return;
     const zoom = previewFitMode === "manual" ? previewZoom : deriveFitZoom(frame, pages, previewFitMode);
     applyPreviewZoom(frame, zoom);
+    syncPreviewScrollbarWidth(frame);
     if (previewFitMode !== "manual" && frame.scrollLeft !== 0) {
       frame.scrollLeft = 0;
     }
@@ -132,10 +148,12 @@ export function usePreviewCanvas({
     const frame = canvasPreviewRef.current;
     if (!frame) return;
     const observer = new ResizeObserver(() => {
+      syncPreviewScrollbarWidth(frame);
       const pages = frame.querySelector(".pdf-pages") as HTMLElement | null;
       if (!pages || previewFitMode === "manual") return;
       const zoom = deriveFitZoom(frame, pages, previewFitMode);
       applyPreviewZoom(frame, zoom);
+      syncPreviewScrollbarWidth(frame);
       if (frame.scrollLeft !== 0) {
         frame.scrollLeft = 0;
       }
@@ -151,10 +169,12 @@ export function usePreviewCanvas({
     const onResize = () => {
       const frame = canvasPreviewRef.current;
       if (!frame) return;
+      syncPreviewScrollbarWidth(frame);
       const pages = frame.querySelector(".pdf-pages") as HTMLElement | null;
       if (!pages) return;
       const zoom = deriveFitZoom(frame, pages, previewFitMode);
       applyPreviewZoom(frame, zoom);
+      syncPreviewScrollbarWidth(frame);
       if (frame.scrollLeft !== 0) {
         frame.scrollLeft = 0;
       }
