@@ -35,6 +35,13 @@ struct CollabBootstrapState {
     updates: Vec<(String, Vec<u8>)>,
 }
 
+fn doc_path_from_ws_doc_id(project_id: Uuid, doc_id: &str) -> Option<String> {
+    let project_prefix = format!("{project_id}:");
+    doc_id
+        .strip_prefix(&project_prefix)
+        .map(|value| value.to_string())
+}
+
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
     Path(doc_id): Path<String>,
@@ -215,6 +222,26 @@ async fn load_collab_bootstrap(
     project_id: Uuid,
     doc_id: &str,
 ) -> Result<CollabBootstrapState, sqlx::Error> {
+    if let Some(path) = doc_path_from_ws_doc_id(project_id, doc_id) {
+        let document_exists = sqlx::query(
+            "select 1
+             from documents
+             where project_id = $1 and path = $2
+             limit 1",
+        )
+        .bind(project_id)
+        .bind(path)
+        .fetch_optional(db)
+        .await?
+        .is_some();
+        if document_exists {
+            return Ok(CollabBootstrapState {
+                snapshot_payload: None,
+                updates: Vec::new(),
+            });
+        }
+    }
+
     let mut snapshot_payload = None;
     let mut snapshot_upto_update_id = 0_i64;
 
