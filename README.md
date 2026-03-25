@@ -39,7 +39,7 @@ npm run build
 cd backend
 DATABASE_URL=postgres://typstapp:iv61v6mRPCGxvWjt@127.0.0.1:5432/typstappdb \
 CORE_API_PORT=18080 \
-GIT_STORAGE_PATH=/tmp/typst-git \
+DATA_DIR=/tmp/typst-data \
 WEB_STATIC_DIR=../web/dist \
 MAX_REQUEST_BODY_BYTES=$((64 * 1024 * 1024)) \
 cargo run
@@ -129,6 +129,10 @@ Optional variables:
 - Non-WASM browsers can still edit source but do not get live Typst preview.
 - Upload/API payload size is controlled by `MAX_REQUEST_BODY_BYTES` (default 64 MiB).
   Increase it if you upload large base64-encoded assets (fonts, figures, etc).
+- Runtime writable data is rooted at `DATA_DIR` (default `./tmp/data`):
+  - Git repositories: `$DATA_DIR/git/<project_id>`
+  - Project thumbnails: `$DATA_DIR/thumbnails/<project_id>.thumb`
+  - `GIT_STORAGE_PATH` still works and overrides `$DATA_DIR/git` if explicitly set.
 - Browser Typst preview uses Typst's default embedded text-font asset set
   (`Libertinus Serif`, `New Computer Modern`, `DejaVu Sans Mono`) plus any
   project-uploaded font files, to best match offline CLI output.

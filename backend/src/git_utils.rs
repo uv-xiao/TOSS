@@ -11,9 +11,13 @@ use git2::{
 use uuid::Uuid;
 
 pub fn git_storage_root() -> PathBuf {
-    env::var("GIT_STORAGE_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("./tmp/git"))
+    if let Ok(explicit) = env::var("GIT_STORAGE_PATH") {
+        return PathBuf::from(explicit);
+    }
+    if let Ok(data_dir) = env::var("DATA_DIR") {
+        return PathBuf::from(data_dir).join("git");
+    }
+    PathBuf::from("./tmp/git")
 }
 
 pub fn project_git_repo_path(project_id: Uuid) -> PathBuf {

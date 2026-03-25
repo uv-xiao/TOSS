@@ -35,6 +35,7 @@ use sqlx::{PgPool, Row};
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
@@ -71,6 +72,13 @@ pub async fn run() {
     };
 
     let storage = init_object_storage_from_env().await;
+    let data_dir = env::var("DATA_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("./tmp/data"));
+    std::fs::create_dir_all(&data_dir).expect("failed to create DATA_DIR");
+    std::fs::create_dir_all(data_dir.join("git")).expect("failed to create DATA_DIR/git");
+    std::fs::create_dir_all(data_dir.join("thumbnails"))
+        .expect("failed to create DATA_DIR/thumbnails");
     let max_request_body_bytes = env::var("MAX_REQUEST_BODY_BYTES")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
@@ -79,6 +87,7 @@ pub async fn run() {
     let state = AppState {
         db,
         oidc,
+        data_dir,
         storage,
         realtime_channels: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         git_project_locks: Arc::new(tokio::sync::RwLock::new(HashMap::new())),

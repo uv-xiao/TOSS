@@ -1,3 +1,68 @@
+fn project_thumbnail_path(data_dir: &std::path::Path, project_id: Uuid) -> std::path::PathBuf {
+    data_dir
+        .join("thumbnails")
+        .join(format!("{project_id}.thumb"))
+}
+
+async fn read_thumbnail_bytes_from_fs(
+    state: &AppState,
+    project_id: Uuid,
+) -> Result<Option<Vec<u8>>, StatusCode> {
+    let path = project_thumbnail_path(&state.data_dir, project_id);
+    match tokio::fs::read(path).await {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+async fn write_thumbnail_bytes_to_fs(
+    state: &AppState,
+    project_id: Uuid,
+    bytes: &[u8],
+) -> Result<(), StatusCode> {
+    let dir = state.data_dir.join("thumbnails");
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let final_path = project_thumbnail_path(&state.data_dir, project_id);
+    let tmp_path = dir.join(format!(".{project_id}.{}.tmp", Uuid::new_v4()));
+    tokio::fs::write(&tmp_path, bytes)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    tokio::fs::rename(&tmp_path, &final_path)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(())
+}
+
+async fn upsert_thumbnail_metadata(
+    db: &PgPool,
+    project_id: Uuid,
+    content_type: &str,
+    actor: Uuid,
+    now: DateTime<Utc>,
+) -> Result<(), StatusCode> {
+    sqlx::query(
+        "insert into project_thumbnails (project_id, content_type, image_data, updated_by, updated_at)
+         values ($1, $2, $3, $4, $5)
+         on conflict (project_id) do update
+         set content_type = excluded.content_type,
+             image_data = excluded.image_data,
+             updated_by = excluded.updated_by,
+             updated_at = excluded.updated_at",
+    )
+    .bind(project_id)
+    .bind(content_type)
+    .bind(Vec::<u8>::new())
+    .bind(actor)
+    .bind(now)
+    .execute(db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(())
+}
+
 async fn list_projects(
     State(state): State<AppState>,
     Query(query): Query<ListProjectsQuery>,
@@ -512,14 +577,35 @@ async fn copy_project(
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     .map(|row| row.get::<String, _>("entry_file_path"))
     .unwrap_or_else(|| "main.typ".to_string());
-    let source_thumbnail = sqlx::query(
+    let source_thumbnail_row = sqlx::query(
         "select content_type, image_data from project_thumbnails where project_id = $1",
     )
     .bind(project_id)
     .fetch_optional(&state.db)
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let source_has_thumbnail = source_thumbnail.is_some();
+    let source_thumbnail_data = if let Some(row) = source_thumbnail_row {
+        let content_type: String = row.get("content_type");
+        let fs_bytes = read_thumbnail_bytes_from_fs(&state, project_id).await?;
+        let bytes = if let Some(bytes) = fs_bytes {
+            bytes
+        } else {
+            let legacy_bytes: Vec<u8> = row.get("image_data");
+            if legacy_bytes.is_empty() {
+                Vec::new()
+            } else {
+                let _ = write_thumbnail_bytes_to_fs(&state, project_id, &legacy_bytes).await;
+                legacy_bytes
+            }
+        };
+        if bytes.is_empty() {
+            None
+        } else {
+            Some((content_type, bytes))
+        }
+    } else {
+        None
+    };
 
     let now = Utc::now();
     let new_project_id = Uuid::new_v4();
@@ -674,30 +760,22 @@ async fn copy_project(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     }
-    if let Some(thumbnail_row) = source_thumbnail {
-        let content_type: String = thumbnail_row.get("content_type");
-        let image_data: Vec<u8> = thumbnail_row.get("image_data");
-        sqlx::query(
-            "insert into project_thumbnails (project_id, content_type, image_data, updated_by, updated_at)
-             values ($1, $2, $3, $4, $5)
-             on conflict (project_id) do update
-             set content_type = excluded.content_type,
-                 image_data = excluded.image_data,
-                 updated_by = excluded.updated_by,
-                 updated_at = excluded.updated_at",
-        )
-        .bind(new_project_id)
-        .bind(content_type)
-        .bind(image_data)
-        .bind(actor)
-        .bind(now)
-        .execute(&mut *tx)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    }
     tx.commit()
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut copied_has_thumbnail = false;
+    if let Some((content_type, image_data)) = source_thumbnail_data {
+        if write_thumbnail_bytes_to_fs(&state, new_project_id, &image_data)
+            .await
+            .is_ok()
+            && upsert_thumbnail_metadata(&state.db, new_project_id, &content_type, actor, now)
+                .await
+                .is_ok()
+        {
+            copied_has_thumbnail = true;
+        }
+    }
 
     write_audit(
         &state.db,
@@ -719,7 +797,7 @@ async fn copy_project(
         my_role: "Owner".to_string(),
         can_read: true,
         is_template: false,
-        has_thumbnail: source_has_thumbnail,
+        has_thumbnail: copied_has_thumbnail,
         created_at: now,
         last_edited_at: now,
         archived: false,
@@ -912,23 +990,8 @@ async fn upload_project_thumbnail(
         return Err(StatusCode::BAD_REQUEST);
     }
     let now = Utc::now();
-    sqlx::query(
-        "insert into project_thumbnails (project_id, content_type, image_data, updated_by, updated_at)
-         values ($1, $2, $3, $4, $5)
-         on conflict (project_id) do update
-         set content_type = excluded.content_type,
-             image_data = excluded.image_data,
-             updated_by = excluded.updated_by,
-             updated_at = excluded.updated_at",
-    )
-    .bind(project_id)
-    .bind(content_type)
-    .bind(bytes)
-    .bind(actor)
-    .bind(now)
-    .execute(&state.db)
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    write_thumbnail_bytes_to_fs(&state, project_id, &bytes).await?;
+    upsert_thumbnail_metadata(&state.db, project_id, &content_type, actor, now).await?;
     write_audit(
         &state.db,
         Some(actor),
@@ -969,7 +1032,26 @@ async fn get_project_thumbnail(
         return Err(StatusCode::NOT_FOUND);
     };
     let content_type: String = row.get("content_type");
-    let image_data: Vec<u8> = row.get("image_data");
+    let fs_data = read_thumbnail_bytes_from_fs(&state, project_id).await?;
+    let image_data = if let Some(bytes) = fs_data {
+        bytes
+    } else {
+        let legacy_bytes: Vec<u8> = row.get("image_data");
+        if legacy_bytes.is_empty() {
+            let _ = sqlx::query("delete from project_thumbnails where project_id = $1")
+                .bind(project_id)
+                .execute(&state.db)
+                .await;
+            return Err(StatusCode::NOT_FOUND);
+        }
+        write_thumbnail_bytes_to_fs(&state, project_id, &legacy_bytes).await?;
+        let _ = sqlx::query("update project_thumbnails set image_data = $2 where project_id = $1")
+            .bind(project_id)
+            .bind(Vec::<u8>::new())
+            .execute(&state.db)
+            .await;
+        legacy_bytes
+    };
     let mut resp = axum::http::Response::new(Body::from(image_data));
     resp.headers_mut().insert(
         header::CONTENT_TYPE,

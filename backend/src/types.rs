@@ -3,6 +3,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex, RwLock};
 use uuid::Uuid;
@@ -11,6 +12,7 @@ use uuid::Uuid;
 pub struct AppState {
     pub db: PgPool,
     pub oidc: OidcSettings,
+    pub data_dir: PathBuf,
     pub storage: Option<ObjectStorage>,
     pub realtime_channels: Arc<RwLock<HashMap<String, broadcast::Sender<CollabEvent>>>>,
     pub git_project_locks: Arc<RwLock<HashMap<Uuid, Arc<Mutex<()>>>>>,
