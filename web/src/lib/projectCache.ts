@@ -8,6 +8,10 @@ type CachedProjectSnapshot = {
   cachedAt: number;
 };
 
+type LoadProjectSnapshotOptions = {
+  minCachedAtMs?: number;
+};
+
 const CACHE_PREFIX = "typst.project.cache.";
 const CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const MAX_PROJECT_CACHE_COUNT = 20;
@@ -51,7 +55,10 @@ function pruneCaches() {
   }
 }
 
-export function loadProjectSnapshotFromCache(projectId: string): CachedProjectSnapshot | null {
+export function loadProjectSnapshotFromCache(
+  projectId: string,
+  options?: LoadProjectSnapshotOptions
+): CachedProjectSnapshot | null {
   if (typeof window === "undefined") return null;
   const raw = window.localStorage.getItem(cacheKey(projectId));
   if (!raw) return null;
@@ -59,6 +66,13 @@ export function loadProjectSnapshotFromCache(projectId: string): CachedProjectSn
     const parsed = JSON.parse(raw) as CachedProjectSnapshot;
     if (!parsed.cachedAt || Date.now() - parsed.cachedAt > CACHE_TTL_MS) {
       window.localStorage.removeItem(cacheKey(projectId));
+      return null;
+    }
+    if (
+      typeof options?.minCachedAtMs === "number" &&
+      Number.isFinite(options.minCachedAtMs) &&
+      parsed.cachedAt < options.minCachedAtMs
+    ) {
       return null;
     }
     return parsed;
@@ -83,7 +97,11 @@ export function saveProjectSnapshotToCache(input: {
     cachedAt: Date.now()
   };
   const serialized = JSON.stringify(snapshot);
-  if (serialized.length > MAX_SNAPSHOT_BYTES) return;
+  if (serialized.length > MAX_SNAPSHOT_BYTES) {
+    // Avoid serving indefinitely stale cache when project snapshot outgrows limit.
+    window.localStorage.removeItem(cacheKey(input.projectId));
+    return;
+  }
   try {
     window.localStorage.setItem(cacheKey(input.projectId), serialized);
     pruneCaches();

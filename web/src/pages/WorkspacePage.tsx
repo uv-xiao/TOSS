@@ -140,6 +140,12 @@ function prependUniqueRevisions(primary: Revision[], fallback: Revision[]) {
   return merged;
 }
 
+function parseIsoMs(value?: string | null) {
+  if (!value) return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+}
+
 type WorkspacePageProps = {
   projects: Project[];
   organizations: OrganizationMembership[];
@@ -784,16 +790,20 @@ export function WorkspacePage({
       return;
     }
     setWorkspaceLoaded(false);
-    const cached = loadProjectSnapshotFromCache(projectId);
-    if (cached) {
-      setNodes(cached.nodes);
-      setEntryFilePath(cached.entryFilePath || "main.typ");
-      setDocs(cached.docs || {});
-      const cachedPaths = new Set(cached.nodes.map((node) => node.path));
+    const anyCached = loadProjectSnapshotFromCache(projectId);
+    const serverLastEditedMs = parseIsoMs(project?.last_edited_at);
+    const minFreshCacheMs =
+      serverLastEditedMs === null ? undefined : Math.max(0, serverLastEditedMs - 3000);
+    const freshCached = loadProjectSnapshotFromCache(projectId, { minCachedAtMs: minFreshCacheMs });
+    if (freshCached) {
+      setNodes(freshCached.nodes);
+      setEntryFilePath(freshCached.entryFilePath || "main.typ");
+      setDocs(freshCached.docs || {});
+      const cachedPaths = new Set(freshCached.nodes.map((node) => node.path));
       const fallbackPath =
         activePath && cachedPaths.has(activePath)
           ? activePath
-          : cached.nodes.find((node) => node.kind === "file")?.path || cached.entryFilePath || "main.typ";
+          : freshCached.nodes.find((node) => node.kind === "file")?.path || freshCached.entryFilePath || "main.typ";
       setActivePath(fallbackPath);
       setExpandedDirs((prev) => expandAncestors(fallbackPath, prev));
       setWorkspaceLoaded(true);
@@ -818,7 +828,20 @@ export function WorkspacePage({
       templateOrgAccessPromise,
       accessUsersPromise
     ]).catch((err) => {
-      if (cached) {
+      if (anyCached) {
+        if (!freshCached) {
+          setNodes(anyCached.nodes);
+          setEntryFilePath(anyCached.entryFilePath || "main.typ");
+          setDocs(anyCached.docs || {});
+          const cachedPaths = new Set(anyCached.nodes.map((node) => node.path));
+          const fallbackPath =
+            activePath && cachedPaths.has(activePath)
+              ? activePath
+              : anyCached.nodes.find((node) => node.kind === "file")?.path || anyCached.entryFilePath || "main.typ";
+          setActivePath(fallbackPath);
+          setExpandedDirs((prev) => expandAncestors(fallbackPath, prev));
+          setWorkspaceLoaded(true);
+        }
         setWorkspaceError("Working from cached project data (offline mode).");
         setApiReachable(false);
         return null;
