@@ -897,12 +897,13 @@ a {
 }
 
 .pdf-frame {
+  --preview-scrollbar-width: 0px;
   width: 100%;
   height: 100%;
   background: #e8edf5;
   overflow-x: auto;
   overflow-y: scroll;
-  scrollbar-gutter: stable both-edges;
+  scrollbar-gutter: stable;
   padding: 0;
   cursor: grab;
 }
@@ -927,6 +928,11 @@ a {
   justify-items: center;
   align-content: start;
   gap: 14px;
+}
+
+.pdf-frame.preview-fit-page .pdf-pages {
+  transform: translateX(calc(var(--preview-scrollbar-width) * -0.5));
+  transform-origin: top center;
 }
 
 .pdf-pages canvas {
