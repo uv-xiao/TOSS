@@ -4,7 +4,7 @@ use std::path::{Component, Path as FsPath, PathBuf};
 use std::str;
 
 use git2::{
-    build::{CheckoutBuilder, RepoBuilder},
+    build::CheckoutBuilder,
     Cred, FetchOptions, IndexAddOption, Oid, PushOptions, RemoteCallbacks, Repository, Signature,
     StatusOptions,
 };
@@ -157,16 +157,6 @@ pub fn git_push_branch(repo_path: &str, remote_name: &str, branch: &str) -> Resu
     Ok(())
 }
 
-pub fn git_stage_all(repo_path: &str) -> Result<(), String> {
-    let repo = Repository::open(repo_path).map_err(|e| e.to_string())?;
-    let mut index = repo.index().map_err(|e| e.to_string())?;
-    index
-        .add_all(["*"].iter(), IndexAddOption::DEFAULT, None)
-        .map_err(|e| e.to_string())?;
-    index.write().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
 pub fn git_worktree_is_clean(repo_path: &str) -> Result<bool, String> {
     let repo = Repository::open(repo_path).map_err(|e| e.to_string())?;
     let mut opts = StatusOptions::new();
@@ -268,27 +258,6 @@ pub fn git_hard_reset_to(repo_path: &str, target: Oid) -> Result<(), String> {
 pub fn git_ancestor(repo_path: &str, ancestor: Oid, tip: Oid) -> Result<bool, String> {
     let repo = Repository::open(repo_path).map_err(|e| e.to_string())?;
     Ok(repo.graph_descendant_of(tip, ancestor).unwrap_or(false))
-}
-
-pub fn clone_repo(url: &str, repo_path: &str, default_branch: &str) -> Result<(), String> {
-    std::fs::create_dir_all(repo_path).map_err(|e| e.to_string())?;
-    let mut callbacks = RemoteCallbacks::new();
-    callbacks.credentials(|_url, username_from_url, _allowed| {
-        if let Some(username) = username_from_url {
-            Cred::username(username)
-        } else {
-            Cred::default()
-        }
-    });
-    let mut fetch = FetchOptions::new();
-    fetch.remote_callbacks(callbacks);
-    let mut builder = RepoBuilder::new();
-    builder.branch(default_branch);
-    builder.fetch_options(fetch);
-    builder
-        .clone(url, FsPath::new(repo_path))
-        .map_err(|e| e.to_string())?;
-    Ok(())
 }
 
 pub fn collect_repo_files(repo_path: &str) -> Result<HashMap<String, Vec<u8>>, String> {
