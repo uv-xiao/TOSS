@@ -206,7 +206,7 @@ async fn git_repo_link(
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
 ) -> Result<Json<GitRepoLink>, StatusCode> {
-    ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
+    let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
     let host = headers
         .get(header::HOST)
         .and_then(|h| h.to_str().ok())
@@ -221,9 +221,40 @@ async fn git_repo_link(
     } else {
         "http"
     };
+    let username_hint = sqlx::query("select email, display_name from users where id = $1")
+        .bind(actor)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .map(|row| {
+            let email = row.get::<String, _>("email");
+            let display_name = row.get::<String, _>("display_name");
+            let raw = email
+                .split('@')
+                .next()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(display_name.trim());
+            let mut out = String::new();
+            for ch in raw.chars() {
+                if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+                    out.push(ch);
+                } else if !out.ends_with('-') {
+                    out.push('-');
+                }
+            }
+            let trimmed = out.trim_matches('-').to_string();
+            if trimmed.is_empty() {
+                format!("user-{}", actor.simple())
+            } else {
+                trimmed
+            }
+        })
+        .unwrap_or_else(|| format!("user-{}", actor.simple()));
     Ok(Json(GitRepoLink {
         project_id,
-        repo_url: format!("{scheme}://{host}/v1/git/repo/{project_id}"),
+        repo_url: format!("{scheme}://{username_hint}@{host}/v1/git/repo/{project_id}"),
     }))
 }
 

@@ -99,6 +99,29 @@ function buildCompileInputKey(params: {
   return `${params.entryFilePath}::${docsPart}::${assetsPart}::${fontsPart}`;
 }
 
+function buildTopPreviewThumbnail(canvas: HTMLCanvasElement) {
+  const srcWidth = Math.max(1, canvas.width || canvas.clientWidth || 1);
+  const srcHeight = Math.max(1, canvas.height || canvas.clientHeight || 1);
+  const targetRatio = 88 / 54;
+  let cropWidth = srcWidth;
+  let cropHeight = Math.round(cropWidth / targetRatio);
+  if (cropHeight > srcHeight) {
+    cropHeight = srcHeight;
+    cropWidth = Math.round(cropHeight * targetRatio);
+  }
+  const cropX = Math.max(0, Math.floor((srcWidth - cropWidth) / 2));
+  const cropY = 0;
+  const out = document.createElement("canvas");
+  out.width = Math.max(1, Math.min(880, cropWidth));
+  out.height = Math.max(1, Math.round(out.width / targetRatio));
+  const ctx = out.getContext("2d");
+  if (!ctx) return "";
+  ctx.fillStyle = "#f3f6fb";
+  ctx.fillRect(0, 0, out.width, out.height);
+  ctx.drawImage(canvas, cropX, cropY, cropWidth, cropHeight, 0, 0, out.width, out.height);
+  return out.toDataURL("image/png");
+}
+
 type WorkspacePageProps = {
   projects: Project[];
   organizations: OrganizationMembership[];
@@ -674,7 +697,7 @@ export function WorkspacePage({
       const latestCanvas = (canvasPreviewRef.current?.querySelector(".pdf-pages canvas") ||
         firstCanvas) as HTMLCanvasElement | null;
       if (!latestCanvas) return;
-      const dataUrl = latestCanvas.toDataURL("image/png");
+      const dataUrl = buildTopPreviewThumbnail(latestCanvas);
       const base64 = dataUrl.split(",")[1] || "";
       if (!base64) return;
       const digest = `${base64.length}:${base64.slice(0, 128)}`;

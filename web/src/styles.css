@@ -269,6 +269,7 @@ a {
   border-radius: 8px;
   border: 1px solid var(--border);
   object-fit: cover;
+  object-position: top center;
   background: #f3f6fb;
 }
 
