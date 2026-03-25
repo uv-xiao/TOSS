@@ -1573,8 +1573,9 @@ export function WorkspacePage({
               className="panel-resizer"
               onMouseDown={beginHorizontalResize((dx) => {
                 const totalWidth = centerSplitRef.current?.getBoundingClientRect().width ?? 1;
-                const ratio = clampNumber(editorRatio + dx / Math.max(totalWidth, 1), 0.28, 0.72);
-                setEditorRatio(ratio);
+                setEditorRatio((current) =>
+                  clampNumber(current + dx / Math.max(totalWidth, 1), 0.28, 0.72)
+                );
               })}
               role="separator"
               aria-orientation="vertical"
