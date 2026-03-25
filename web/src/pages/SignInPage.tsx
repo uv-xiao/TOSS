@@ -13,6 +13,7 @@ export function SignInPage({
 }) {
   const [mode, setMode] = useState<"login" | "register">("login");
   const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -25,6 +26,7 @@ export function SignInPage({
       } else {
         await localRegister({
           email: email.trim(),
+          username: username.trim(),
           password,
           display_name: displayName.trim() || undefined
         });
@@ -58,6 +60,13 @@ export function SignInPage({
         </div>
         <div className="auth-fields">
           <UiInput value={email} onChange={(e) => setEmail(e.target.value)} placeholder={t("auth.email")} />
+          {mode === "register" && (
+            <UiInput
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder={t("auth.username")}
+            />
+          )}
           <UiInput
             value={password}
             type="password"
@@ -71,7 +80,11 @@ export function SignInPage({
               placeholder={t("auth.displayNameOptional")}
             />
           )}
-          <UiButton variant="primary" onClick={submit} disabled={!email || !password}>
+          <UiButton
+            variant="primary"
+            onClick={submit}
+            disabled={!email || !password || (mode === "register" && !username.trim())}
+          >
             {t("auth.continue")}
           </UiButton>
         </div>
@@ -80,4 +93,3 @@ export function SignInPage({
     </section>
   );
 }
-

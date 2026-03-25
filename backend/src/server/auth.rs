@@ -11,11 +11,12 @@ async fn seed_default_data(pool: &PgPool) {
     let now = Utc::now();
 
     let _ = sqlx::query(
-        "insert into users (id, email, display_name, created_at) values ($1, $2, $3, $4)
-         on conflict (id) do update set email = excluded.email, display_name = excluded.display_name",
+        "insert into users (id, email, username, display_name, created_at) values ($1, $2, $3, $4, $5)
+         on conflict (id) do update set email = excluded.email, username = excluded.username, display_name = excluded.display_name",
     )
     .bind(admin_id)
     .bind("admin@example.com")
+    .bind("admin")
     .bind("Administrator")
     .bind(now)
     .execute(pool)
@@ -166,6 +167,16 @@ async fn local_register(
     if !is_valid_email(&email) {
         return error_response(StatusCode::BAD_REQUEST, "Email format is invalid");
     }
+    let username = normalize_username(&input.username);
+    if username.is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "Username is required");
+    }
+    if !is_valid_username(&username) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "Username must be 3-32 chars, start/end with letters or numbers, and use only letters, numbers, ., _, -",
+        );
+    }
     if input.password.is_empty() {
         return error_response(StatusCode::BAD_REQUEST, "Password is required");
     }
@@ -188,19 +199,29 @@ async fn local_register(
         Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Password hashing failed"),
     };
     let user_insert = sqlx::query(
-        "insert into users (id, email, display_name, created_at)
-         values ($1, $2, $3, $4)",
+        "insert into users (id, email, username, display_name, created_at)
+         values ($1, $2, $3, $4, $5)",
     )
     .bind(user_id)
     .bind(&email)
+    .bind(&username)
     .bind(display_name)
     .bind(now)
     .execute(&state.db)
     .await;
-    if user_insert.is_err() {
+    if let Err(err) = user_insert {
+        if is_unique_violation(&err, "users_email_key") {
+            return error_response(
+                StatusCode::CONFLICT,
+                "An account with this email already exists",
+            );
+        }
+        if is_unique_violation(&err, "users_username_key") {
+            return error_response(StatusCode::CONFLICT, "This username is already taken");
+        }
         return error_response(
-            StatusCode::CONFLICT,
-            "An account with this email already exists",
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to create the account",
         );
     }
     if sqlx::query(
@@ -225,7 +246,7 @@ async fn local_register(
         &state.db,
         Some(user_id),
         "auth.local.register",
-        serde_json::json!({"email": email}),
+        serde_json::json!({"email": email, "username": username}),
     )
     .await;
     issue_session_response(&state.db, &headers, user_id).await
@@ -416,26 +437,58 @@ async fn oidc_callback(
     } else {
         "OIDC User".to_string()
     };
+    let username_seed = if let Some(username) = claims.preferred_username() {
+        username.to_string()
+    } else {
+        email
+            .split('@')
+            .next()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .unwrap_or("oidc-user")
+            .to_string()
+    };
+    let username_base = sanitize_username_seed(&username_seed);
     let oidc_groups =
         extract_groups_from_id_token(id_token.to_string(), &settings.oidc_groups_claim);
 
-    let user_row = sqlx::query(
-        "insert into users (id, email, display_name, created_at, oidc_subject, oidc_issuer)
-         values ($1, $2, $3, $4, $5, $6)
-         on conflict (oidc_subject) do update set email = excluded.email, display_name = excluded.display_name, oidc_issuer = excluded.oidc_issuer
-         returning id",
-    )
-    .bind(Uuid::new_v4())
-    .bind(email.clone())
-    .bind(display_name.clone())
-    .bind(Utc::now())
-    .bind(subject)
-    .bind(issuer)
-    .fetch_one(&state.db)
-    .await;
-    let user_id = match user_row {
-        Ok(r) => r.get::<Uuid, _>("id"),
-        Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to provision user account"),
+    let mut user_id: Option<Uuid> = None;
+    for attempt in 0..6usize {
+        let username = oidc_username_candidate(&username_base, attempt);
+        let user_row = sqlx::query(
+            "insert into users (id, email, username, display_name, created_at, oidc_subject, oidc_issuer)
+             values ($1, $2, $3, $4, $5, $6, $7)
+             on conflict (oidc_subject) do update set email = excluded.email, display_name = excluded.display_name, oidc_issuer = excluded.oidc_issuer
+             returning id",
+        )
+        .bind(Uuid::new_v4())
+        .bind(email.clone())
+        .bind(username)
+        .bind(display_name.clone())
+        .bind(Utc::now())
+        .bind(subject.clone())
+        .bind(issuer.clone())
+        .fetch_one(&state.db)
+        .await;
+        match user_row {
+            Ok(r) => {
+                user_id = Some(r.get::<Uuid, _>("id"));
+                break;
+            }
+            Err(err) if is_unique_violation(&err, "users_username_key") => continue,
+            Err(_) => {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to provision user account",
+                )
+            }
+        }
+    }
+    let Some(user_id) = user_id else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to allocate username for OIDC account",
+        );
     };
     let _ = sync_user_oidc_groups(&state.db, user_id, &oidc_groups).await;
     let _ = apply_project_group_roles(&state.db, user_id, &oidc_groups).await;
@@ -512,7 +565,7 @@ async fn auth_me(
         Err(_) => return (StatusCode::UNAUTHORIZED, "No session").into_response(),
     };
     let row = sqlx::query(
-        "select id, email, display_name
+        "select id, email, username, display_name
          from users
          where id = $1",
     )
@@ -525,6 +578,7 @@ async fn auth_me(
     Json(AuthMeResponse {
         user_id: row.get("id"),
         email: row.get("email"),
+        username: row.get("username"),
         display_name: row.get("display_name"),
         session_expires_at: Utc::now() + chrono::Duration::hours(12),
     })
@@ -620,6 +674,120 @@ fn is_valid_email(email: &str) -> bool {
     }
     let domain = &email[at_index + 1..];
     domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.')
+}
+
+fn normalize_username(input: &str) -> String {
+    input.trim().to_ascii_lowercase()
+}
+
+fn is_valid_username(username: &str) -> bool {
+    let bytes = username.as_bytes();
+    if bytes.len() < 3 || bytes.len() > 32 {
+        return false;
+    }
+    let first = bytes[0];
+    let last = bytes[bytes.len() - 1];
+    if !first.is_ascii_alphanumeric() || !last.is_ascii_alphanumeric() {
+        return false;
+    }
+    bytes
+        .iter()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(*b, b'.' | b'_' | b'-'))
+}
+
+fn sanitize_username_seed(input: &str) -> String {
+    let mut raw = String::with_capacity(input.len());
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() {
+            raw.push(ch.to_ascii_lowercase());
+        } else if matches!(ch, '.' | '_' | '-') {
+            raw.push(ch);
+        } else {
+            raw.push('-');
+        }
+    }
+
+    let mut collapsed = String::with_capacity(raw.len());
+    let mut prev_sep = false;
+    for ch in raw.chars() {
+        let is_sep = matches!(ch, '.' | '_' | '-');
+        if is_sep && (collapsed.is_empty() || prev_sep) {
+            continue;
+        }
+        collapsed.push(ch);
+        prev_sep = is_sep;
+    }
+
+    while collapsed
+        .chars()
+        .next()
+        .map(|c| !c.is_ascii_alphanumeric())
+        .unwrap_or(false)
+    {
+        collapsed.remove(0);
+    }
+    while collapsed
+        .chars()
+        .last()
+        .map(|c| !c.is_ascii_alphanumeric())
+        .unwrap_or(false)
+    {
+        collapsed.pop();
+    }
+
+    if collapsed.is_empty() {
+        collapsed.push_str("user");
+    }
+    while collapsed.len() < 3 {
+        collapsed.push('x');
+    }
+    if collapsed.len() > 32 {
+        collapsed.truncate(32);
+        while collapsed
+            .chars()
+            .last()
+            .map(|c| !c.is_ascii_alphanumeric())
+            .unwrap_or(false)
+        {
+            collapsed.pop();
+        }
+    }
+    while collapsed.len() < 3 {
+        collapsed.push('x');
+    }
+    if !is_valid_username(&collapsed) {
+        "userxxx".to_string()
+    } else {
+        collapsed
+    }
+}
+
+fn oidc_username_candidate(base: &str, attempt: usize) -> String {
+    if attempt == 0 {
+        return base.to_string();
+    }
+    let suffix = random_token(5).to_ascii_lowercase();
+    let max_base_len = 32usize.saturating_sub(1 + suffix.len());
+    let trimmed = if base.len() > max_base_len {
+        &base[..max_base_len]
+    } else {
+        base
+    };
+    let mut candidate = format!("{trimmed}-{suffix}");
+    if !is_valid_username(&candidate) {
+        candidate = "userxxx".to_string();
+    }
+    candidate
+}
+
+fn is_unique_violation(err: &sqlx::Error, constraint: &str) -> bool {
+    match err {
+        sqlx::Error::Database(db_err) => {
+            db_err.code().as_deref() == Some("23505")
+                && db_err.constraint() == Some(constraint)
+        }
+        _ => false,
+    }
 }
 
 fn defaults_from_env(oidc: &OidcSettings) -> AuthSettings {

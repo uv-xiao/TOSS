@@ -229,6 +229,7 @@ export type AuthConfig = {
 export type AuthUser = {
   user_id: string;
   email: string;
+  username: string;
   display_name: string;
   session_expires_at: string;
 };
@@ -332,6 +333,7 @@ export async function localLogin(email: string, password: string) {
 
 export async function localRegister(input: {
   email: string;
+  username: string;
   password: string;
   display_name?: string;
 }) {

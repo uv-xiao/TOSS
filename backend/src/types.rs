@@ -286,6 +286,7 @@ pub struct SessionResponse {
 pub struct AuthMeResponse {
     pub user_id: Uuid,
     pub email: String,
+    pub username: String,
     pub display_name: String,
     pub session_expires_at: DateTime<Utc>,
 }
@@ -299,6 +300,7 @@ pub struct LocalLoginInput {
 #[derive(Deserialize)]
 pub struct LocalRegisterInput {
     pub email: String,
+    pub username: String,
     pub password: String,
     pub display_name: Option<String>,
 }

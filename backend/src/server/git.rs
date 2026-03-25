@@ -221,36 +221,13 @@ async fn git_repo_link(
     } else {
         "http"
     };
-    let username_hint = sqlx::query("select email, display_name from users where id = $1")
+    let username_hint = sqlx::query("select username from users where id = $1")
         .bind(actor)
         .fetch_optional(&state.db)
         .await
         .ok()
         .flatten()
-        .map(|row| {
-            let email = row.get::<String, _>("email");
-            let display_name = row.get::<String, _>("display_name");
-            let raw = email
-                .split('@')
-                .next()
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty())
-                .unwrap_or(display_name.trim());
-            let mut out = String::new();
-            for ch in raw.chars() {
-                if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
-                    out.push(ch);
-                } else if !out.ends_with('-') {
-                    out.push('-');
-                }
-            }
-            let trimmed = out.trim_matches('-').to_string();
-            if trimmed.is_empty() {
-                format!("user-{}", actor.simple())
-            } else {
-                trimmed
-            }
-        })
+        .map(|row| row.get::<String, _>("username"))
         .unwrap_or_else(|| format!("user-{}", actor.simple()));
     Ok(Json(GitRepoLink {
         project_id,
