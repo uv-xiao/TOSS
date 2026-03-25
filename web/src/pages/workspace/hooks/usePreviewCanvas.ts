@@ -86,6 +86,9 @@ export function usePreviewCanvas({
           const currentZoom = previewZoomRef.current;
           const zoom = fitMode === "manual" ? currentZoom : deriveFitZoom(frame, pages, fitMode);
           applyPreviewZoom(frame, zoom);
+          if (fitMode !== "manual" && frame.scrollLeft !== 0) {
+            frame.scrollLeft = 0;
+          }
           if (fitMode !== "manual" && Math.abs(zoom - currentZoom) > 0.01) {
             setPreviewZoom(zoom);
           }
@@ -115,6 +118,9 @@ export function usePreviewCanvas({
     if (!pages) return;
     const zoom = previewFitMode === "manual" ? previewZoom : deriveFitZoom(frame, pages, previewFitMode);
     applyPreviewZoom(frame, zoom);
+    if (previewFitMode !== "manual" && frame.scrollLeft !== 0) {
+      frame.scrollLeft = 0;
+    }
     if (previewFitMode !== "manual" && Math.abs(zoom - previewZoom) > 0.01) {
       setPreviewZoom(zoom);
     }
@@ -130,6 +136,9 @@ export function usePreviewCanvas({
       if (!pages || previewFitMode === "manual") return;
       const zoom = deriveFitZoom(frame, pages, previewFitMode);
       applyPreviewZoom(frame, zoom);
+      if (frame.scrollLeft !== 0) {
+        frame.scrollLeft = 0;
+      }
       setPreviewZoom((current) => (Math.abs(current - zoom) > 0.01 ? zoom : current));
     });
     observer.observe(frame);
@@ -146,6 +155,9 @@ export function usePreviewCanvas({
       if (!pages) return;
       const zoom = deriveFitZoom(frame, pages, previewFitMode);
       applyPreviewZoom(frame, zoom);
+      if (frame.scrollLeft !== 0) {
+        frame.scrollLeft = 0;
+      }
       setPreviewZoom((current) => (Math.abs(current - zoom) > 0.01 ? zoom : current));
     };
     window.addEventListener("resize", onResize);

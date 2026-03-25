@@ -111,7 +111,7 @@ export function PreviewPanel({
         <div className="preview-stage">
           <div
             ref={canvasPreviewRef}
-            className={`pdf-frame ${previewIsPanning ? "is-panning" : ""}`}
+            className={`pdf-frame preview-fit-${previewFitMode} ${previewIsPanning ? "is-panning" : ""}`}
             onMouseDown={onBeginPreviewPan}
           />
           {showStaleOverlay && (

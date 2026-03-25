@@ -902,9 +902,14 @@ a {
   background: #e8edf5;
   overflow-x: auto;
   overflow-y: scroll;
-  scrollbar-gutter: stable;
+  scrollbar-gutter: stable both-edges;
   padding: 0;
   cursor: grab;
+}
+
+.pdf-frame.preview-fit-page,
+.pdf-frame.preview-fit-width {
+  overflow-x: hidden;
 }
 
 .pdf-frame.is-panning {

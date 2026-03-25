@@ -139,14 +139,32 @@ export function deriveFitZoom(frame: HTMLElement, pages: HTMLElement, mode: Excl
   const size = previewSurfaceBaseSize(firstSurface);
   const baseWidth = size.width;
   const baseHeight = size.height;
-  const widthZoom = (frame.clientWidth - 20) / baseWidth;
-  const fullPageZoom = Math.min(widthZoom, (frame.clientHeight - 20) / baseHeight);
-  return clampNumber(mode === "width" ? widthZoom : fullPageZoom, PREVIEW_MIN_ZOOM, PREVIEW_MAX_ZOOM);
+  const frameStyle = window.getComputedStyle(frame);
+  const pagesStyle = window.getComputedStyle(pages);
+  const framePadX =
+    Number.parseFloat(frameStyle.paddingLeft || "0") + Number.parseFloat(frameStyle.paddingRight || "0");
+  const framePadY =
+    Number.parseFloat(frameStyle.paddingTop || "0") + Number.parseFloat(frameStyle.paddingBottom || "0");
+  const pagesPadX =
+    Number.parseFloat(pagesStyle.paddingLeft || "0") + Number.parseFloat(pagesStyle.paddingRight || "0");
+  const pagesPadY =
+    Number.parseFloat(pagesStyle.paddingTop || "0") + Number.parseFloat(pagesStyle.paddingBottom || "0");
+  const availableWidth = Math.max(1, frame.clientWidth - framePadX - pagesPadX - 2);
+  const availableHeight = Math.max(1, frame.clientHeight - framePadY - pagesPadY - 2);
+  const widthZoom = availableWidth / baseWidth;
+  const fullPageZoom = Math.min(widthZoom, availableHeight / baseHeight);
+  const fitZoom = mode === "width" ? widthZoom : fullPageZoom;
+  // Small guard band avoids 1px overflow loops from rounding and device-pixel transforms.
+  const safeFitZoom = Math.max(0.001, fitZoom * 0.998);
+  return clampNumber(safeFitZoom, PREVIEW_MIN_ZOOM, PREVIEW_MAX_ZOOM);
 }
 
 export function applyPreviewZoom(frame: HTMLElement, zoom: number) {
   const pages = frame.querySelector(".pdf-pages") as HTMLElement | null;
   if (!pages) return;
+  const pagesStyle = window.getComputedStyle(pages);
+  const pagesPadX =
+    Number.parseFloat(pagesStyle.paddingLeft || "0") + Number.parseFloat(pagesStyle.paddingRight || "0");
   const surfaces = previewSurfaces(pages);
   if (surfaces.length === 0) return;
   let widest = 0;
@@ -180,7 +198,7 @@ export function applyPreviewZoom(frame: HTMLElement, zoom: number) {
     surface.style.height = `${nextHeight}px`;
     widest = Math.max(widest, nextWidth);
   }
-  pages.style.width = `${Math.max(widest, 1)}px`;
+  pages.style.width = `${Math.max(widest + pagesPadX, 1)}px`;
 }
 
 export function pixelPerPtForZoom(mode: PreviewFitMode, zoom: number) {
@@ -260,4 +278,3 @@ export function projectTreeFromFlat(nodes: ProjectNode[]) {
   sortTree(root.children);
   return root.children;
 }
-
