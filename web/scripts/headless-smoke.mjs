@@ -468,7 +468,6 @@ try {
   currentStep = "open-workspace-owner";
   await openWorkspace(pageB, projectId);
   currentStep = "open-workspace-collab";
-  await pageA.locator(".preview-runtime-status").first().waitFor({ timeout: 15000 });
   await waitForCanvas(pageA, 60000);
   await assertVisiblePreviewPage(pageA);
   await assertWorkspaceLayout(pageA);

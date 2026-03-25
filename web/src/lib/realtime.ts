@@ -67,6 +67,7 @@ export function bindRealtimeYDoc(params: {
   let reconnectCountdownTimer: number | null = null;
   let reconnectAttemptTimer: number | null = null;
   let reconnectSecondsRemaining = 0;
+  let bootstrapComplete = false;
   const origin = `client-${crypto.randomUUID()}`;
   const peers = new Map<string, PresencePeer>();
   peers.set(userId, { id: userId, name: userName });
@@ -137,25 +138,18 @@ export function bindRealtimeYDoc(params: {
     params.onStatusChange?.("connecting");
     const socket = new WebSocket(url);
     ws = socket;
+    bootstrapComplete = false;
 
     socket.addEventListener("open", () => {
       if (closed || ws !== socket) return;
       params.onStatusChange?.("connected");
       stopReconnectCountdown();
-      const snapshot = Y.encodeStateAsUpdate(params.ydoc);
       notifyPresence();
       socket.send(
         JSON.stringify({
           kind: "presence.meta",
           origin,
           payload: { user_name: userName }
-        })
-      );
-      socket.send(
-        JSON.stringify({
-          kind: "yjs.sync",
-          origin,
-          payload: uint8ToBase64(snapshot)
         })
       );
     });
@@ -176,16 +170,6 @@ export function bindRealtimeYDoc(params: {
             name: payloadUserName || peers.get(eventUserId)?.name || eventUserId
           });
           notifyPresence();
-          if (eventUserId !== userId && socket.readyState === WebSocket.OPEN) {
-            const snapshot = Y.encodeStateAsUpdate(params.ydoc);
-            socket.send(
-              JSON.stringify({
-                kind: "yjs.sync",
-                origin,
-                payload: uint8ToBase64(snapshot)
-              })
-            );
-          }
         }
         if (kind === "presence.leave" && eventUserId) {
           peers.delete(eventUserId);
@@ -222,6 +206,7 @@ export function bindRealtimeYDoc(params: {
           }
         }
         if (kind === "bootstrap.done") {
+          bootstrapComplete = true;
           params.onBootstrapDone?.();
         }
       } catch {
@@ -255,6 +240,19 @@ export function bindRealtimeYDoc(params: {
     );
   };
 
+  const sendSyncSnapshot = () => {
+    if (!bootstrapComplete) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const snapshot = Y.encodeStateAsUpdate(params.ydoc);
+    ws.send(
+      JSON.stringify({
+        kind: "yjs.sync",
+        origin,
+        payload: uint8ToBase64(snapshot)
+      })
+    );
+  };
+
   const reconnectNow = () => {
     if (closed) return;
     if (!ws || ws.readyState === WebSocket.CLOSED) {
@@ -279,5 +277,5 @@ export function bindRealtimeYDoc(params: {
     params.onStatusChange?.("disconnected");
   };
 
-  return { close, sendCursor, reconnectNow };
+  return { close, sendCursor, reconnectNow, sendSyncSnapshot };
 }

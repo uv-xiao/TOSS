@@ -30,6 +30,7 @@ export function useRealtimeDoc({
     close: () => void;
     sendCursor: (cursor: { line: number; column: number }) => void;
     reconnectNow: () => void;
+    sendSyncSnapshot: () => void;
   } | null>(null);
   const lastSavedDocRef = useRef<string>("");
   const activeBindingRef = useRef<string>("");
@@ -86,19 +87,28 @@ export function useRealtimeDoc({
     setRealtimeDocReady(false);
     lastSavedDocRef.current = "";
 
-    const resolveBootstrap = () => {
+    const resolveBootstrap = (allowSeed: boolean) => {
       if (bootstrapResolved) return;
       bootstrapResolved = true;
-      const current = ytext.toString();
-      if (!current && fileContent) {
-        ydoc.transact(() => {
-          ytext.insert(0, fileContent);
-        }, "bootstrap-seed");
-      } else {
-        setDocText(current);
+      let seeded = false;
+      if (allowSeed && !ytext.toString()) {
+        const seed = new Y.Doc();
+        seed.clientID = 1;
+        if (fileContent) {
+          seed.getText("main").insert(0, fileContent);
+        }
+        const seedUpdate = Y.encodeStateAsUpdate(seed);
+        seed.destroy();
+        Y.applyUpdate(ydoc, seedUpdate, "remote");
+        seeded = seedUpdate.byteLength > 0;
       }
+      const current = ytext.toString();
+      setDocText(current);
       lastSavedDocRef.current = ytext.toString();
       setRealtimeDocReady(true);
+      if (seeded) {
+        realtimeRef.current?.sendSyncSnapshot();
+      }
       if (fallbackTimer !== null) {
         window.clearTimeout(fallbackTimer);
         fallbackTimer = null;
@@ -120,9 +130,9 @@ export function useRealtimeDoc({
       onPresenceChange: setPresence,
       onStatusChange: setRealtimeStatus,
       onReconnectChange: setReconnectState,
-      onBootstrapDone: resolveBootstrap
+      onBootstrapDone: () => resolveBootstrap(true)
     });
-    fallbackTimer = window.setTimeout(resolveBootstrap, 1200);
+    fallbackTimer = window.setTimeout(() => resolveBootstrap(false), 4000);
     realtimeRef.current = realtime;
     return () => {
       if (fallbackTimer !== null) {

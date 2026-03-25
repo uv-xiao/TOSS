@@ -102,6 +102,7 @@ scripts/ci-checks.sh
 - `web/scripts/git-multiuser-test.sh`
 - `web/scripts/headless-smoke.mjs`
 - `web/scripts/headless-collab-git.mjs`
+- `web/scripts/headless-revision-collab-regression.mjs`
 
 Screenshots are written to:
 
