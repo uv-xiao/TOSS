@@ -310,6 +310,16 @@ async fn send_bootstrap_state(
             }
         }
     }
+    let done = CollabEvent {
+        doc_id: doc_id.to_string(),
+        user_id: "system".to_string(),
+        kind: "bootstrap.done".to_string(),
+        payload: serde_json::json!({}),
+        at: Utc::now(),
+    };
+    if let Ok(text) = serde_json::to_string(&done) {
+        let _ = ws_tx.send(Message::Text(text.into())).await;
+    }
 }
 
 async fn handle_socket(

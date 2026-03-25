@@ -46,6 +46,7 @@ export function bindRealtimeYDoc(params: {
   onPresenceChange?: (users: PresencePeer[]) => void;
   onStatusChange?: (status: RealtimeStatus) => void;
   onReconnectChange?: (state: ReconnectState) => void;
+  onBootstrapDone?: () => void;
   reconnectDelaySeconds?: number;
 }) {
   const userId = params.userId ?? crypto.randomUUID();
@@ -219,6 +220,9 @@ export function bindRealtimeYDoc(params: {
           if (typeof maybePayload === "string") {
             Y.applyUpdate(params.ydoc, base64ToUint8(maybePayload), "remote");
           }
+        }
+        if (kind === "bootstrap.done") {
+          params.onBootstrapDone?.();
         }
       } catch {
         // Ignore malformed events.

@@ -219,6 +219,7 @@ export function WorkspacePage({
     reconnectState,
     docText,
     setDocText,
+    realtimeDocReady,
     hasActiveLiveDoc,
     applyDocumentDeltas
   } = useRealtimeDoc({
@@ -234,11 +235,11 @@ export function WorkspacePage({
 
   const compileDocuments = useMemo(() => {
     const baseDocs = { ...sourceDocs };
-    if (!isRevisionMode && activePath && activePath in baseDocs) {
+    if (!isRevisionMode && realtimeDocReady && activePath && activePath in baseDocs) {
       baseDocs[activePath] = docText;
     }
     return Object.entries(baseDocs).map(([path, content]) => ({ path, content }));
-  }, [activePath, docText, isRevisionMode, sourceDocs]);
+  }, [activePath, docText, isRevisionMode, realtimeDocReady, sourceDocs]);
   const compileAssets = useMemo(
     () => Object.entries(sourceAssetBase64).map(([path, contentBase64]) => ({ path, contentBase64 })),
     [sourceAssetBase64]
@@ -511,7 +512,7 @@ export function WorkspacePage({
   }, [activePath, isRevisionMode, revisionDocs, setDocText]);
 
   useEffect(() => {
-    if (!projectId || !workspaceLoaded || isRevisionMode) return;
+    if (!projectId || !workspaceLoaded || isRevisionMode || !realtimeDocReady) return;
     const timer = window.setInterval(() => {
       listDocuments(projectId)
         .then((response) => {
@@ -565,7 +566,17 @@ export function WorkspacePage({
         .catch(() => setApiReachable(false));
     }, 2200);
     return () => window.clearInterval(timer);
-  }, [activePath, docText, isRevisionMode, lastSavedDocRef, projectId, setDocText, workspaceLoaded, ytextRef]);
+  }, [
+    activePath,
+    docText,
+    isRevisionMode,
+    lastSavedDocRef,
+    projectId,
+    realtimeDocReady,
+    setDocText,
+    workspaceLoaded,
+    ytextRef
+  ]);
 
   useEffect(() => {
     if (!projectId || !workspaceLoaded) return;
@@ -581,7 +592,7 @@ export function WorkspacePage({
   }, [projectId, workspaceLoaded]);
 
   useEffect(() => {
-    if (!projectId || !activePath || isRevisionMode || !workspaceLoaded) return;
+    if (!projectId || !activePath || isRevisionMode || !workspaceLoaded || !realtimeDocReady) return;
     if (!hasActiveLiveDoc) return;
     if (docText === lastSavedDocRef.current) return;
     const timer = window.setTimeout(() => {
@@ -596,7 +607,16 @@ export function WorkspacePage({
         });
     }, 320);
     return () => window.clearTimeout(timer);
-  }, [activePath, docText, hasActiveLiveDoc, isRevisionMode, lastSavedDocRef, projectId, workspaceLoaded]);
+  }, [
+    activePath,
+    docText,
+    hasActiveLiveDoc,
+    isRevisionMode,
+    lastSavedDocRef,
+    projectId,
+    realtimeDocReady,
+    workspaceLoaded
+  ]);
 
   useEffect(() => {
     if (!projectId || !workspaceLoaded) return;
@@ -1531,7 +1551,7 @@ export function WorkspacePage({
                     value={docText}
                     onDelta={applyDocumentDeltas}
                     onCursorChange={(cursor) => realtimeRef.current?.sendCursor(cursor)}
-                    readOnly={isRevisionMode || !canWrite}
+                    readOnly={isRevisionMode || !canWrite || (!isRevisionMode && !realtimeDocReady)}
                     lineWrap={lineWrapEnabled}
                     language={currentEditorLanguage}
                     remoteCursors={remoteCursors}

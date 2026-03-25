@@ -41,6 +41,7 @@ export function useRealtimeDoc({
     secondsRemaining: 0
   });
   const [docText, setDocText] = useState("");
+  const [realtimeDocReady, setRealtimeDocReady] = useState(false);
 
   const hasActiveLiveDoc = useMemo(
     () => Object.prototype.hasOwnProperty.call(docs, activePath),
@@ -53,20 +54,23 @@ export function useRealtimeDoc({
     if (!projectId || !activePath) {
       activeBindingRef.current = "";
       setDocText("");
+      setRealtimeDocReady(false);
       return;
     }
     const nextBinding = `${projectId}:${activePath}`;
     if (activeBindingRef.current !== nextBinding) {
       activeBindingRef.current = nextBinding;
-      setDocText(activeFileContent);
+      setDocText("");
+      setRealtimeDocReady(false);
     }
-  }, [activeFileContent, activePath, isRevisionMode, projectId]);
+  }, [activePath, isRevisionMode, projectId]);
 
   useEffect(() => {
     if (!projectId || !activePath || isRevisionMode || !workspaceLoaded) return;
     if (!hasActiveLiveDoc) {
       setPresence([]);
       setDocText("");
+      setRealtimeDocReady(false);
       setRealtimeStatus("disconnected");
       setReconnectState({ active: false, secondsRemaining: 0 });
       return;
@@ -76,13 +80,30 @@ export function useRealtimeDoc({
     const ytext = ydoc.getText("main");
     ydocRef.current = ydoc;
     ytextRef.current = ytext;
-    const baselineDoc = new Y.Doc();
-    baselineDoc.clientID = 1;
-    baselineDoc.getText("main").insert(0, fileContent);
-    Y.applyUpdate(ydoc, Y.encodeStateAsUpdate(baselineDoc), "bootstrap");
-    baselineDoc.destroy();
-    lastSavedDocRef.current = fileContent;
-    setDocText(fileContent);
+    let bootstrapResolved = false;
+    let fallbackTimer: number | null = null;
+    setDocText("");
+    setRealtimeDocReady(false);
+    lastSavedDocRef.current = "";
+
+    const resolveBootstrap = () => {
+      if (bootstrapResolved) return;
+      bootstrapResolved = true;
+      const current = ytext.toString();
+      if (!current && fileContent) {
+        ydoc.transact(() => {
+          ytext.insert(0, fileContent);
+        }, "bootstrap-seed");
+      } else {
+        setDocText(current);
+      }
+      lastSavedDocRef.current = ytext.toString();
+      setRealtimeDocReady(true);
+      if (fallbackTimer !== null) {
+        window.clearTimeout(fallbackTimer);
+        fallbackTimer = null;
+      }
+    };
 
     const observer = (event: Y.YTextEvent) => {
       const next = event.target.toString();
@@ -98,10 +119,16 @@ export function useRealtimeDoc({
       userName: effectiveUserName,
       onPresenceChange: setPresence,
       onStatusChange: setRealtimeStatus,
-      onReconnectChange: setReconnectState
+      onReconnectChange: setReconnectState,
+      onBootstrapDone: resolveBootstrap
     });
+    fallbackTimer = window.setTimeout(resolveBootstrap, 1200);
     realtimeRef.current = realtime;
     return () => {
+      if (fallbackTimer !== null) {
+        window.clearTimeout(fallbackTimer);
+        fallbackTimer = null;
+      }
       ytext.unobserve(observer);
       realtime.close();
       ydoc.destroy();
@@ -109,6 +136,7 @@ export function useRealtimeDoc({
       ytextRef.current = null;
       realtimeRef.current = null;
       setPresence([]);
+      setRealtimeDocReady(false);
       setRealtimeStatus("disconnected");
       setReconnectState({ active: false, secondsRemaining: 0 });
     };
@@ -149,6 +177,7 @@ export function useRealtimeDoc({
     reconnectState,
     docText,
     setDocText,
+    realtimeDocReady,
     hasActiveLiveDoc,
     applyDocumentDeltas
   };
