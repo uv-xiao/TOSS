@@ -128,6 +128,7 @@ pub async fn run() {
         )
         .route("/v1/organizations/mine", get(list_my_organizations))
         .route("/v1/projects", get(list_projects).post(create_project))
+        .route("/v1/projects/{project_id}", patch(update_project_name))
         .route("/v1/projects/{project_id}/copy", post(copy_project))
         .route(
             "/v1/projects/{project_id}/template",

@@ -130,6 +130,11 @@ pub struct CreateProjectCopyInput {
 }
 
 #[derive(Deserialize)]
+pub struct UpdateProjectNameInput {
+    pub name: String,
+}
+
+#[derive(Deserialize)]
 pub struct ListProjectsQuery {
     pub include_archived: Option<bool>,
     pub q: Option<String>,

@@ -1,16 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Archive, ArrowRight, Copy, Plus } from "lucide-react";
+import { Archive, ArrowRight, Copy, Pencil, Plus } from "lucide-react";
 import { UiBadge, UiButton, UiCard, UiDialog, UiIconButton, UiInput } from "@/components/ui";
 import {
   copyProject,
   createProject,
   projectThumbnailUrl,
+  renameProject,
   setProjectArchived,
   type OrganizationMembership,
   type Project
 } from "@/lib/api";
-import type { ProjectCopyDialogState } from "@/types/project-ui";
+import type { ProjectCopyDialogState, ProjectRenameDialogState } from "@/types/project-ui";
 
 function ProjectThumbnail({
   project,
@@ -124,6 +125,8 @@ export function ProjectsPage({
   const [busyProjectId, setBusyProjectId] = useState<string | null>(null);
   const [copyDialog, setCopyDialog] = useState<ProjectCopyDialogState | null>(null);
   const [copyBusy, setCopyBusy] = useState(false);
+  const [renameDialog, setRenameDialog] = useState<ProjectRenameDialogState | null>(null);
+  const [renameBusy, setRenameBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const filteredProjects = useMemo(() => {
     const keyword = search.trim().toLowerCase();
@@ -152,6 +155,21 @@ export function ProjectsPage({
       setError(err instanceof Error ? err.message : t("projects.copyFailed"));
     } finally {
       setCopyBusy(false);
+    }
+  }
+
+  async function submitRename() {
+    if (!renameDialog || !renameDialog.nextName.trim()) return;
+    try {
+      setRenameBusy(true);
+      setError(null);
+      await renameProject(renameDialog.projectId, renameDialog.nextName.trim());
+      setRenameDialog(null);
+      await refreshProjects();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("projects.renameFailed"));
+    } finally {
+      setRenameBusy(false);
     }
   }
 
@@ -237,6 +255,19 @@ export function ProjectsPage({
                   <ArrowRight size={16} />
                 </UiIconButton>
                 <UiIconButton
+                  tooltip={t("projects.rename")}
+                  label={t("projects.rename")}
+                  onClick={() =>
+                    setRenameDialog({
+                      projectId: project.id,
+                      sourceName: project.name,
+                      nextName: project.name
+                    })
+                  }
+                >
+                  <Pencil size={16} />
+                </UiIconButton>
+                <UiIconButton
                   tooltip={t("projects.copy")}
                   label={t("projects.copy")}
                   onClick={() =>
@@ -294,6 +325,35 @@ export function ProjectsPage({
           )}
         </div>
       </UiCard>
+      <UiDialog
+        open={!!renameDialog}
+        title={t("projects.renameDialogTitle")}
+        description={renameDialog ? `${t("projects.renameDialogHint")} ${renameDialog.sourceName}` : undefined}
+        onClose={() => setRenameDialog(null)}
+        actions={
+          <>
+            <UiButton onClick={() => setRenameDialog(null)}>{t("common.cancel")}</UiButton>
+            <UiButton variant="primary" onClick={submitRename} disabled={renameBusy || !renameDialog?.nextName.trim()}>
+              {renameBusy ? t("projects.renaming") : t("projects.renameAction")}
+            </UiButton>
+          </>
+        }
+      >
+        <UiInput
+          value={renameDialog?.nextName ?? ""}
+          onChange={(e) =>
+            setRenameDialog((current) =>
+              current
+                ? {
+                    ...current,
+                    nextName: e.target.value
+                  }
+                : current
+            )
+          }
+          placeholder={t("projects.namePlaceholder")}
+        />
+      </UiDialog>
       <UiDialog
         open={!!copyDialog}
         title={t("projects.copyDialogTitle")}

@@ -398,6 +398,16 @@ export async function copyProject(projectId: string, input: { name: string }) {
   return parseJsonOrThrow<Project>(res, "Unable to copy project");
 }
 
+export async function renameProject(projectId: string, name: string) {
+  const res = await fetch(apiUrl(`/v1/projects/${projectId}`), {
+    method: "PATCH",
+    credentials: authCredentials(),
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify({ name })
+  });
+  if (!res.ok) await throwApiError(res, "Unable to rename project");
+}
+
 export async function setProjectArchived(projectId: string, archived: boolean) {
   const res = await fetch(apiUrl(`/v1/projects/${projectId}/archive`), {
     method: "PATCH",

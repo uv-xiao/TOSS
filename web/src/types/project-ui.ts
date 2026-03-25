@@ -4,3 +4,8 @@ export type ProjectCopyDialogState = {
   sourceName: string;
 };
 
+export type ProjectRenameDialogState = {
+  projectId: string;
+  sourceName: string;
+  nextName: string;
+};

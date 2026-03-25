@@ -488,6 +488,39 @@ async fn create_project(
     }))
 }
 
+async fn update_project_name(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Json(input): Json<UpdateProjectNameInput>,
+) -> Result<StatusCode, StatusCode> {
+    let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Manage).await?;
+    let next_name = input.name.trim();
+    if next_name.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let result = sqlx::query("update projects set name = $2 where id = $1")
+        .bind(project_id)
+        .bind(next_name)
+        .execute(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if result.rows_affected() == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    write_audit(
+        &state.db,
+        Some(actor),
+        "project.rename",
+        serde_json::json!({
+            "project_id": project_id,
+            "name": next_name
+        }),
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn has_template_organization_access(
     db: &PgPool,
     actor: Uuid,
