@@ -48,11 +48,12 @@ extract_json_field() {
 
 register_or_login() {
   local email="$1"
-  local password="$2"
-  local display_name="$3"
+  local username="$2"
+  local password="$3"
+  local display_name="$4"
 
   local reg_resp
-  reg_resp="$(auth_json POST "/v1/auth/local/register" "{\"email\":\"$email\",\"password\":\"$password\",\"display_name\":\"$display_name\"}")"
+  reg_resp="$(auth_json POST "/v1/auth/local/register" "{\"email\":\"$email\",\"username\":\"$username\",\"password\":\"$password\",\"display_name\":\"$display_name\"}")"
   local reg_body reg_status
   reg_body="$(printf '%s' "$reg_resp" | head -n 1)"
   reg_status="$(printf '%s' "$reg_resp" | tail -n 1)"
@@ -77,12 +78,14 @@ register_or_login() {
   printf '%s' "$login_body"
 }
 
-OWNER_AUTH="$(register_or_login "$OWNER_EMAIL" "$OWNER_PASSWORD" "Git Owner")"
+OWNER_USERNAME="${OWNER_EMAIL%@*}"
+OWNER_AUTH="$(register_or_login "$OWNER_EMAIL" "$OWNER_USERNAME" "$OWNER_PASSWORD" "Git Owner")"
 OWNER_ID="$(printf '%s' "$OWNER_AUTH" | extract_json_field user_id)"
-COLLAB_AUTH="$(register_or_login "$COLLAB_EMAIL" "$COLLAB_PASSWORD" "Git Collaborator")"
+COLLAB_USERNAME="${COLLAB_EMAIL%@*}"
+COLLAB_AUTH="$(register_or_login "$COLLAB_EMAIL" "$COLLAB_USERNAME" "$COLLAB_PASSWORD" "Git Collaborator")"
 COLLAB_ID="$(printf '%s' "$COLLAB_AUTH" | extract_json_field user_id)"
 
-PROJECT_JSON="$(api_json POST "/v1/projects" "$OWNER_ID" "{\"organization_id\":\"$ORG_ID\",\"name\":\"Git QA ${RUN_ID}\",\"description\":\"CI git policy test\"}")"
+PROJECT_JSON="$(api_json POST "/v1/projects" "$OWNER_ID" "{\"name\":\"Git QA ${RUN_ID}\"}")"
 PROJECT_ID="$(printf '%s' "$PROJECT_JSON" | extract_json_field id)"
 api_json POST "/v1/projects/$PROJECT_ID/roles" "$OWNER_ID" "{\"user_id\":\"$COLLAB_ID\",\"role\":\"Student\"}" >/dev/null
 
@@ -177,7 +180,7 @@ const out = {
   push_rejected_when_server_advanced: Number(process.argv[2]) !== 0,
   rebase_or_merge_needed: Number(process.argv[5]) !== 0,
   force_push_rejected: Number(process.argv[3]) !== 0,
-  server_commit_message_contains_marker: process.argv[4].includes('Recent updates on Typst server'),
+  server_commit_message_contains_marker: process.argv[4].includes('Online updates'),
   status
 };
 console.log(JSON.stringify(out, null, 2));

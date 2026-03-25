@@ -24,6 +24,54 @@ fn merge_file_equal(a: &MergeFileValue, b: &MergeFileValue) -> bool {
     }
 }
 
+fn merge_index_entry_from_text(
+    repo: &Repository,
+    path: &str,
+    content: &str,
+) -> Result<IndexEntry, String> {
+    let oid = repo.blob(content.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(IndexEntry {
+        ctime: IndexTime::new(0, 0),
+        mtime: IndexTime::new(0, 0),
+        dev: 0,
+        ino: 0,
+        mode: 0o100644,
+        uid: 0,
+        gid: 0,
+        file_size: u32::try_from(content.len()).unwrap_or(u32::MAX),
+        id: oid,
+        flags: 0,
+        flags_extended: 0,
+        path: path.as_bytes().to_vec(),
+    })
+}
+
+fn three_way_merge_text(
+    repo: &Repository,
+    path: &str,
+    base: &str,
+    pushed: &str,
+    online: &str,
+) -> Result<Option<String>, String> {
+    let ancestor = merge_index_entry_from_text(repo, path, base)?;
+    let ours = merge_index_entry_from_text(repo, path, pushed)?;
+    let theirs = merge_index_entry_from_text(repo, path, online)?;
+    let mut opts = MergeFileOptions::new();
+    opts.ancestor_label("base")
+        .our_label("pushed")
+        .their_label("online");
+    let merged = repo
+        .merge_file_from_index(&ancestor, &ours, &theirs, Some(&mut opts))
+        .map_err(|e| e.to_string())?;
+    if !merged.is_automergeable() {
+        return Ok(None);
+    }
+    let text = std::str::from_utf8(merged.content())
+        .map_err(|_| "merged text content is not utf-8".to_string())?
+        .to_string();
+    Ok(Some(text))
+}
+
 async fn state_to_merge_map(
     state: &AppState,
     source: &RevisionStateData,
@@ -46,6 +94,7 @@ async fn state_to_merge_map(
 }
 
 fn merge_online_over_pushed(
+    repo: &Repository,
     base: &HashMap<String, MergeFileValue>,
     pushed: &HashMap<String, MergeFileValue>,
     online: &HashMap<String, MergeFileValue>,
@@ -79,9 +128,24 @@ fn merge_online_over_pushed(
         } else if !pushed_changed {
             online_v.cloned()
         } else {
-            match (online_v, pushed_v) {
-                (Some(a), Some(b)) if merge_file_equal(a, b) => Some(a.clone()),
-                (None, None) => None,
+            match (base_v, pushed_v, online_v) {
+                (
+                    Some(MergeFileValue::Text(base_text)),
+                    Some(MergeFileValue::Text(pushed_text)),
+                    Some(MergeFileValue::Text(online_text)),
+                ) => match three_way_merge_text(repo, &key, base_text, pushed_text, online_text) {
+                    Ok(Some(merged_text)) => Some(MergeFileValue::Text(merged_text)),
+                    Ok(None) => {
+                        conflicts.push(key.clone());
+                        None
+                    }
+                    Err(_) => {
+                        conflicts.push(key.clone());
+                        None
+                    }
+                },
+                (_, Some(a), Some(b)) if merge_file_equal(a, b) => Some(a.clone()),
+                (_, None, None) => None,
                 _ => {
                     conflicts.push(key.clone());
                     None
@@ -613,12 +677,15 @@ async fn git_http_backend(
                 let online_map = state_to_merge_map(&state, &online_state)
                     .await
                     .map_err(|_| "failed to load online state bytes".to_string())?;
-                merge_online_over_pushed(&base_map, &pushed_map, &online_map).map_err(|conflicts| {
-                    format!(
-                        "server has uncommitted updates that conflict with pushed commits: {}",
-                        conflicts.into_iter().take(8).collect::<Vec<_>>().join(", ")
-                    )
-                })
+                let repo = Repository::open(&config.local_path).map_err(|e| e.to_string())?;
+                merge_online_over_pushed(&repo, &base_map, &pushed_map, &online_map).map_err(
+                    |conflicts| {
+                        format!(
+                            "server has uncommitted updates that conflict with pushed commits: {}",
+                            conflicts.into_iter().take(8).collect::<Vec<_>>().join(", ")
+                        )
+                    },
+                )
             }
             .await;
 
