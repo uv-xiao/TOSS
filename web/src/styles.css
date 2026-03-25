@@ -902,7 +902,7 @@ a {
   background: #e8edf5;
   overflow-x: auto;
   overflow-y: scroll;
-  scrollbar-gutter: stable both-edges;
+  scrollbar-gutter: stable;
   padding: 0;
   cursor: grab;
 }
@@ -914,9 +914,10 @@ a {
 
 .pdf-pages {
   width: max-content;
-  min-width: 100%;
+  min-width: 0;
   margin: 0 auto;
-  padding: 10px;
+  box-sizing: border-box;
+  padding: 12px;
   display: grid;
   justify-items: center;
   align-content: start;
@@ -927,6 +928,15 @@ a {
   display: block;
   margin: 0;
   box-shadow: 0 8px 28px rgba(18, 35, 53, 0.15);
+}
+
+.pdf-pages .typst-page {
+  background: #ffffff;
+  box-shadow: 0 10px 28px rgba(18, 35, 53, 0.18);
+}
+
+.pdf-pages .typst-page canvas {
+  box-shadow: none;
 }
 
 .pdf-pages .typst-html-semantics,
