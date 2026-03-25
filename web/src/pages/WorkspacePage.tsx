@@ -76,6 +76,8 @@ type UploadCandidate = {
   file: File;
 };
 
+const REVISION_PAGE_SIZE = 40;
+
 function summarizeContentForHash(content: string) {
   if (content.length <= 96) return content;
   return `${content.slice(0, 48)}::${content.slice(-48)}`;
@@ -122,6 +124,22 @@ function buildTopPreviewThumbnail(canvas: HTMLCanvasElement) {
   return out.toDataURL("image/png");
 }
 
+function prependUniqueRevisions(primary: Revision[], fallback: Revision[]) {
+  const merged: Revision[] = [];
+  const seen = new Set<string>();
+  for (const revision of primary) {
+    if (seen.has(revision.id)) continue;
+    seen.add(revision.id);
+    merged.push(revision);
+  }
+  for (const revision of fallback) {
+    if (seen.has(revision.id)) continue;
+    seen.add(revision.id);
+    merged.push(revision);
+  }
+  return merged;
+}
+
 type WorkspacePageProps = {
   projects: Project[];
   organizations: OrganizationMembership[];
@@ -150,6 +168,8 @@ export function WorkspacePage({
   const lastCompileInputKeyRef = useRef<string>("");
   const lastCompileOutputRef = useRef<CompileOutput | null>(null);
   const revisionLoadSeqRef = useRef(0);
+  const revisionHeadSeqRef = useRef(0);
+  const revisionMoreSeqRef = useRef(0);
 
   const [nodes, setNodes] = useState<ProjectNode[]>([]);
   const [entryFilePath, setEntryFilePath] = useState("main.typ");
@@ -165,6 +185,8 @@ export function WorkspacePage({
   const [workspaceLoaded, setWorkspaceLoaded] = useState(false);
   const [gitRepoUrl, setGitRepoUrl] = useState("");
   const [revisions, setRevisions] = useState<Revision[]>([]);
+  const [revisionsHasMore, setRevisionsHasMore] = useState(true);
+  const [revisionsLoadingMore, setRevisionsLoadingMore] = useState(false);
   const [activeRevisionId, setActiveRevisionId] = useState<string | null>(null);
   const [revisionDocs, setRevisionDocs] = useState<Record<string, string>>({});
   const [revisionNodes, setRevisionNodes] = useState<ProjectNode[]>([]);
@@ -418,8 +440,13 @@ export function WorkspacePage({
   }, []);
 
   useEffect(() => {
+    revisionHeadSeqRef.current += 1;
+    revisionMoreSeqRef.current += 1;
     setWorkspaceLoaded(false);
     setWorkspaceError(null);
+    setRevisions([]);
+    setRevisionsHasMore(true);
+    setRevisionsLoadingMore(false);
     setActiveRevisionId(null);
     setRevisionDocs({});
     setRevisionNodes([]);
@@ -604,10 +631,14 @@ export function WorkspacePage({
   useEffect(() => {
     if (!projectId || !workspaceLoaded) return;
     const timer = window.setInterval(() => {
-      listRevisions(projectId)
+      const requestSeq = revisionHeadSeqRef.current + 1;
+      revisionHeadSeqRef.current = requestSeq;
+      listRevisions(projectId, { limit: REVISION_PAGE_SIZE })
         .then((res) => {
+          if (revisionHeadSeqRef.current !== requestSeq) return;
           setApiReachable(true);
-          setRevisions(res.revisions || []);
+          const latest = res.revisions || [];
+          setRevisions((previous) => prependUniqueRevisions(latest, previous));
         })
         .catch(() => setApiReachable(false));
     }, 8000);
@@ -780,7 +811,7 @@ export function WorkspacePage({
       getProjectSettings(projectId).catch(() => ({ entry_file_path: "main.typ" })),
       getGitRepoLink(projectId).catch(() => ({ repo_url: "" })),
       listDocuments(projectId),
-      listRevisions(projectId).catch(() => ({ revisions: [] })),
+      listRevisions(projectId, { limit: REVISION_PAGE_SIZE }).catch(() => ({ revisions: [] })),
       listProjectAssets(projectId).catch(() => ({ assets: [] })),
       sharePromise,
       orgAccessPromise,
@@ -820,7 +851,10 @@ export function WorkspacePage({
     setNodes(treeRes.nodes);
     setEntryFilePath(settings.entry_file_path || treeRes.entry_file_path || "main.typ");
     setGitRepoUrl(git.repo_url || "");
-    setRevisions(revisionsRes.revisions || []);
+    const initialRevisions = revisionsRes.revisions || [];
+    setRevisions(initialRevisions);
+    setRevisionsHasMore(initialRevisions.length >= REVISION_PAGE_SIZE);
+    setRevisionsLoadingMore(false);
     setShareLinks(shareRes);
     setProjectOrgAccess(orgAccessRes);
     setProjectTemplateOrgAccess(templateOrgAccessRes);
@@ -1204,6 +1238,47 @@ export function WorkspacePage({
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unable to update template access";
       setWorkspaceError(message);
+    }
+  }
+
+  async function loadMoreRevisions() {
+    if (!projectId || revisionsLoadingMore || !revisionsHasMore) return;
+    const beforeRevisionId = revisions.length > 0 ? revisions[revisions.length - 1].id : null;
+    if (!beforeRevisionId) {
+      setRevisionsHasMore(false);
+      return;
+    }
+    const requestSeq = revisionMoreSeqRef.current + 1;
+    revisionMoreSeqRef.current = requestSeq;
+    setRevisionsLoadingMore(true);
+    try {
+      const response = await listRevisions(projectId, {
+        before: beforeRevisionId,
+        limit: REVISION_PAGE_SIZE
+      });
+      if (revisionMoreSeqRef.current !== requestSeq) return;
+      setApiReachable(true);
+      const page = response.revisions || [];
+      if (page.length === 0) {
+        setRevisionsHasMore(false);
+        return;
+      }
+      let appendedCount = 0;
+      setRevisions((previous) => {
+        const seen = new Set(previous.map((item) => item.id));
+        const additions = page.filter((item) => !seen.has(item.id));
+        appendedCount = additions.length;
+        return additions.length > 0 ? [...previous, ...additions] : previous;
+      });
+      if (page.length < REVISION_PAGE_SIZE || appendedCount === 0) {
+        setRevisionsHasMore(false);
+      }
+    } catch {
+      setApiReachable(false);
+    } finally {
+      if (revisionMoreSeqRef.current === requestSeq) {
+        setRevisionsLoadingMore(false);
+      }
     }
   }
 
@@ -1717,7 +1792,10 @@ export function WorkspacePage({
               loadingRevisionId={revisionLoading.revisionId}
               loadingBytes={revisionLoading.loadedBytes}
               loadingTotalBytes={revisionLoading.totalBytes}
+              hasMore={revisionsHasMore}
+              loadingMore={revisionsLoadingMore}
               onOpenRevision={openRevision}
+              onLoadMore={loadMoreRevisions}
               t={t}
             />
           </>

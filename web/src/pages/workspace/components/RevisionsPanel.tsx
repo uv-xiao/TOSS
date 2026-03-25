@@ -15,7 +15,10 @@ export function RevisionsPanel({
   loadingRevisionId,
   loadingBytes,
   loadingTotalBytes,
+  hasMore,
+  loadingMore,
   onOpenRevision,
+  onLoadMore,
   t
 }: {
   width: number;
@@ -25,7 +28,10 @@ export function RevisionsPanel({
   loadingRevisionId: string | null;
   loadingBytes: number;
   loadingTotalBytes: number | null;
+  hasMore: boolean;
+  loadingMore: boolean;
   onOpenRevision: (revisionId: string) => void;
+  onLoadMore: () => void;
   t: (key: string) => string;
 }) {
   const percent =
@@ -61,6 +67,10 @@ export function RevisionsPanel({
           loadingPercent={loading ? percent : null}
           loadingLabel={t("revisions.loadingSnapshot")}
           loadingMeta={loading ? loadingMeta : ""}
+          hasMore={hasMore}
+          loadingMore={loadingMore}
+          loadingMoreLabel={t("revisions.loadingMore")}
+          onLoadMore={onLoadMore}
           onSelect={(revisionId) => {
             if (loading && loadingRevisionId === revisionId) return;
             onOpenRevision(revisionId);

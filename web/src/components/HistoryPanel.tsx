@@ -1,3 +1,5 @@
+import { useEffect, useRef, type UIEvent } from "react";
+
 type Revision = {
   id: string;
   author: string;
@@ -12,6 +14,10 @@ export function HistoryPanel({
   loadingPercent,
   loadingLabel,
   loadingMeta,
+  hasMore,
+  loadingMore,
+  loadingMoreLabel,
+  onLoadMore,
   onSelect
 }: {
   revisions: Revision[];
@@ -20,10 +26,33 @@ export function HistoryPanel({
   loadingPercent?: number | null;
   loadingLabel?: string;
   loadingMeta?: string;
+  hasMore?: boolean;
+  loadingMore?: boolean;
+  loadingMoreLabel?: string;
+  onLoadMore?: () => void;
   onSelect?: (revisionId: string) => void;
 }) {
+  const listRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!hasMore || loadingMore || !onLoadMore) return;
+    const element = listRef.current;
+    if (!element) return;
+    if (element.scrollHeight <= element.clientHeight + 8) {
+      onLoadMore();
+    }
+  }, [hasMore, loadingMore, onLoadMore, revisions.length]);
+
+  function handleScroll(event: UIEvent<HTMLDivElement>) {
+    if (!hasMore || loadingMore || !onLoadMore) return;
+    const element = event.currentTarget;
+    if (element.scrollTop + element.clientHeight >= element.scrollHeight - 96) {
+      onLoadMore();
+    }
+  }
+
   return (
-    <div className="history-list">
+    <div className="history-list" onScroll={handleScroll} ref={listRef}>
       {revisions.map((r) => {
         const isLoading = loadingRevisionId === r.id;
         return (
@@ -54,6 +83,7 @@ export function HistoryPanel({
           </button>
         );
       })}
+      {loadingMore ? <div className="history-list-more">{loadingMoreLabel || "Loading..."}</div> : null}
     </div>
   );
 }

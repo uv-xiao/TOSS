@@ -536,6 +536,12 @@ pub struct ListDocumentsQuery {
 }
 
 #[derive(Deserialize, Default)]
+pub struct ListRevisionsQuery {
+    pub before: Option<String>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Deserialize, Default)]
 pub struct RevisionDocumentsQuery {
     pub current_revision_id: Option<String>,
     pub include_live_anchor: Option<bool>,

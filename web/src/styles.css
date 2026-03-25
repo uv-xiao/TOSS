@@ -1023,10 +1023,14 @@ a {
   gap: 6px;
   min-height: 0;
   overflow: auto;
+  min-width: 0;
+  align-content: start;
 }
 
 .history-item {
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   text-align: left;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -1035,6 +1039,17 @@ a {
   display: grid;
   gap: 3px;
   cursor: pointer;
+}
+
+.history-item strong,
+.history-item div,
+.history-item small {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
 }
 
 .history-item.active {
@@ -1075,6 +1090,15 @@ a {
   border-radius: 999px;
   background: var(--accent);
   transition: width 160ms linear;
+}
+
+.history-list-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .error {

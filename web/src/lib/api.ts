@@ -162,6 +162,11 @@ export type RevisionDocumentsFetchOptions = {
   includeLiveAnchor?: boolean;
 };
 
+export type ListRevisionsOptions = {
+  before?: string;
+  limit?: number;
+};
+
 export type ProjectAsset = {
   id: string;
   project_id: string;
@@ -478,8 +483,14 @@ export async function upsertDocumentByPath(projectId: string, path: string, cont
   return parseJsonOrThrow<Document>(res, "Unable to save document");
 }
 
-export async function listRevisions(projectId: string) {
-  const res = await fetch(apiUrl(`/v1/projects/${projectId}/revisions`), {
+export async function listRevisions(projectId: string, options?: ListRevisionsOptions) {
+  const params = new URLSearchParams();
+  if (options?.before) params.set("before", options.before);
+  if (typeof options?.limit === "number" && Number.isFinite(options.limit) && options.limit > 0) {
+    params.set("limit", String(Math.floor(options.limit)));
+  }
+  const query = params.size > 0 ? `?${params.toString()}` : "";
+  const res = await fetch(apiUrl(`/v1/projects/${projectId}/revisions${query}`), {
     cache: "no-store",
     credentials: authCredentials(),
     headers: authHeaders()

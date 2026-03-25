@@ -161,9 +161,12 @@ async fn resolve_revision_author(
 async fn list_revisions(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(query): Query<ListRevisionsQuery>,
     Path(project_id): Path<Uuid>,
 ) -> Result<Json<RevisionsResponse>, StatusCode> {
     ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
+    let limit = query.limit.unwrap_or(40).clamp(1, 100);
+    let before_cursor = query.before.as_deref();
     let config = load_git_config(&state.db, project_id).await?;
     let commit_rows = {
         let _git_lock = acquire_git_project_lock(&state, project_id).await;
@@ -187,9 +190,20 @@ async fn list_revisions(
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
         let mut rows: Vec<(String, String, DateTime<Utc>, String, String, Vec<(String, String)>)> =
-            Vec::new();
-        for oid_result in revwalk.take(200) {
+            Vec::with_capacity(limit);
+        let mut passed_before_cursor = before_cursor.is_none();
+        for oid_result in revwalk {
             let oid = oid_result.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            let oid_text = oid.to_string();
+            if !passed_before_cursor {
+                if Some(oid_text.as_str()) == before_cursor {
+                    passed_before_cursor = true;
+                }
+                continue;
+            }
+            if rows.len() >= limit {
+                break;
+            }
             let commit = repo.find_commit(oid).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             let subject = commit
                 .summary()
@@ -216,7 +230,7 @@ async fn list_revisions(
                 co_authors.push((name, email));
             }
             rows.push((
-                oid.to_string(),
+                oid_text,
                 subject,
                 revision_commit_time(&commit),
                 author_name,
