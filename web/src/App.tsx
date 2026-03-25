@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { UiButton } from "@/components/ui";
 import {
+  canAccessAdminPanel,
   getAuthConfig,
   getAuthMe,
   joinProjectShareLink,
@@ -30,6 +31,7 @@ export function App() {
   const locale: UiLocale = useMemo(() => readStoredLocale(), []);
   const [projects, setProjects] = useState<Project[]>([]);
   const [organizations, setOrganizations] = useState<OrganizationMembership[]>([]);
+  const [hasAdminAccess, setHasAdminAccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [workspaceTopbar, setWorkspaceTopbar] = useState<ReactNode | null>(null);
 
@@ -37,7 +39,6 @@ export function App() {
   const onProjectsRoute = location.pathname === "/projects" || location.pathname === "/";
   const onProfileRoute = location.pathname.startsWith("/profile");
   const onAdminRoute = location.pathname.startsWith("/admin");
-  const hasOrgAdminAccess = organizations.some((org) => org.is_admin);
   const shareTokenFromPath = location.pathname.startsWith("/share/")
     ? decodeURIComponent(location.pathname.replace("/share/", ""))
     : null;
@@ -65,17 +66,24 @@ export function App() {
     if (!authUser) {
       setProjects([]);
       setOrganizations([]);
+      setHasAdminAccess(false);
       return;
     }
-    Promise.all([listProjects({ includeArchived: true }), listMyOrganizations()])
-      .then(([res, orgs]) => {
+    Promise.all([
+      listProjects({ includeArchived: true }),
+      listMyOrganizations(),
+      canAccessAdminPanel().catch(() => false)
+    ])
+      .then(([res, orgs, adminAccess]) => {
         setProjects(res.projects);
         setOrganizations(orgs.organizations);
+        setHasAdminAccess(adminAccess);
         setError(null);
       })
       .catch((err) => {
         setProjects([]);
         setOrganizations([]);
+        setHasAdminAccess(false);
         setError(err instanceof Error ? err.message : "Unable to load projects");
       });
   }, [authUser?.user_id]);
@@ -98,9 +106,14 @@ export function App() {
 
   async function refreshProjects() {
     if (!authUser) return;
-    const [next, orgs] = await Promise.all([listProjects({ includeArchived: true }), listMyOrganizations()]);
+    const [next, orgs, adminAccess] = await Promise.all([
+      listProjects({ includeArchived: true }),
+      listMyOrganizations(),
+      canAccessAdminPanel().catch(() => false)
+    ]);
     setProjects(next.projects);
     setOrganizations(orgs.organizations);
+    setHasAdminAccess(adminAccess);
   }
 
   if (authLoading) return <main className="loading">Loading...</main>;
@@ -149,7 +162,7 @@ export function App() {
               <Link className={`ui-button ui-secondary ui-md tab ${onProfileRoute ? "active" : ""}`} to="/profile">
                 {t("nav.profile")}
               </Link>
-              {hasOrgAdminAccess && (
+              {hasAdminAccess && (
                 <Link className={`ui-button ui-secondary ui-md tab ${onAdminRoute ? "active" : ""}`} to="/admin">
                   {t("nav.admin")}
                 </Link>
@@ -196,4 +209,3 @@ export function App() {
     </main>
   );
 }
-

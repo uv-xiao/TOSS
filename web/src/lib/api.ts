@@ -711,6 +711,17 @@ export async function getAdminAuthSettings() {
   return parsed.settings;
 }
 
+export async function canAccessAdminPanel() {
+  const res = await fetch(apiUrl("/v1/admin/settings/auth"), {
+    cache: "no-store",
+    credentials: authCredentials(),
+    headers: authHeaders()
+  });
+  if (res.status === 401 || res.status === 403) return false;
+  if (!res.ok) await throwApiError(res, "Unable to validate admin access");
+  return true;
+}
+
 export async function upsertAdminAuthSettings(input: {
   allow_local_login: boolean;
   allow_local_registration: boolean;

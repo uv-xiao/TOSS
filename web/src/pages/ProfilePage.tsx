@@ -33,7 +33,7 @@ export function ProfilePage({ t }: { t: (key: string) => string }) {
       setError(null);
     } catch (err) {
       setTokens([]);
-      setError(err instanceof Error ? err.message : "Unable to load tokens");
+      setError(err instanceof Error ? err.message : t("profile.loadFailed"));
     }
   }
 
@@ -42,7 +42,7 @@ export function ProfilePage({ t }: { t: (key: string) => string }) {
   }, []);
 
   function formatOptionalDate(value: string | null) {
-    if (!value) return "never";
+    if (!value) return t("profile.never");
     return new Date(value).toLocaleString();
   }
 
@@ -52,7 +52,7 @@ export function ProfilePage({ t }: { t: (key: string) => string }) {
       if (!tokenCustomExpiresAtLocal.trim()) return null;
       const parsed = new Date(tokenCustomExpiresAtLocal);
       if (Number.isNaN(parsed.getTime())) {
-        throw new Error("Invalid custom expiry time");
+        throw new Error(t("profile.invalidExpiry"));
       }
       return parsed.toISOString();
     }
@@ -79,7 +79,7 @@ export function ProfilePage({ t }: { t: (key: string) => string }) {
       setCopiedToken(false);
       await refresh();
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to create token";
+      const message = err instanceof Error ? err.message : t("profile.createFailed");
       setError(message);
     } finally {
       setCreating(false);
@@ -91,37 +91,37 @@ export function ProfilePage({ t }: { t: (key: string) => string }) {
       <h2>{t("profile.title")}</h2>
       <div className="card-list">
         <div className="card profile-token-create">
-          <strong>Personal Access Tokens</strong>
+          <strong>{t("profile.tokensTitle")}</strong>
           <span className="muted">
-            Use token as Git HTTP password. Each token is shown once on creation.
+            {t("profile.tokensHint")}
           </span>
           <div className="profile-token-form">
             <label>
-              <span>Token label</span>
+              <span>{t("profile.tokenLabel")}</span>
               <UiInput
                 value={tokenLabel}
                 onChange={(e) => setTokenLabel(e.target.value)}
-                placeholder="e.g. Laptop Git, CI runner"
+                placeholder={t("profile.tokenLabelPlaceholder")}
               />
             </label>
             <label>
-              <span>Expires</span>
+              <span>{t("profile.expires")}</span>
               <UiSelect
                 value={tokenExpiryPreset}
                 onChange={(e) =>
                   setTokenExpiryPreset(e.target.value as "never" | "7d" | "30d" | "90d" | "custom")
                 }
               >
-                <option value="never">Never</option>
-                <option value="7d">7 days</option>
-                <option value="30d">30 days</option>
-                <option value="90d">90 days</option>
-                <option value="custom">Custom date/time</option>
+                <option value="never">{t("profile.expNever")}</option>
+                <option value="7d">{t("profile.exp7d")}</option>
+                <option value="30d">{t("profile.exp30d")}</option>
+                <option value="90d">{t("profile.exp90d")}</option>
+                <option value="custom">{t("profile.expCustom")}</option>
               </UiSelect>
             </label>
             {tokenExpiryPreset === "custom" && (
               <label>
-                <span>Custom expiry</span>
+                <span>{t("profile.customExpiry")}</span>
                 <UiInput
                   type="datetime-local"
                   value={tokenCustomExpiresAtLocal}
@@ -132,13 +132,13 @@ export function ProfilePage({ t }: { t: (key: string) => string }) {
           </div>
           <div className="toolbar">
             <UiButton variant="primary" onClick={createToken} disabled={creating || !tokenLabel.trim()}>
-              {creating ? "Creating..." : "Create Token"}
+              {creating ? t("profile.creating") : t("profile.createToken")}
             </UiButton>
           </div>
         </div>
         {newToken && (
           <div className="card profile-new-token">
-            <strong>New token (shown once)</strong>
+            <strong>{t("profile.newTokenShownOnce")}</strong>
             <div className="token-reveal">{newToken.token}</div>
             <div className="toolbar">
               <UiButton
@@ -149,27 +149,32 @@ export function ProfilePage({ t }: { t: (key: string) => string }) {
                   window.setTimeout(() => setCopiedToken(false), 1200);
                 }}
               >
-                {copiedToken ? "Copied" : "Copy token"}
+                {copiedToken ? t("share.copied") : t("profile.copyToken")}
               </UiButton>
             </div>
             <small className="muted">
-              Label: {newToken.label} · Prefix: {newToken.token_prefix} · Expires:{" "}
-              {formatOptionalDate(newToken.expires_at || null)}
+              {t("profile.tokenLabel")}: {newToken.label} · {t("profile.prefix")}: {newToken.token_prefix} ·{" "}
+              {t("profile.expires")}: {formatOptionalDate(newToken.expires_at || null)}
             </small>
           </div>
         )}
         {error && <div className="error">{error}</div>}
         <div className="card">
-          <strong>Token list</strong>
+          <strong>{t("profile.tokenList")}</strong>
           <div className="card-list">
             {tokens.map((token) => (
               <div className="card" key={token.id}>
                 <strong>{token.label}</strong>
-                <span>Prefix: {token.token_prefix}</span>
-                <span>Created: {new Date(token.created_at).toLocaleString()}</span>
-                <span>Expires: {formatOptionalDate(token.expires_at)}</span>
-                <span>Last used: {formatOptionalDate(token.last_used_at)}</span>
-                <span>Status: {token.revoked_at ? `Revoked at ${formatOptionalDate(token.revoked_at)}` : "Active"}</span>
+                <span>{t("profile.prefix")}: {token.token_prefix}</span>
+                <span>{t("profile.created")}: {new Date(token.created_at).toLocaleString()}</span>
+                <span>{t("profile.expires")}: {formatOptionalDate(token.expires_at)}</span>
+                <span>{t("profile.lastUsed")}: {formatOptionalDate(token.last_used_at)}</span>
+                <span>
+                  {t("profile.status")}:{" "}
+                  {token.revoked_at
+                    ? `${t("profile.statusRevokedAt")} ${formatOptionalDate(token.revoked_at)}`
+                    : t("profile.statusActive")}
+                </span>
                 <div className="toolbar">
                   <UiButton
                     size="sm"
@@ -177,7 +182,7 @@ export function ProfilePage({ t }: { t: (key: string) => string }) {
                       await navigator.clipboard.writeText(token.token_prefix);
                     }}
                   >
-                    Copy prefix
+                    {t("profile.copyPrefix")}
                   </UiButton>
                   <UiButton
                     size="sm"
@@ -192,16 +197,15 @@ export function ProfilePage({ t }: { t: (key: string) => string }) {
                       }
                     }}
                   >
-                    {token.revoked_at ? "Revoked" : "Revoke"}
+                    {token.revoked_at ? t("profile.revoked") : t("common.revoke")}
                   </UiButton>
                 </div>
               </div>
             ))}
-            {tokens.length === 0 && <div className="card muted">No tokens yet.</div>}
+            {tokens.length === 0 && <div className="card muted">{t("profile.noTokens")}</div>}
           </div>
         </div>
       </div>
     </section>
   );
 }
-
