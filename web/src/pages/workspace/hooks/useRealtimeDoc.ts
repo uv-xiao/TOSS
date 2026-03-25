@@ -82,7 +82,6 @@ export function useRealtimeDoc({
     ydocRef.current = ydoc;
     ytextRef.current = ytext;
     let bootstrapResolved = false;
-    let fallbackTimer: number | null = null;
     setDocText("");
     setRealtimeDocReady(false);
     lastSavedDocRef.current = "";
@@ -109,10 +108,6 @@ export function useRealtimeDoc({
       if (seeded) {
         realtimeRef.current?.sendSyncSnapshot();
       }
-      if (fallbackTimer !== null) {
-        window.clearTimeout(fallbackTimer);
-        fallbackTimer = null;
-      }
     };
 
     const observer = (event: Y.YTextEvent) => {
@@ -132,13 +127,8 @@ export function useRealtimeDoc({
       onReconnectChange: setReconnectState,
       onBootstrapDone: () => resolveBootstrap(true)
     });
-    fallbackTimer = window.setTimeout(() => resolveBootstrap(false), 4000);
     realtimeRef.current = realtime;
     return () => {
-      if (fallbackTimer !== null) {
-        window.clearTimeout(fallbackTimer);
-        fallbackTimer = null;
-      }
       ytext.unobserve(observer);
       realtime.close();
       ydoc.destroy();
