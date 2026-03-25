@@ -202,9 +202,12 @@ export function applyPreviewZoom(frame: HTMLElement, zoom: number) {
 }
 
 export function pixelPerPtForZoom(mode: PreviewFitMode, zoom: number) {
-  if (mode !== "manual") return 2;
+  const safeZoom = clampNumber(Number.isFinite(zoom) ? zoom : 1, PREVIEW_MIN_ZOOM, PREVIEW_MAX_ZOOM);
   const dpr = typeof window === "undefined" ? 1 : Math.max(1, window.devicePixelRatio || 1);
-  return clampNumber(Math.ceil(zoom * dpr), 2, 12);
+  // Keep render density tied to effective visual zoom for both manual and fit modes.
+  // This avoids blurry output when fit-width/page zoom changes after panel resize.
+  const desiredDensity = mode === "manual" ? safeZoom * dpr : Math.max(1, safeZoom * dpr);
+  return clampNumber(Math.ceil(desiredDensity), 2, 12);
 }
 
 export function isImageAsset(path: string, contentType?: string) {
