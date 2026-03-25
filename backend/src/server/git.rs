@@ -24,6 +24,44 @@ fn merge_file_equal(a: &MergeFileValue, b: &MergeFileValue) -> bool {
     }
 }
 
+#[derive(Clone)]
+struct PushReject {
+    reason: String,
+}
+
+fn pkt_line(payload: &str) -> Vec<u8> {
+    let total_len = payload.as_bytes().len() + 4;
+    format!("{total_len:04x}{payload}").into_bytes()
+}
+
+fn pkt_line_bytes(payload: &[u8]) -> Vec<u8> {
+    let total_len = payload.len() + 4;
+    let mut out = format!("{total_len:04x}").into_bytes();
+    out.extend_from_slice(payload);
+    out
+}
+
+fn git_receive_pack_reject_body(ref_name: &str, reason: &str, hints: &[String]) -> Vec<u8> {
+    let mut report = Vec::new();
+    report.extend(pkt_line("unpack ok\n"));
+    report.extend(pkt_line(&format!("ng {ref_name} {reason}\n")));
+    report.extend_from_slice(b"0000");
+
+    let mut out = Vec::new();
+    for line in hints {
+        let mut payload = Vec::with_capacity(1 + line.len());
+        payload.push(2u8);
+        payload.extend(line.as_bytes());
+        out.extend(pkt_line_bytes(&payload));
+    }
+    let mut report_band = Vec::with_capacity(report.len() + 1);
+    report_band.push(1u8);
+    report_band.extend(report);
+    out.extend(pkt_line_bytes(&report_band));
+    out.extend_from_slice(b"0000");
+    out
+}
+
 fn merge_index_entry_from_text(
     repo: &Repository,
     path: &str,
@@ -536,6 +574,11 @@ async fn git_http_backend(
     Path((project_id, rest)): Path<(Uuid, String)>,
     body: Bytes,
 ) -> impl IntoResponse {
+    let query = uri.query().unwrap_or_default();
+    let advertises_receive_pack =
+        rest.ends_with("info/refs") && query.contains("service=git-receive-pack");
+    let advertises_upload_pack =
+        rest.ends_with("info/refs") && query.contains("service=git-upload-pack");
     let actor = match git_http_user(&state.db, &headers).await {
         Some(user_id) => user_id,
         None => {
@@ -548,7 +591,9 @@ async fn git_http_backend(
         }
     };
     let can_push = rest.ends_with("git-receive-pack");
-    let need = if can_push {
+    let is_push_flow = can_push || advertises_receive_pack;
+    let is_pull_flow = rest.ends_with("git-upload-pack") || advertises_upload_pack;
+    let need = if is_push_flow {
         AccessNeed::GitSync
     } else {
         AccessNeed::Read
@@ -589,8 +634,16 @@ async fn git_http_backend(
     .flatten()
     .map(|row| row.get::<bool, _>("pending_sync"))
     .unwrap_or(false);
+    if is_pull_flow && had_pending_sync {
+        if let Err(err) = flush_pending_server_commit(&state, project_id, Some(actor)).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to prepare pending online updates: {err}"),
+            )
+                .into_response();
+        }
+    }
 
-    let query = uri.query().unwrap_or_default();
     let path_info = if rest.is_empty() {
         format!("/{}/.git", project_id)
     } else {
@@ -643,13 +696,15 @@ async fn git_http_backend(
     }
 
     let (status, response_headers, response_body) = parse_cgi_http_backend_output(&output.stdout);
-    let mut post_sync_error: Option<String> = None;
+    let mut post_sync_error: Option<PushReject> = None;
     if can_push && status.is_success() {
         let head_after = git_head_oid(&config.local_path).ok().flatten();
         if let (Some(old_head), Some(new_head)) = (head_before, head_after) {
             if !git_ancestor(&config.local_path, old_head, new_head).unwrap_or(false) {
                 let _ = git_hard_reset_to(&config.local_path, old_head);
-                post_sync_error = Some("force push is not allowed".to_string());
+                post_sync_error = Some(PushReject {
+                    reason: "forced push prohibited".to_string(),
+                });
             }
         }
 
@@ -702,7 +757,7 @@ async fn git_http_backend(
                         }
                     };
                     if let Err(err) = materialize_merge_map_to_dir(temp_dir.path(), &merged_map) {
-                        post_sync_error = Some(err);
+                        post_sync_error = Some(PushReject { reason: err });
                     } else if let Err(err) = sync_repo_documents_to_project(
                         &state,
                         project_id,
@@ -710,11 +765,11 @@ async fn git_http_backend(
                     )
                     .await
                     {
-                        post_sync_error = Some(err);
+                        post_sync_error = Some(PushReject { reason: err });
                     } else if let Err(err) =
                         sync_project_documents_to_repo(&state, project_id, &config.local_path).await
                     {
-                        post_sync_error = Some(err);
+                        post_sync_error = Some(PushReject { reason: err });
                     } else {
                         let is_clean = git_worktree_is_clean(&config.local_path).unwrap_or(false);
                         let _ = sqlx::query(
@@ -778,7 +833,11 @@ async fn git_http_backend(
                         .bind(project_id)
                         .execute(&state.db)
                         .await;
-                    post_sync_error = Some(conflict_reason);
+                    post_sync_error = Some(PushReject {
+                        reason: format!(
+                            "fetch first: server has newer online updates ({conflict_reason})"
+                        ),
+                    });
                 }
             }
         }
@@ -832,18 +891,43 @@ async fn git_http_backend(
                         }),
                     )
                     .await;
-                    post_sync_error = Some(err);
+                    post_sync_error = Some(PushReject { reason: err });
                 }
             }
         }
     }
 
-    if let Some(err) = post_sync_error {
-        return (
-            StatusCode::CONFLICT,
-            format!("Push rejected: {err}"),
-        )
-            .into_response();
+    if let Some(reject) = post_sync_error {
+        if can_push {
+            let ref_name = format!("refs/heads/{}", config.default_branch);
+            let hint_lines = if reject.reason == "forced push prohibited" {
+                vec![
+                    "error: forced push prohibited\n".to_string(),
+                    "\n".to_string(),
+                    "hint: You can't git push --force to this Typst project. Rebase or merge on top of current head.\n".to_string(),
+                ]
+            } else if reject.reason.starts_with("fetch first:") {
+                vec![
+                    "error: push rejected because server has newer online updates\n".to_string(),
+                    "hint: Pull latest changes, rebase/merge your local commit, then push again.\n".to_string(),
+                ]
+            } else {
+                vec![format!("error: {}\n", reject.reason)]
+            };
+            let body = git_receive_pack_reject_body(&ref_name, &reject.reason, &hint_lines);
+            let mut builder = axum::http::Response::builder().status(StatusCode::OK);
+            builder = builder.header(
+                header::CONTENT_TYPE,
+                "application/x-git-receive-pack-result",
+            );
+            builder = builder.header("Cache-Control", "no-cache");
+            return builder
+                .body(Body::from(body))
+                .unwrap_or_else(|_| {
+                    axum::http::Response::new(Body::from("backend response error"))
+                });
+        }
+        return (StatusCode::CONFLICT, format!("Push rejected: {}", reject.reason)).into_response();
     }
 
     let mut builder = axum::http::Response::builder().status(status);
