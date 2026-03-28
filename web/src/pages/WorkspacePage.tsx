@@ -20,7 +20,7 @@ import {
   deleteProjectTemplateOrganizationAccess,
   downloadProjectArchive,
   getGitRepoLink,
-  getProjectAssetContent,
+  getProjectAssetContentCached,
   getProjectSettings,
   getProjectTree,
   getRevisionDocuments,
@@ -36,6 +36,7 @@ import {
   type AuthUser,
   type OrganizationMembership,
   type Project,
+  type ProjectAsset,
   type ProjectAccessUser,
   type ProjectOrganizationAccess,
   type ProjectShareLink,
@@ -124,6 +125,35 @@ function buildTopPreviewThumbnail(canvas: HTMLCanvasElement) {
   return out.toDataURL("image/png");
 }
 
+const QUOTED_PATH_REGEX = /"([^"\r\n]+)"/g;
+const ABSOLUTE_OR_REMOTE_PATH_REGEX = /^(?:[a-zA-Z]+:|\/)/;
+
+function collectReferencedAssetPaths(
+  docsList: Array<{ path: string; content: string }>,
+  assetsByPath: Record<string, AssetMeta>
+) {
+  const references = new Set<string>();
+  for (const doc of docsList) {
+    const baseDir = parentProjectPath(doc.path);
+    QUOTED_PATH_REGEX.lastIndex = 0;
+    let match = QUOTED_PATH_REGEX.exec(doc.content);
+    while (match) {
+      const quoted = match[1]?.trim() || "";
+      if (quoted && !ABSOLUTE_OR_REMOTE_PATH_REGEX.test(quoted) && !quoted.startsWith("#")) {
+        const candidatePath = normalizePath(baseDir ? joinProjectPath(baseDir, quoted) : quoted);
+        if (candidatePath && assetsByPath[candidatePath]) {
+          references.add(candidatePath);
+        }
+      }
+      match = QUOTED_PATH_REGEX.exec(doc.content);
+    }
+  }
+  for (const path of Object.keys(assetsByPath)) {
+    if (isFontFile(path)) references.add(path);
+  }
+  return Array.from(references);
+}
+
 function prependUniqueRevisions(primary: Revision[], fallback: Revision[]) {
   const merged: Revision[] = [];
   const seen = new Set<string>();
@@ -176,6 +206,8 @@ export function WorkspacePage({
   const revisionLoadSeqRef = useRef(0);
   const revisionHeadSeqRef = useRef(0);
   const revisionMoreSeqRef = useRef(0);
+  const assetLoadInflightRef = useRef<Map<string, Promise<string | null>>>(new Map());
+  const assetLoadFailedRef = useRef<Set<string>>(new Set());
 
   const [nodes, setNodes] = useState<ProjectNode[]>([]);
   const [entryFilePath, setEntryFilePath] = useState("main.typ");
@@ -253,6 +285,51 @@ export function WorkspacePage({
   const sourceAssetMeta = isRevisionMode ? revisionAssetMeta : assetMeta;
   const sourceEntryFilePath = isRevisionMode ? revisionEntryFilePath : entryFilePath;
   const sourceDocs = isRevisionMode ? revisionDocs : docs;
+
+  function toProjectAssetMeta(path: string, meta: AssetMeta): ProjectAsset | null {
+    if (!projectId || !meta.id || !meta.createdAt || typeof meta.sizeBytes !== "number") return null;
+    return {
+      id: meta.id,
+      project_id: projectId,
+      path,
+      object_key: "",
+      content_type: meta.contentType || "application/octet-stream",
+      size_bytes: meta.sizeBytes,
+      uploaded_by: null,
+      created_at: meta.createdAt
+    };
+  }
+
+  async function ensureLiveAssetLoaded(path: string): Promise<string | null> {
+    if (!projectId || isRevisionMode) return null;
+    const existing = assetBase64[path];
+    if (existing) return existing;
+    const inflight = assetLoadInflightRef.current.get(path);
+    if (inflight) return inflight;
+    const meta = assetMeta[path];
+    if (!meta) return null;
+    const asset = toProjectAssetMeta(path, meta);
+    if (!asset) return null;
+    const loadPromise = (async () => {
+      try {
+        const response = await getProjectAssetContentCached(projectId, asset);
+        const b64 = response.content_base64;
+        setAssetBase64((prev) => {
+          if (prev[path] === b64) return prev;
+          return { ...prev, [path]: b64 };
+        });
+        assetLoadFailedRef.current.delete(path);
+        return b64;
+      } catch {
+        assetLoadFailedRef.current.add(path);
+        return null;
+      } finally {
+        assetLoadInflightRef.current.delete(path);
+      }
+    })();
+    assetLoadInflightRef.current.set(path, loadPromise);
+    return loadPromise;
+  }
 
   const {
     tree,
@@ -448,6 +525,8 @@ export function WorkspacePage({
   useEffect(() => {
     revisionHeadSeqRef.current += 1;
     revisionMoreSeqRef.current += 1;
+    assetLoadInflightRef.current.clear();
+    assetLoadFailedRef.current.clear();
     setWorkspaceLoaded(false);
     setWorkspaceError(null);
     setRevisions([]);
@@ -679,6 +758,32 @@ export function WorkspacePage({
   ]);
 
   useEffect(() => {
+    if (!projectId || !workspaceLoaded || isRevisionMode || !activePath) return;
+    if (isTextFile(activePath)) return;
+    if (assetBase64[activePath]) return;
+    void ensureLiveAssetLoaded(activePath);
+  }, [activePath, assetBase64, isRevisionMode, projectId, workspaceLoaded]);
+
+  useEffect(() => {
+    if (!projectId || !workspaceLoaded || isRevisionMode) return;
+    const referenced = collectReferencedAssetPaths(compileDocuments, assetMeta);
+    const missing = referenced.filter(
+      (path) => !assetBase64[path] && !assetLoadFailedRef.current.has(path)
+    );
+    if (missing.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      for (const path of missing) {
+        if (cancelled) return;
+        await ensureLiveAssetLoaded(path);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [assetBase64, assetMeta, compileDocuments, isRevisionMode, projectId, workspaceLoaded]);
+
+  useEffect(() => {
     if (!projectId || !workspaceLoaded) return;
     const applyCompileOutput = (output: CompileOutput) => {
       setVectorData(output.vectorData);
@@ -695,6 +800,13 @@ export function WorkspacePage({
       setCompileErrors(["Project has no source documents"]);
       setCompileDiagnostics([]);
       return;
+    }
+    if (!isRevisionMode) {
+      const referenced = collectReferencedAssetPaths(compileDocuments, assetMeta);
+      const hasPendingAssets = referenced.some(
+        (path) => !assetBase64[path] && !assetLoadFailedRef.current.has(path)
+      );
+      if (hasPendingAssets) return;
     }
     if (compileInputKey === lastCompileInputKeyRef.current && lastCompileOutputRef.current) {
       applyCompileOutput(lastCompileOutputRef.current);
@@ -718,7 +830,18 @@ export function WorkspacePage({
     return () => {
       cancelled = true;
     };
-  }, [compileAssets, compileDocuments, compileInputKey, fontData, projectId, sourceEntryFilePath, workspaceLoaded]);
+  }, [
+    assetBase64,
+    assetMeta,
+    compileAssets,
+    compileDocuments,
+    compileInputKey,
+    fontData,
+    isRevisionMode,
+    projectId,
+    sourceEntryFilePath,
+    workspaceLoaded
+  ]);
 
   useEffect(() => {
     if (!projectId || !workspaceLoaded || isRevisionMode || !showPreviewPanel) return;
@@ -893,26 +1016,24 @@ export function WorkspacePage({
       docs: nextDocs
     });
 
-    const nextAssets: Record<string, string> = {};
     const nextAssetMeta: Record<string, AssetMeta> = {};
     for (const asset of assetsRes.assets) {
       nextAssetMeta[asset.path] = {
         id: asset.id,
-        contentType: asset.content_type
+        contentType: asset.content_type,
+        sizeBytes: asset.size_bytes,
+        createdAt: asset.created_at
       };
     }
-    await Promise.all(
-      assetsRes.assets.map(async (asset) => {
-        try {
-          const content = await getProjectAssetContent(projectId, asset.id);
-          nextAssets[asset.path] = content.content_base64;
-        } catch {
-          // Skip unreadable assets.
-        }
-      })
-    );
     setAssetMeta(nextAssetMeta);
-    setAssetBase64(nextAssets);
+    assetLoadFailedRef.current.clear();
+    setAssetBase64((prev) => {
+      const next: Record<string, string> = {};
+      for (const [path, value] of Object.entries(prev)) {
+        if (nextAssetMeta[path]) next[path] = value;
+      }
+      return next;
+    });
 
     if (!activePath || !treeRes.nodes.some((node) => node.path === activePath)) {
       const firstFile = treeRes.nodes.find((n) => n.kind === "file")?.path || settings.entry_file_path;

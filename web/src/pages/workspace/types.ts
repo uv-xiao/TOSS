@@ -13,6 +13,8 @@ export type ProjectTreeNodeView = {
 export type AssetMeta = {
   id?: string;
   contentType: string;
+  sizeBytes?: number;
+  createdAt?: string;
 };
 
 export type ContextMenuState = {
@@ -47,4 +49,3 @@ export type WorkspaceLayoutPrefs = {
 };
 
 export type PreviewFitMode = "manual" | "page" | "width";
-

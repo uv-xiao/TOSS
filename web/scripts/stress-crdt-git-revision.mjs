@@ -44,12 +44,15 @@ async function api(method, route, token, body) {
 }
 
 async function registerOrLogin(email, password, displayName) {
+  const emailPrefix = email.split("@")[0] || "user";
+  const username = emailPrefix.replace(/[^a-zA-Z0-9_.-]/g, "").slice(0, 32) || `user${Date.now()}`;
   const registerRes = await fetch(`${CORE_API}/v1/auth/local/register`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       email,
       password,
+      username,
       display_name: displayName
     })
   });
@@ -166,7 +169,10 @@ async function waitFor(predicate, timeoutMs, label) {
 
 async function waitForGitMainContains(repoUrl, patToken, snippet, timeoutMs = 20000) {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "typst-stress-main-"));
-  const authUrl = repoUrl.replace("http://", `http://qa:${patToken}@`);
+  const parsed = new URL(repoUrl);
+  if (!parsed.username) parsed.username = "git";
+  parsed.password = patToken;
+  const authUrl = parsed.toString();
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
@@ -290,7 +296,10 @@ async function main() {
   });
   const repoLink = await api("GET", `/v1/git/repo-link/${projectId}`, owner.sessionToken);
   const repoUrl = repoLink.repo_url;
-  const authRepoUrl = repoUrl.replace("http://", `http://qa:${ownerPat.token}@`);
+  const parsedRepoUrl = new URL(repoUrl);
+  if (!parsedRepoUrl.username) parsedRepoUrl.username = "git";
+  parsedRepoUrl.password = ownerPat.token;
+  const authRepoUrl = parsedRepoUrl.toString();
 
   const probe = await waitForGitMainContains(repoUrl, ownerPat.token, "A:", 25000);
   const offline = probe.repoPath;

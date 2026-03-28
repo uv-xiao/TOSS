@@ -73,12 +73,15 @@ async function bearerApi(method, route, token, body) {
 }
 
 async function registerOrLogin(email, password, displayName) {
+  const emailPrefix = email.split("@")[0] || "user";
+  const username = emailPrefix.replace(/[^a-zA-Z0-9_.-]/g, "").slice(0, 32) || `user${Date.now()}`;
   const registerRes = await fetch(`${coreApi}/v1/auth/local/register`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       email,
       password,
+      username,
       display_name: displayName
     })
   });
@@ -248,7 +251,10 @@ async function main() {
   });
   const repoLink = await bearerApi("GET", `/v1/git/repo-link/${projectId}`, owner.sessionToken);
   const repoUrl = repoLink.repo_url;
-  const authRepoUrl = repoUrl.replace("http://", `http://qa:${ownerPat.token}@`);
+  const parsedRepoUrl = new URL(repoUrl);
+  if (!parsedRepoUrl.username) parsedRepoUrl.username = "git";
+  parsedRepoUrl.password = ownerPat.token;
+  const authRepoUrl = parsedRepoUrl.toString();
 
   const browser = await chromium.launch({ headless: true });
   const contextA = await browser.newContext({

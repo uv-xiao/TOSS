@@ -56,12 +56,15 @@ async function api(method, path, sessionToken, body) {
 }
 
 async function registerOrLogin(email, password, displayName) {
+  const emailPrefix = email.split("@")[0] || "user";
+  const username = emailPrefix.replace(/[^a-zA-Z0-9_.-]/g, "").slice(0, 32) || `user${Date.now()}`;
   const registerRes = await fetch(`${CORE_API}/v1/auth/local/register`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       email,
       password,
+      username,
       display_name: displayName
     })
   });

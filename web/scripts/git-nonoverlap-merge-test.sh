@@ -13,17 +13,17 @@ COLLAB_PASSWORD="Collab1234!"
 api_json() {
   local method="$1"
   local path="$2"
-  local user_id="$3"
+  local session_token="$3"
   local body="${4:-}"
   if [[ -n "$body" ]]; then
     curl -sS -X "$method" \
       -H "content-type: application/json" \
-      -H "x-user-id: $user_id" \
+      -H "authorization: Bearer $session_token" \
       --data "$body" \
       "$CORE_API_URL$path"
   else
     curl -sS -X "$method" \
-      -H "x-user-id: $user_id" \
+      -H "authorization: Bearer $session_token" \
       "$CORE_API_URL$path"
   fi
 }
@@ -81,24 +81,36 @@ register_or_login() {
 
 OWNER_AUTH="$(register_or_login "$OWNER_EMAIL" "$OWNER_USERNAME" "$OWNER_PASSWORD" "Merge Owner")"
 OWNER_ID="$(printf '%s' "$OWNER_AUTH" | extract_json_field user_id)"
+OWNER_TOKEN="$(printf '%s' "$OWNER_AUTH" | extract_json_field session_token)"
 COLLAB_AUTH="$(register_or_login "$COLLAB_EMAIL" "$COLLAB_USERNAME" "$COLLAB_PASSWORD" "Merge Collaborator")"
 COLLAB_ID="$(printf '%s' "$COLLAB_AUTH" | extract_json_field user_id)"
+COLLAB_TOKEN="$(printf '%s' "$COLLAB_AUTH" | extract_json_field session_token)"
 
-PROJECT_JSON="$(api_json POST "/v1/projects" "$OWNER_ID" "{\"name\":\"Git Nonoverlap QA ${RUN_ID}\"}")"
+PROJECT_JSON="$(api_json POST "/v1/projects" "$OWNER_TOKEN" "{\"name\":\"Git Nonoverlap QA ${RUN_ID}\"}")"
 PROJECT_ID="$(printf '%s' "$PROJECT_JSON" | extract_json_field id)"
-api_json POST "/v1/projects/$PROJECT_ID/roles" "$OWNER_ID" "{\"user_id\":\"$COLLAB_ID\",\"role\":\"Student\"}" >/dev/null
+api_json POST "/v1/projects/$PROJECT_ID/roles" "$OWNER_TOKEN" "{\"user_id\":\"$COLLAB_ID\",\"role\":\"Student\"}" >/dev/null
 
-owner_pat_json="$(api_json POST "/v1/security/tokens" "$OWNER_ID" '{"label":"qa-owner-token"}')"
+owner_pat_json="$(api_json POST "/v1/profile/security/tokens" "$OWNER_TOKEN" '{"label":"qa-owner-token"}')"
 OWNER_PAT="$(printf '%s' "$owner_pat_json" | extract_json_field token)"
+REPO_LINK_JSON="$(api_json GET "/v1/git/repo-link/$PROJECT_ID" "$OWNER_TOKEN")"
+REPO_URL="$(printf '%s' "$REPO_LINK_JSON" | extract_json_field repo_url)"
 
 BASE_CONTENT=$'= Merge QA\n\npara A line 1\npara A line 2\npara A line 3\n\npara B line 1\npara B line 2\npara B line 3\n'
-api_json PUT "/v1/projects/$PROJECT_ID/documents/by-path/main.typ" "$OWNER_ID" \
+api_json PUT "/v1/projects/$PROJECT_ID/documents/by-path/main.typ" "$OWNER_TOKEN" \
   "$(node -e 'process.stdout.write(JSON.stringify({content: process.argv[1]}))' "$BASE_CONTENT")" >/dev/null
-api_json POST "/v1/projects/$PROJECT_ID/revisions" "$OWNER_ID" '{"summary":"init"}' >/dev/null
+api_json POST "/v1/projects/$PROJECT_ID/revisions" "$OWNER_TOKEN" '{"summary":"init"}' >/dev/null
 
 TMP_DIR="$(mktemp -d /tmp/typst-git-nonoverlap.XXXXXX)"
 REPO="$TMP_DIR/clone"
-REMOTE_OWNER="$(printf '%s/v1/git/repo/%s' "$CORE_API_URL" "$PROJECT_ID" | sed "s#^http://#http://${OWNER_USERNAME}:${OWNER_PAT}@#")"
+REMOTE_OWNER="$(node -e '
+const raw = process.argv[1];
+const token = process.argv[2];
+const fallbackUser = process.argv[3] || "git";
+const u = new URL(raw);
+if (!u.username) u.username = fallbackUser;
+u.password = token;
+console.log(u.toString());
+' "$REPO_URL" "$OWNER_PAT" "$OWNER_USERNAME")"
 git clone "$REMOTE_OWNER" "$REPO" >/dev/null 2>&1
 
 cd "$REPO"
@@ -115,7 +127,7 @@ git add main.typ
 git commit -m "Owner local paragraph A edit" >/dev/null
 
 ONLINE_CONTENT=$'= Merge QA\n\npara A line 1\npara A line 2\npara A line 3\n\npara B line 1\npara B line 2 ONLINE\npara B line 3\n'
-api_json PUT "/v1/projects/$PROJECT_ID/documents/by-path/main.typ" "$COLLAB_ID" \
+api_json PUT "/v1/projects/$PROJECT_ID/documents/by-path/main.typ" "$COLLAB_TOKEN" \
   "$(node -e 'process.stdout.write(JSON.stringify({content: process.argv[1]}))' "$ONLINE_CONTENT")" >/dev/null
 
 set +e
@@ -123,7 +135,7 @@ git push origin HEAD:main >/tmp/typst-git-nonoverlap-push.log 2>&1
 PUSH_EXIT=$?
 set -e
 
-SERVER_DOCS="$(api_json GET "/v1/projects/$PROJECT_ID/documents?path=main.typ" "$OWNER_ID")"
+SERVER_DOCS="$(api_json GET "/v1/projects/$PROJECT_ID/documents?path=main.typ" "$OWNER_TOKEN")"
 node -e '
 const pushExit = Number(process.argv[1]);
 const docs = JSON.parse(process.argv[2]).documents || [];

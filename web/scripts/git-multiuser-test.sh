@@ -2,7 +2,6 @@
 set -euo pipefail
 
 CORE_API_URL="${CORE_API_URL:-http://127.0.0.1:18080}"
-ORG_ID="${ORG_ID:-00000000-0000-0000-0000-000000000001}"
 RUN_ID="$(date +%s)"
 OWNER_EMAIL="git-owner-${RUN_ID}@example.com"
 OWNER_PASSWORD="Owner1234!"
@@ -12,17 +11,17 @@ COLLAB_PASSWORD="Collab1234!"
 api_json() {
   local method="$1"
   local path="$2"
-  local user_id="$3"
+  local session_token="$3"
   local body="${4:-}"
   if [[ -n "$body" ]]; then
     curl -sS -X "$method" \
       -H "content-type: application/json" \
-      -H "x-user-id: $user_id" \
+      -H "authorization: Bearer $session_token" \
       --data "$body" \
       "$CORE_API_URL$path"
   else
     curl -sS -X "$method" \
-      -H "x-user-id: $user_id" \
+      -H "authorization: Bearer $session_token" \
       "$CORE_API_URL$path"
   fi
 }
@@ -81,27 +80,45 @@ register_or_login() {
 OWNER_USERNAME="${OWNER_EMAIL%@*}"
 OWNER_AUTH="$(register_or_login "$OWNER_EMAIL" "$OWNER_USERNAME" "$OWNER_PASSWORD" "Git Owner")"
 OWNER_ID="$(printf '%s' "$OWNER_AUTH" | extract_json_field user_id)"
+OWNER_TOKEN="$(printf '%s' "$OWNER_AUTH" | extract_json_field session_token)"
 COLLAB_USERNAME="${COLLAB_EMAIL%@*}"
 COLLAB_AUTH="$(register_or_login "$COLLAB_EMAIL" "$COLLAB_USERNAME" "$COLLAB_PASSWORD" "Git Collaborator")"
 COLLAB_ID="$(printf '%s' "$COLLAB_AUTH" | extract_json_field user_id)"
+COLLAB_TOKEN="$(printf '%s' "$COLLAB_AUTH" | extract_json_field session_token)"
 
-PROJECT_JSON="$(api_json POST "/v1/projects" "$OWNER_ID" "{\"name\":\"Git QA ${RUN_ID}\"}")"
+PROJECT_JSON="$(api_json POST "/v1/projects" "$OWNER_TOKEN" "{\"name\":\"Git QA ${RUN_ID}\"}")"
 PROJECT_ID="$(printf '%s' "$PROJECT_JSON" | extract_json_field id)"
-api_json POST "/v1/projects/$PROJECT_ID/roles" "$OWNER_ID" "{\"user_id\":\"$COLLAB_ID\",\"role\":\"Student\"}" >/dev/null
+api_json POST "/v1/projects/$PROJECT_ID/roles" "$OWNER_TOKEN" "{\"user_id\":\"$COLLAB_ID\",\"role\":\"Student\"}" >/dev/null
 
-owner_pat_json="$(api_json POST "/v1/security/tokens" "$OWNER_ID" '{"label":"qa-owner-token"}')"
-collab_pat_json="$(api_json POST "/v1/security/tokens" "$COLLAB_ID" '{"label":"qa-collab-token"}')"
+owner_pat_json="$(api_json POST "/v1/profile/security/tokens" "$OWNER_TOKEN" '{"label":"qa-owner-token"}')"
+collab_pat_json="$(api_json POST "/v1/profile/security/tokens" "$COLLAB_TOKEN" '{"label":"qa-collab-token"}')"
 OWNER_PAT="$(printf '%s' "$owner_pat_json" | extract_json_field token)"
 COLLAB_PAT="$(printf '%s' "$collab_pat_json" | extract_json_field token)"
+REPO_LINK_JSON="$(api_json GET "/v1/git/repo-link/$PROJECT_ID" "$OWNER_TOKEN")"
+REPO_URL="$(printf '%s' "$REPO_LINK_JSON" | extract_json_field repo_url)"
 
-api_json PUT "/v1/projects/$PROJECT_ID/documents/by-path/main.typ" "$OWNER_ID" '{"content":"= Git QA\n\nInitial from API.\n"}' >/dev/null
+api_json PUT "/v1/projects/$PROJECT_ID/documents/by-path/main.typ" "$OWNER_TOKEN" '{"content":"= Git QA\n\nInitial from API.\n"}' >/dev/null
 
 TMP_DIR="$(mktemp -d /tmp/typst-git-qa.XXXXXX)"
 REPO_A="$TMP_DIR/owner-clone"
 REPO_B="$TMP_DIR/collab-clone"
 
-REMOTE_OWNER="$(printf '%s/v1/git/repo/%s' "$CORE_API_URL" "$PROJECT_ID" | sed "s#^http://#http://qa:${OWNER_PAT}@#")"
-REMOTE_COLLAB="$(printf '%s/v1/git/repo/%s' "$CORE_API_URL" "$PROJECT_ID" | sed "s#^http://#http://qa:${COLLAB_PAT}@#")"
+REMOTE_OWNER="$(node -e '
+const raw = process.argv[1];
+const token = process.argv[2];
+const u = new URL(raw);
+if (!u.username) u.username = "git";
+u.password = token;
+console.log(u.toString());
+' "$REPO_URL" "$OWNER_PAT")"
+REMOTE_COLLAB="$(node -e '
+const raw = process.argv[1];
+const token = process.argv[2];
+const u = new URL(raw);
+if (!u.username) u.username = "git";
+u.password = token;
+console.log(u.toString());
+' "$REPO_URL" "$COLLAB_PAT")"
 
 git clone "$REMOTE_OWNER" "$REPO_A" >/dev/null 2>&1 || true
 git clone "$REMOTE_COLLAB" "$REPO_B" >/dev/null 2>&1 || true
@@ -123,7 +140,7 @@ printf '\nOffline edit by owner.\n' >> main.typ
 git add main.typ
 git commit -m "Owner offline change" >/dev/null
 
-api_json PUT "/v1/projects/$PROJECT_ID/documents/by-path/main.typ" "$COLLAB_ID" '{"content":"= Git QA\n\nInitial from API.\n\nCollaborative update by collaborator.\n"}' >/dev/null
+api_json PUT "/v1/projects/$PROJECT_ID/documents/by-path/main.typ" "$COLLAB_TOKEN" '{"content":"= Git QA\n\nInitial from API.\n\nCollaborative update by collaborator.\n"}' >/dev/null
 
 set +e
 git push origin HEAD:main >/tmp/typst-git-push1.log 2>&1
@@ -170,7 +187,7 @@ git push --force origin HEAD:main >/tmp/typst-git-force.log 2>&1
 FORCE_EXIT=$?
 set -e
 
-STATUS_JSON="$(api_json GET "/v1/git/status/$PROJECT_ID" "$OWNER_ID")"
+STATUS_JSON="$(api_json GET "/v1/git/status/$PROJECT_ID" "$OWNER_TOKEN")"
 
 node -e "
 const status = JSON.parse(process.argv[1]);

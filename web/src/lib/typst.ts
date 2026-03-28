@@ -163,13 +163,56 @@ const RENDERER_WASM_URL =
   typeof window === "undefined"
     ? "/typst-wasm/typst_ts_renderer_bg.wasm"
     : new URL("/typst-wasm/typst_ts_renderer_bg.wasm", window.location.origin).toString();
+const RUNTIME_MODULE_CACHE = "typst.runtime.module.v1";
+
+async function readCachedRendererModule(url: string): Promise<ArrayBuffer | null> {
+  if (typeof caches === "undefined") return null;
+  try {
+    const cache = await caches.open(RUNTIME_MODULE_CACHE);
+    const cached = await cache.match(url);
+    if (!cached) return null;
+    return cached.arrayBuffer();
+  } catch {
+    return null;
+  }
+}
+
+async function writeCachedRendererModule(url: string, bytes: Uint8Array) {
+  if (typeof caches === "undefined") return;
+  try {
+    const cache = await caches.open(RUNTIME_MODULE_CACHE);
+    await cache.put(
+      url,
+      new Response(new Blob([new Uint8Array(bytes).buffer]), {
+        headers: {
+          "content-type": "application/wasm",
+          "x-runtime-module": "renderer",
+          "cache-control": "public, max-age=31536000, immutable"
+        }
+      })
+    );
+  } catch {
+    // best effort only
+  }
+}
+
+async function fetchRendererModule(url: string) {
+  const cached = await readCachedRendererModule(url);
+  if (cached) return cached;
+  const response = await fetch(url, { cache: "force-cache" });
+  if (!response.ok) {
+    throw new Error(`renderer wasm fetch failed: ${response.status}`);
+  }
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  await writeCachedRendererModule(url, bytes);
+  return bytes.buffer;
+}
 
 async function getRenderer() {
   if (!rendererPromise) {
     const renderer = createTypstRenderer();
     await renderer.init({
-      getModule: async () =>
-        fetch(RENDERER_WASM_URL, { cache: "force-cache" }).then((resp) => resp.arrayBuffer())
+      getModule: async () => fetchRendererModule(RENDERER_WASM_URL)
     });
     rendererPromise = renderer;
   }

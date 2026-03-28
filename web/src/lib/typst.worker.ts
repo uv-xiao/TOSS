@@ -53,6 +53,7 @@ let typstPromise: Promise<TypstSnippet> | null = null;
 let accessModel: NormalizedFetchAccessModel | null = null;
 let configKey = "";
 let compileCount = 0;
+const RUNTIME_MODULE_CACHE = "typst.runtime.module.v1";
 
 function resetCompilerState() {
   typstPromise = null;
@@ -115,7 +116,48 @@ function base64ToUint8(value: string): Uint8Array {
   return out;
 }
 
+async function readCachedArrayBuffer(url: string): Promise<ArrayBuffer | null> {
+  if (typeof caches === "undefined") return null;
+  try {
+    const cache = await caches.open(RUNTIME_MODULE_CACHE);
+    const cached = await cache.match(url);
+    if (!cached) return null;
+    return cached.arrayBuffer();
+  } catch {
+    return null;
+  }
+}
+
+async function writeCachedArrayBuffer(url: string, bytes: Uint8Array, label: string) {
+  if (typeof caches === "undefined") return;
+  try {
+    const cache = await caches.open(RUNTIME_MODULE_CACHE);
+    await cache.put(
+      url,
+      new Response(new Blob([new Uint8Array(bytes).buffer]), {
+        headers: {
+          "content-type": "application/wasm",
+          "x-runtime-module": label,
+          "cache-control": "public, max-age=31536000, immutable"
+        }
+      })
+    );
+  } catch {
+    // best effort only
+  }
+}
+
 async function fetchArrayBufferWithContext(url: string, label: string) {
+  const cached = await readCachedArrayBuffer(url);
+  if (cached) {
+    self.postMessage({
+      kind: "runtime.status",
+      stage: "downloading-compiler",
+      loaded_bytes: cached.byteLength,
+      total_bytes: cached.byteLength
+    } satisfies RuntimeStatusMessage);
+    return cached;
+  }
   let response: Response;
   try {
     response = await fetch(url, { cache: "force-cache" });
@@ -153,6 +195,7 @@ async function fetchArrayBufferWithContext(url: string, label: string) {
     merged.set(chunk, offset);
     offset += chunk.length;
   }
+  await writeCachedArrayBuffer(url, merged, label);
   return merged.buffer;
 }
 

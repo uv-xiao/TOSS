@@ -565,6 +565,100 @@ export async function listProjectAssets(projectId: string) {
   return parseJsonOrThrow<{ assets: ProjectAsset[] }>(res, "Unable to list assets");
 }
 
+const PROJECT_ASSET_CONTENT_CACHE = "typst.project.asset.content.v1";
+
+function assetContentVersionKey(asset: {
+  id: string;
+  created_at: string;
+  size_bytes: number;
+  content_type: string;
+}) {
+  return `${asset.id}:${asset.created_at}:${asset.size_bytes}:${asset.content_type}`;
+}
+
+function projectAssetRawUrl(projectId: string, asset: {
+  id: string;
+  created_at: string;
+  size_bytes: number;
+  content_type: string;
+}) {
+  const params = new URLSearchParams({
+    v: assetContentVersionKey(asset)
+  });
+  return apiUrl(`/v1/projects/${projectId}/assets/${asset.id}/raw?${params.toString()}`);
+}
+
+function uint8ToBase64(data: Uint8Array): string {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < data.length; i += chunk) {
+    const end = Math.min(data.length, i + chunk);
+    let part = "";
+    for (let j = i; j < end; j += 1) {
+      part += String.fromCharCode(data[j]);
+    }
+    binary += part;
+  }
+  return btoa(binary);
+}
+
+async function getCachedAssetBytes(url: string): Promise<Uint8Array | null> {
+  if (typeof caches === "undefined") return null;
+  try {
+    const cache = await caches.open(PROJECT_ASSET_CONTENT_CACHE);
+    const cached = await cache.match(url);
+    if (!cached) return null;
+    const bytes = new Uint8Array(await cached.arrayBuffer());
+    return bytes;
+  } catch {
+    return null;
+  }
+}
+
+async function putCachedAssetBytes(url: string, bytes: Uint8Array, contentType: string) {
+  if (typeof caches === "undefined") return;
+  try {
+    const cache = await caches.open(PROJECT_ASSET_CONTENT_CACHE);
+    const body = new Blob([new Uint8Array(bytes).buffer], {
+      type: contentType || "application/octet-stream"
+    });
+    await cache.put(
+      url,
+      new Response(body, {
+        headers: {
+          "content-type": contentType || "application/octet-stream",
+          "cache-control": "public, max-age=31536000, immutable"
+        }
+      })
+    );
+  } catch {
+    // cache storage is best-effort
+  }
+}
+
+export async function getProjectAssetContentCached(projectId: string, asset: ProjectAsset) {
+  const url = projectAssetRawUrl(projectId, asset);
+  const cachedBytes = await getCachedAssetBytes(url);
+  if (cachedBytes) {
+    return {
+      asset,
+      content_base64: uint8ToBase64(cachedBytes)
+    } satisfies ProjectAssetContent;
+  }
+  const res = await fetch(url, {
+    credentials: authCredentials(),
+    headers: authHeaders(),
+    cache: "no-store"
+  });
+  if (!res.ok) await throwApiError(res, "Unable to load asset");
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  await putCachedAssetBytes(url, bytes, asset.content_type);
+  return {
+    asset,
+    content_base64: uint8ToBase64(bytes)
+  } satisfies ProjectAssetContent;
+}
+
 export async function getProjectAssetContent(projectId: string, assetId: string) {
   const res = await fetch(apiUrl(`/v1/projects/${projectId}/assets/${assetId}`), {
     cache: "no-store",
