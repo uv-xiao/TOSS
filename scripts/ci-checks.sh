@@ -45,5 +45,6 @@ echo "[ci] run headless browser checks"
 WEB_BASE_URL="$CORE_API_URL" node web/scripts/headless-smoke.mjs
 WEB_BASE_URL="$CORE_API_URL" CORE_API_URL="$CORE_API_URL" node web/scripts/headless-collab-git.mjs
 WEB_BASE_URL="$CORE_API_URL" CORE_API_URL="$CORE_API_URL" node web/scripts/headless-revision-collab-regression.mjs
+WEB_BASE_URL="$CORE_API_URL" CORE_API_URL="$CORE_API_URL" node web/scripts/headless-sync-cache-regression.mjs
 
 echo "[ci] all checks passed"

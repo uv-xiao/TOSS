@@ -8,6 +8,8 @@ export function PreviewPanel({
   previewPercent,
   pdfData,
   typstRuntimeStatus,
+  workspaceSyncPending,
+  assetHydrationProgress,
   vectorData,
   previewIsPanning,
   compileDiagnostics,
@@ -29,6 +31,14 @@ export function PreviewPanel({
   previewPercent: number;
   pdfData: Uint8Array | null;
   typstRuntimeStatus: TypstRuntimeStatus;
+  workspaceSyncPending: boolean;
+  assetHydrationProgress: {
+    active: boolean;
+    loaded: number;
+    total: number;
+    loadedBytes: number;
+    totalBytes: number;
+  };
   vectorData: Uint8Array | null;
   previewIsPanning: boolean;
   compileDiagnostics: CompileDiagnostic[];
@@ -91,6 +101,25 @@ export function PreviewPanel({
         </div>
       </div>
       <div className="panel-content flush preview-panel-content">
+        {workspaceSyncPending && (
+          <div className="preview-runtime-status">
+            <strong>{t("preview.loadingProject")}</strong>
+          </div>
+        )}
+        {assetHydrationProgress.active && !workspaceSyncPending && (
+          <div className="preview-runtime-status">
+            <strong>
+              {t("preview.loadingProjectAssets")
+                .replace("{loaded}", String(assetHydrationProgress.loaded))
+                .replace("{total}", String(assetHydrationProgress.total))}
+            </strong>
+            <span>
+              {assetHydrationProgress.totalBytes > 0
+                ? `${Math.round((100 * assetHydrationProgress.loadedBytes) / assetHydrationProgress.totalBytes)}%`
+                : `${assetHydrationProgress.loaded}/${assetHydrationProgress.total}`}
+            </span>
+          </div>
+        )}
         {(typstRuntimeStatus.stage === "downloading-compiler" ||
           (typstRuntimeStatus.stage === "compiling" && !vectorData)) && (
           <div className="preview-runtime-status">

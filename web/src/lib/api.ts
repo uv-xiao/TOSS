@@ -569,15 +569,17 @@ const PROJECT_ASSET_CONTENT_CACHE = "typst.project.asset.content.v1";
 
 function assetContentVersionKey(asset: {
   id: string;
+  object_key: string;
   created_at: string;
   size_bytes: number;
   content_type: string;
 }) {
-  return `${asset.id}:${asset.created_at}:${asset.size_bytes}:${asset.content_type}`;
+  return `${asset.id}:${asset.object_key}:${asset.created_at}:${asset.size_bytes}:${asset.content_type}`;
 }
 
 function projectAssetRawUrl(projectId: string, asset: {
   id: string;
+  object_key: string;
   created_at: string;
   size_bytes: number;
   content_type: string;

@@ -12,6 +12,7 @@ export type ProjectTreeNodeView = {
 
 export type AssetMeta = {
   id?: string;
+  objectKey?: string;
   contentType: string;
   sizeBytes?: number;
   createdAt?: string;

@@ -208,6 +208,8 @@ export function WorkspacePage({
   const revisionMoreSeqRef = useRef(0);
   const assetLoadInflightRef = useRef<Map<string, Promise<string | null>>>(new Map());
   const assetLoadFailedRef = useRef<Set<string>>(new Set());
+  const remoteSyncInflightRef = useRef(false);
+  const syncWorkspaceFromServerRef = useRef<() => Promise<void>>(async () => undefined);
 
   const [nodes, setNodes] = useState<ProjectNode[]>([]);
   const [entryFilePath, setEntryFilePath] = useState("main.typ");
@@ -221,6 +223,20 @@ export function WorkspacePage({
   const [compileDiagnostics, setCompileDiagnostics] = useState<CompileDiagnostic[]>([]);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [workspaceLoaded, setWorkspaceLoaded] = useState(false);
+  const [workspaceSyncPending, setWorkspaceSyncPending] = useState(false);
+  const [assetHydrationProgress, setAssetHydrationProgress] = useState<{
+    active: boolean;
+    loaded: number;
+    total: number;
+    loadedBytes: number;
+    totalBytes: number;
+  }>({
+    active: false,
+    loaded: 0,
+    total: 0,
+    loadedBytes: 0,
+    totalBytes: 0
+  });
   const [gitRepoUrl, setGitRepoUrl] = useState("");
   const [revisions, setRevisions] = useState<Revision[]>([]);
   const [revisionsHasMore, setRevisionsHasMore] = useState(true);
@@ -264,6 +280,10 @@ export function WorkspacePage({
   const [typstRuntimeStatus, setTypstRuntimeStatus] = useState<TypstRuntimeStatus>({ stage: "idle" });
   const [apiReachable, setApiReachable] = useState(true);
   const [copiedControl, setCopiedControl] = useState<string | null>(null);
+  const assetMetaRef = useRef<Record<string, AssetMeta>>({});
+  const assetBase64Ref = useRef<Record<string, string>>({});
+  const activePathRef = useRef("main.typ");
+  const entryFilePathRef = useRef("main.typ");
 
   const {
     filesPanelWidth,
@@ -287,12 +307,20 @@ export function WorkspacePage({
   const sourceDocs = isRevisionMode ? revisionDocs : docs;
 
   function toProjectAssetMeta(path: string, meta: AssetMeta): ProjectAsset | null {
-    if (!projectId || !meta.id || !meta.createdAt || typeof meta.sizeBytes !== "number") return null;
+    if (
+      !projectId ||
+      !meta.id ||
+      !meta.objectKey ||
+      !meta.createdAt ||
+      typeof meta.sizeBytes !== "number"
+    ) {
+      return null;
+    }
     return {
       id: meta.id,
       project_id: projectId,
       path,
-      object_key: "",
+      object_key: meta.objectKey,
       content_type: meta.contentType || "application/octet-stream",
       size_bytes: meta.sizeBytes,
       uploaded_by: null,
@@ -302,11 +330,11 @@ export function WorkspacePage({
 
   async function ensureLiveAssetLoaded(path: string): Promise<string | null> {
     if (!projectId || isRevisionMode) return null;
-    const existing = assetBase64[path];
+    const existing = assetBase64Ref.current[path];
     if (existing) return existing;
     const inflight = assetLoadInflightRef.current.get(path);
     if (inflight) return inflight;
-    const meta = assetMeta[path];
+    const meta = assetMetaRef.current[path];
     if (!meta) return null;
     const asset = toProjectAssetMeta(path, meta);
     if (!asset) return null;
@@ -316,7 +344,9 @@ export function WorkspacePage({
         const b64 = response.content_base64;
         setAssetBase64((prev) => {
           if (prev[path] === b64) return prev;
-          return { ...prev, [path]: b64 };
+          const next = { ...prev, [path]: b64 };
+          assetBase64Ref.current = next;
+          return next;
         });
         assetLoadFailedRef.current.delete(path);
         return b64;
@@ -360,6 +390,8 @@ export function WorkspacePage({
     effectiveUserId,
     effectiveUserName
   });
+  const docTextRef = useRef(docText);
+  const hasActiveLiveDocRef = useRef(hasActiveLiveDoc);
 
   const compileDocuments = useMemo(() => {
     const baseDocs = { ...sourceDocs };
@@ -372,6 +404,10 @@ export function WorkspacePage({
     () => Object.entries(sourceAssetBase64).map(([path, contentBase64]) => ({ path, contentBase64 })),
     [sourceAssetBase64]
   );
+  const requiredAssetPaths = useMemo(() => {
+    if (isRevisionMode) return [] as string[];
+    return collectReferencedAssetPaths(compileDocuments, assetMeta);
+  }, [assetMeta, compileDocuments, isRevisionMode]);
   const assetFontData = useMemo(
     () =>
       Object.entries(sourceAssetBase64)
@@ -491,6 +527,30 @@ export function WorkspacePage({
   };
 
   useEffect(() => {
+    assetMetaRef.current = assetMeta;
+  }, [assetMeta]);
+
+  useEffect(() => {
+    assetBase64Ref.current = assetBase64;
+  }, [assetBase64]);
+
+  useEffect(() => {
+    activePathRef.current = activePath;
+  }, [activePath]);
+
+  useEffect(() => {
+    entryFilePathRef.current = entryFilePath;
+  }, [entryFilePath]);
+
+  useEffect(() => {
+    docTextRef.current = docText;
+  }, [docText]);
+
+  useEffect(() => {
+    hasActiveLiveDocRef.current = hasActiveLiveDoc;
+  }, [hasActiveLiveDoc]);
+
+  useEffect(() => {
     const unsub = subscribeTypstRuntimeStatus((status) => setTypstRuntimeStatus(status));
     return () => unsub();
   }, []);
@@ -544,6 +604,13 @@ export function WorkspacePage({
       loadedBytes: 0,
       totalBytes: null
     });
+    setAssetHydrationProgress({
+      active: false,
+      loaded: 0,
+      total: 0,
+      loadedBytes: 0,
+      totalBytes: 0
+    });
     setCompileErrors([]);
     setCompileDiagnostics([]);
     setVectorData(null);
@@ -556,6 +623,7 @@ export function WorkspacePage({
       setWorkspaceError(message);
       setApiReachable(false);
       setWorkspaceLoaded(true);
+      setWorkspaceSyncPending(false);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
@@ -731,6 +799,14 @@ export function WorkspacePage({
   }, [projectId, workspaceLoaded]);
 
   useEffect(() => {
+    if (!projectId || !workspaceLoaded || isRevisionMode || workspaceSyncPending) return;
+    const timer = window.setInterval(() => {
+      syncWorkspaceFromServerRef.current().catch(() => undefined);
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [isRevisionMode, projectId, workspaceLoaded, workspaceSyncPending]);
+
+  useEffect(() => {
     if (!projectId || !activePath || isRevisionMode || !workspaceLoaded || !realtimeDocReady) return;
     if (!hasActiveLiveDoc) return;
     if (docText === lastSavedDocRef.current) return;
@@ -760,16 +836,41 @@ export function WorkspacePage({
   useEffect(() => {
     if (!projectId || !workspaceLoaded || isRevisionMode || !activePath) return;
     if (isTextFile(activePath)) return;
-    if (assetBase64[activePath]) return;
-    void ensureLiveAssetLoaded(activePath);
+    if (assetBase64Ref.current[activePath]) return;
+    let cancelled = false;
+    (async () => {
+      await syncWorkspaceFromServerRef.current().catch(() => undefined);
+      if (cancelled) return;
+      if (assetBase64Ref.current[activePath]) return;
+      await ensureLiveAssetLoaded(activePath);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [activePath, assetBase64, isRevisionMode, projectId, workspaceLoaded]);
 
   useEffect(() => {
     if (!projectId || !workspaceLoaded || isRevisionMode) return;
-    const referenced = collectReferencedAssetPaths(compileDocuments, assetMeta);
-    const missing = referenced.filter(
+    const total = requiredAssetPaths.length;
+    const loaded = requiredAssetPaths.filter((path) => !!assetBase64[path]).length;
+    const totalBytes = requiredAssetPaths.reduce(
+      (sum, path) => sum + Math.max(0, assetMeta[path]?.sizeBytes || 0),
+      0
+    );
+    const loadedBytes = requiredAssetPaths.reduce(
+      (sum, path) => sum + (assetBase64[path] ? Math.max(0, assetMeta[path]?.sizeBytes || 0) : 0),
+      0
+    );
+    const missing = requiredAssetPaths.filter(
       (path) => !assetBase64[path] && !assetLoadFailedRef.current.has(path)
     );
+    setAssetHydrationProgress({
+      active: missing.length > 0,
+      loaded,
+      total,
+      loadedBytes,
+      totalBytes
+    });
     if (missing.length === 0) return;
     let cancelled = false;
     (async () => {
@@ -781,10 +882,11 @@ export function WorkspacePage({
     return () => {
       cancelled = true;
     };
-  }, [assetBase64, assetMeta, compileDocuments, isRevisionMode, projectId, workspaceLoaded]);
+  }, [assetBase64, assetMeta, isRevisionMode, projectId, requiredAssetPaths, workspaceLoaded]);
 
   useEffect(() => {
     if (!projectId || !workspaceLoaded) return;
+    if (!isRevisionMode && workspaceSyncPending) return;
     const applyCompileOutput = (output: CompileOutput) => {
       setVectorData(output.vectorData);
       setPdfData(output.pdfData);
@@ -802,8 +904,7 @@ export function WorkspacePage({
       return;
     }
     if (!isRevisionMode) {
-      const referenced = collectReferencedAssetPaths(compileDocuments, assetMeta);
-      const hasPendingAssets = referenced.some(
+      const hasPendingAssets = requiredAssetPaths.some(
         (path) => !assetBase64[path] && !assetLoadFailedRef.current.has(path)
       );
       if (hasPendingAssets) return;
@@ -839,8 +940,10 @@ export function WorkspacePage({
     fontData,
     isRevisionMode,
     projectId,
+    requiredAssetPaths,
     sourceEntryFilePath,
-    workspaceLoaded
+    workspaceLoaded,
+    workspaceSyncPending
   ]);
 
   useEffect(() => {
@@ -910,8 +1013,10 @@ export function WorkspacePage({
     if (!projectId) return;
     if (project?.is_template && !project.can_read) {
       setWorkspaceLoaded(true);
+      setWorkspaceSyncPending(false);
       return;
     }
+    setWorkspaceSyncPending(true);
     setWorkspaceLoaded(false);
     const anyCached = loadProjectSnapshotFromCache(projectId);
     const serverLastEditedMs = parseIsoMs(project?.last_edited_at);
@@ -967,6 +1072,7 @@ export function WorkspacePage({
         }
         setWorkspaceError("Working from cached project data (offline mode).");
         setApiReachable(false);
+        setWorkspaceSyncPending(false);
         return null;
       }
       throw err;
@@ -1020,11 +1126,13 @@ export function WorkspacePage({
     for (const asset of assetsRes.assets) {
       nextAssetMeta[asset.path] = {
         id: asset.id,
+        objectKey: asset.object_key,
         contentType: asset.content_type,
         sizeBytes: asset.size_bytes,
         createdAt: asset.created_at
       };
     }
+    assetMetaRef.current = nextAssetMeta;
     setAssetMeta(nextAssetMeta);
     assetLoadFailedRef.current.clear();
     setAssetBase64((prev) => {
@@ -1032,6 +1140,7 @@ export function WorkspacePage({
       for (const [path, value] of Object.entries(prev)) {
         if (nextAssetMeta[path]) next[path] = value;
       }
+      assetBase64Ref.current = next;
       return next;
     });
 
@@ -1044,7 +1153,94 @@ export function WorkspacePage({
     setApiReachable(true);
     setWorkspaceError(null);
     setWorkspaceLoaded(true);
+    setWorkspaceSyncPending(false);
   };
+
+  const syncWorkspaceFromServer = async () => {
+    if (!projectId || isRevisionMode || remoteSyncInflightRef.current) return;
+    remoteSyncInflightRef.current = true;
+    try {
+      const [treeRes, settings, docsRes, assetsRes] = await Promise.all([
+        getProjectTree(projectId),
+        getProjectSettings(projectId).catch(() => ({
+          entry_file_path: entryFilePathRef.current || "main.typ"
+        })),
+        listDocuments(projectId),
+        listProjectAssets(projectId)
+      ]);
+      setApiReachable(true);
+
+      const nextEntry =
+        settings.entry_file_path || treeRes.entry_file_path || entryFilePathRef.current || "main.typ";
+      const nextNodes = treeRes.nodes;
+      setNodes(nextNodes);
+      setEntryFilePath(nextEntry);
+
+      const incomingDocs: Record<string, string> = {};
+      for (const doc of docsRes.documents) incomingDocs[doc.path] = doc.content;
+      const currentActivePath = activePathRef.current;
+      const localDirty =
+        !!currentActivePath &&
+        hasActiveLiveDocRef.current &&
+        Object.prototype.hasOwnProperty.call(incomingDocs, currentActivePath) &&
+        docTextRef.current !== lastSavedDocRef.current;
+      if (localDirty && currentActivePath) {
+        incomingDocs[currentActivePath] = docTextRef.current;
+      }
+      setDocs(incomingDocs);
+      saveProjectSnapshotToCache({
+        projectId,
+        entryFilePath: nextEntry,
+        nodes: nextNodes,
+        docs: incomingDocs
+      });
+
+      const nextAssetMeta: Record<string, AssetMeta> = {};
+      for (const asset of assetsRes.assets) {
+        nextAssetMeta[asset.path] = {
+          id: asset.id,
+          objectKey: asset.object_key,
+          contentType: asset.content_type,
+          sizeBytes: asset.size_bytes,
+          createdAt: asset.created_at
+        };
+      }
+      const previousMeta = assetMetaRef.current;
+      assetMetaRef.current = nextAssetMeta;
+      setAssetMeta(nextAssetMeta);
+      setAssetBase64((previous) => {
+        const next: Record<string, string> = {};
+        for (const [path, value] of Object.entries(previous)) {
+          const latest = nextAssetMeta[path];
+          const old = previousMeta[path];
+          if (!latest || !old) continue;
+          const sameVersion =
+            latest.id === old.id &&
+            latest.objectKey === old.objectKey &&
+            latest.createdAt === old.createdAt &&
+            latest.sizeBytes === old.sizeBytes &&
+            latest.contentType === old.contentType;
+          if (sameVersion) next[path] = value;
+        }
+        assetBase64Ref.current = next;
+        return next;
+      });
+
+      const filePaths = new Set(nextNodes.filter((node) => node.kind === "file").map((node) => node.path));
+      const currentPath = activePathRef.current;
+      if (!currentPath || !filePaths.has(currentPath)) {
+        const fallbackPath =
+          nextNodes.find((node) => node.kind === "file")?.path || nextEntry || "main.typ";
+        setActivePath(fallbackPath);
+        setExpandedDirs((prev) => expandAncestors(fallbackPath, prev));
+      }
+    } catch {
+      setApiReachable(false);
+    } finally {
+      remoteSyncInflightRef.current = false;
+    }
+  };
+  syncWorkspaceFromServerRef.current = syncWorkspaceFromServer;
 
   function addPath(kind: "file" | "directory", parentPath = "") {
     if (!projectId || !canWrite || isRevisionMode) return;
@@ -1852,6 +2048,8 @@ export function WorkspacePage({
               previewPercent={previewPercent}
               pdfData={pdfData}
               typstRuntimeStatus={typstRuntimeStatus}
+              workspaceSyncPending={workspaceSyncPending}
+              assetHydrationProgress={assetHydrationProgress}
               vectorData={vectorData}
               previewIsPanning={previewIsPanning}
               compileDiagnostics={compileDiagnostics}
