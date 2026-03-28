@@ -30,7 +30,7 @@ struct PushReject {
 }
 
 fn pkt_line(payload: &str) -> Vec<u8> {
-    let total_len = payload.as_bytes().len() + 4;
+    let total_len = payload.len() + 4;
     format!("{total_len:04x}{payload}").into_bytes()
 }
 

@@ -722,23 +722,6 @@ export function WorkspacePage({
   }, [activePath, docText, docs, entryFilePath, isRevisionMode, nodes, projectId, workspaceLoaded]);
 
   useEffect(() => {
-    if (!projectId || !workspaceLoaded || !canManageProject) return;
-    Promise.all([
-      listProjectShareLinks(projectId).catch(() => []),
-      listProjectOrganizationAccess(projectId).catch(() => []),
-      listProjectTemplateOrganizationAccess(projectId).catch(() => []),
-      listProjectAccessUsers(projectId).then((res) => res.users).catch(() => [])
-    ])
-      .then(([shares, orgAccess, templateOrgAccess, users]) => {
-        setShareLinks(shares);
-        setProjectOrgAccess(orgAccess);
-        setProjectTemplateOrgAccess(templateOrgAccess);
-        setProjectAccessUsers(users);
-      })
-      .catch(() => undefined);
-  }, [canManageProject, projectId, workspaceLoaded]);
-
-  useEffect(() => {
     let cancelled = false;
     const run = async () => {
       try {

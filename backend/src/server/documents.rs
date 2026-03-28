@@ -30,30 +30,14 @@ fn parse_co_authors(message: &str) -> Vec<(String, String)> {
     out
 }
 
-fn guess_content_type(path: &str) -> String {
-    let lower = path.to_ascii_lowercase();
-    if lower.ends_with(".png") {
-        "image/png".to_string()
-    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
-        "image/jpeg".to_string()
-    } else if lower.ends_with(".gif") {
-        "image/gif".to_string()
-    } else if lower.ends_with(".svg") {
-        "image/svg+xml".to_string()
-    } else if lower.ends_with(".pdf") {
-        "application/pdf".to_string()
-    } else if lower.ends_with(".ttf") {
-        "font/ttf".to_string()
-    } else if lower.ends_with(".otf") {
-        "font/otf".to_string()
-    } else if lower.ends_with(".woff") {
-        "font/woff".to_string()
-    } else if lower.ends_with(".woff2") {
-        "font/woff2".to_string()
-    } else {
-        "application/octet-stream".to_string()
-    }
-}
+type RevisionCommitRow = (
+    String,
+    String,
+    DateTime<Utc>,
+    String,
+    String,
+    Vec<(String, String)>,
+);
 
 fn load_git_state_from_commit(
     repo: &Repository,
@@ -191,8 +175,7 @@ async fn list_revisions(
             .push(head_oid)
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-        let mut rows: Vec<(String, String, DateTime<Utc>, String, String, Vec<(String, String)>)> =
-            Vec::with_capacity(limit);
+        let mut rows: Vec<RevisionCommitRow> = Vec::with_capacity(limit);
         let mut passed_before_cursor = before_cursor.is_none();
         for oid_result in revwalk {
             let oid = oid_result.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -425,7 +408,7 @@ struct RevisionTransferCandidate {
 
 fn estimate_asset_b64_bytes(size_bytes: i64) -> usize {
     let size = usize::try_from(size_bytes.max(0)).unwrap_or(0);
-    ((size + 2) / 3) * 4
+    size.div_ceil(3) * 4
 }
 
 fn build_transfer_candidate(

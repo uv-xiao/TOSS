@@ -301,6 +301,31 @@ fn is_document_text_path(path: &str) -> bool {
     .any(|ext| lower.ends_with(ext))
 }
 
+fn guess_content_type(path: &str) -> String {
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".png") {
+        "image/png".to_string()
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        "image/jpeg".to_string()
+    } else if lower.ends_with(".gif") {
+        "image/gif".to_string()
+    } else if lower.ends_with(".svg") {
+        "image/svg+xml".to_string()
+    } else if lower.ends_with(".pdf") {
+        "application/pdf".to_string()
+    } else if lower.ends_with(".ttf") {
+        "font/ttf".to_string()
+    } else if lower.ends_with(".otf") {
+        "font/otf".to_string()
+    } else if lower.ends_with(".woff") {
+        "font/woff".to_string()
+    } else if lower.ends_with(".woff2") {
+        "font/woff2".to_string()
+    } else {
+        "application/octet-stream".to_string()
+    }
+}
+
 fn looks_like_text(bytes: &[u8]) -> bool {
     if bytes.contains(&0) {
         return false;
@@ -1011,7 +1036,7 @@ fn parse_cgi_http_backend_output(raw: &[u8]) -> (StatusCode, Vec<(String, String
     let mut headers = Vec::new();
     for line in String::from_utf8_lossy(head).lines() {
         if let Some(rest) = line.strip_prefix("Status:") {
-            let code = rest.trim().split_whitespace().next().unwrap_or("200");
+            let code = rest.split_whitespace().next().unwrap_or("200");
             if let Ok(c) = code.parse::<u16>() {
                 status = StatusCode::from_u16(c).unwrap_or(StatusCode::OK);
             }

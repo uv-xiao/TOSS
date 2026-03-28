@@ -611,6 +611,19 @@ try {
     .first()
     .waitFor({ state: "hidden", timeout: 10000 });
 
+  await ensureDirectoryExpanded(pageA, "figures");
+  await pageA.locator(".tree-label", { hasText: "shape.svg" }).first().click();
+  currentStep = "svg-file-preview";
+  await pageA.locator(".file-preview-image").first().waitFor({ timeout: 10000 });
+  const svgShowsLoading = await pageA.evaluate(() => {
+    const metaSmall = document.querySelector(".file-preview .file-preview-meta small");
+    const text = (metaSmall?.textContent || "").toLowerCase();
+    return text.includes("loading") || text.includes("加载");
+  });
+  if (svgShowsLoading) {
+    throw new Error("SVG preview still reports loading state after file selection");
+  }
+
   await pageA.locator(".tree-label", { hasText: "blob.bin" }).first().click();
   currentStep = "unsupported-file-preview";
   await pageA.getByText("This file is not editable in web editor. Edit offline and sync with Git.").waitFor({
