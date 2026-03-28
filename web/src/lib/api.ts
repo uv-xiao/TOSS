@@ -472,8 +472,14 @@ export async function deleteProjectFile(projectId: string, path: string) {
   if (!res.ok) await throwApiError(res, "Unable to delete path");
 }
 
-export async function listDocuments(projectId: string, path?: string) {
-  const query = path ? `?path=${encodeURIComponent(path)}` : "";
+export async function listDocuments(
+  projectId: string,
+  options?: { path?: string; sinceUpdatedAt?: string | null }
+) {
+  const params = new URLSearchParams();
+  if (options?.path) params.set("path", options.path);
+  if (options?.sinceUpdatedAt) params.set("since_updated_at", options.sinceUpdatedAt);
+  const query = params.size > 0 ? `?${params.toString()}` : "";
   const res = await fetch(apiUrl(`/v1/projects/${projectId}/documents${query}`), {
     cache: "no-store",
     credentials: authCredentials(),

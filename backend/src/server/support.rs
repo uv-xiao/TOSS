@@ -291,8 +291,107 @@ fn clear_repo_working_tree(repo_path: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn is_document_text_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    [
+        ".typ", ".txt", ".md", ".json", ".toml", ".yaml", ".yml", ".csv", ".xml", ".html",
+        ".css", ".js", ".ts", ".tsx", ".jsx",
+    ]
+    .iter()
+    .any(|ext| lower.ends_with(ext))
+}
+
 fn looks_like_text(bytes: &[u8]) -> bool {
+    if bytes.contains(&0) {
+        return false;
+    }
     std::str::from_utf8(bytes).is_ok()
+}
+
+async fn normalize_non_text_documents_to_assets(
+    state: &AppState,
+    project_id: Uuid,
+) -> Result<(), String> {
+    let rows = sqlx::query(
+        "select id, path, content
+         from documents
+         where project_id = $1",
+    )
+    .bind(project_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    for row in rows {
+        let doc_id: Uuid = row.get("id");
+        let path: String = row.get("path");
+        if is_document_text_path(&path) {
+            continue;
+        }
+        let bytes = row.get::<String, _>("content").into_bytes();
+        let existing_asset = sqlx::query(
+            "select id, object_key
+             from project_assets
+             where project_id = $1 and path = $2
+             limit 1",
+        )
+        .bind(project_id)
+        .bind(&path)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| e.to_string())?;
+        let asset_id = existing_asset
+            .as_ref()
+            .map(|value| value.get::<Uuid, _>("id"))
+            .unwrap_or_else(Uuid::new_v4);
+        let default_object_key = format!("projects/{project_id}/assets/{asset_id}");
+        let object_key = existing_asset
+            .as_ref()
+            .map(|value| value.get::<String, _>("object_key"))
+            .filter(|value| !value.trim().is_empty() && !value.starts_with("inline://"))
+            .unwrap_or(default_object_key);
+        let content_type = guess_content_type(&path);
+        let now = Utc::now();
+        let (stored_object_key, inline_data) = if let Some(storage) = state.storage.clone() {
+            put_object(&storage, &object_key, &content_type, bytes.clone())
+                .await
+                .map_err(|e| e.to_string())?;
+            (object_key, None)
+        } else {
+            (format!("inline://{asset_id}"), Some(bytes.clone()))
+        };
+        sqlx::query(
+            "insert into project_assets
+             (id, project_id, path, object_key, content_type, size_bytes, uploaded_by, created_at, inline_data)
+             values ($1, $2, $3, $4, $5, $6, null, $7, $8)
+             on conflict (project_id, path)
+             do update set
+               object_key = excluded.object_key,
+               content_type = excluded.content_type,
+               size_bytes = excluded.size_bytes,
+               created_at = excluded.created_at,
+               inline_data = excluded.inline_data",
+        )
+        .bind(asset_id)
+        .bind(project_id)
+        .bind(&path)
+        .bind(stored_object_key)
+        .bind(content_type)
+        .bind(i64::try_from(bytes.len()).unwrap_or(i64::MAX))
+        .bind(now)
+        .bind(inline_data)
+        .execute(&state.db)
+        .await
+        .map_err(|e| e.to_string())?;
+        sqlx::query("delete from documents where project_id = $1 and id = $2")
+            .bind(project_id)
+            .bind(doc_id)
+            .execute(&state.db)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
 }
 
 async fn sync_project_documents_to_repo(
@@ -300,6 +399,7 @@ async fn sync_project_documents_to_repo(
     project_id: Uuid,
     repo_path: &str,
 ) -> Result<(), String> {
+    normalize_non_text_documents_to_assets(state, project_id).await?;
     clear_repo_working_tree(repo_path)?;
     let doc_rows = sqlx::query("select path, content from documents where project_id = $1")
         .bind(project_id)
@@ -408,7 +508,7 @@ async fn sync_repo_documents_to_project(
             repo_dirs.insert(acc.clone());
         }
 
-        if looks_like_text(&bytes) {
+        if is_document_text_path(&clean_path) && looks_like_text(&bytes) {
             let content = String::from_utf8(bytes).map_err(|e| e.to_string())?;
             sqlx::query(
                 "insert into documents (id, project_id, path, content, updated_at)
@@ -450,13 +550,15 @@ async fn sync_repo_documents_to_project(
             format!("projects/{project_id}/assets/{asset_id}")
         };
         let (stored_object_key, inline_data) = if let Some(storage) = state.storage.clone() {
-            put_object(&storage, &object_key, "application/octet-stream", bytes.clone())
+            let content_type = guess_content_type(&clean_path);
+            put_object(&storage, &object_key, &content_type, bytes.clone())
                 .await
                 .map_err(|e| e.to_string())?;
             (object_key, None)
         } else {
             (format!("inline://{asset_id}"), Some(bytes.clone()))
         };
+        let content_type = guess_content_type(&clean_path);
         sqlx::query(
             "insert into project_assets
              (id, project_id, path, object_key, content_type, size_bytes, uploaded_by, created_at, inline_data)
@@ -473,7 +575,7 @@ async fn sync_repo_documents_to_project(
         .bind(project_id)
         .bind(&clean_path)
         .bind(stored_object_key)
-        .bind("application/octet-stream")
+        .bind(content_type)
         .bind(bytes.len() as i64)
         .bind(now)
         .bind(inline_data)

@@ -1503,6 +1503,9 @@ async fn get_project_tree(
     Path(project_id): Path<Uuid>,
 ) -> Result<Json<ProjectTreeResponse>, StatusCode> {
     ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
+    normalize_non_text_documents_to_assets(&state, project_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let rows = sqlx::query("select path from documents where project_id = $1 order by path asc")
         .bind(project_id)
         .fetch_all(&state.db)
@@ -1535,6 +1538,9 @@ async fn get_project_tree(
     for row in rows {
         let file_path: String = row.get("path");
         let clean = sanitize_project_path(&file_path)?;
+        if !is_document_text_path(&clean) {
+            continue;
+        }
         let mut acc = String::new();
         let parts: Vec<&str> = clean.split('/').collect();
         for part in parts.iter().take(parts.len().saturating_sub(1)) {
@@ -1614,20 +1620,64 @@ async fn create_project_file(
             mark_project_dirty(&state.db, project_id, Some(actor)).await;
         }
         _ => {
-            sqlx::query(
-                "insert into documents (id, project_id, path, content, updated_at)
-                 values ($1, $2, $3, $4, $5)
-                 on conflict (project_id, path)
-                 do update set content = excluded.content, updated_at = excluded.updated_at",
-            )
-            .bind(Uuid::new_v4())
-            .bind(project_id)
-            .bind(&path)
-            .bind(input.content.unwrap_or_default())
-            .bind(now)
-            .execute(&state.db)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            if is_document_text_path(&path) {
+                sqlx::query(
+                    "insert into documents (id, project_id, path, content, updated_at)
+                     values ($1, $2, $3, $4, $5)
+                     on conflict (project_id, path)
+                     do update set content = excluded.content, updated_at = excluded.updated_at",
+                )
+                .bind(Uuid::new_v4())
+                .bind(project_id)
+                .bind(&path)
+                .bind(input.content.unwrap_or_default())
+                .bind(now)
+                .execute(&state.db)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            } else {
+                let asset_id = Uuid::new_v4();
+                let object_key = format!("projects/{project_id}/assets/{asset_id}");
+                let empty_bytes: Vec<u8> = Vec::new();
+                let content_type = guess_content_type(&path);
+                let (stored_object_key, inline_data) = if let Some(storage) = state.storage.clone() {
+                    put_object(&storage, &object_key, &content_type, empty_bytes.clone())
+                        .await
+                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                    (object_key, None)
+                } else {
+                    (format!("inline://{asset_id}"), Some(empty_bytes))
+                };
+                sqlx::query(
+                    "insert into project_assets
+                     (id, project_id, path, object_key, content_type, size_bytes, uploaded_by, created_at, inline_data)
+                     values ($1, $2, $3, $4, $5, 0, $6, $7, $8)
+                     on conflict (project_id, path)
+                     do update set
+                       object_key = excluded.object_key,
+                       content_type = excluded.content_type,
+                       size_bytes = excluded.size_bytes,
+                       uploaded_by = excluded.uploaded_by,
+                       created_at = excluded.created_at,
+                       inline_data = excluded.inline_data",
+                )
+                .bind(asset_id)
+                .bind(project_id)
+                .bind(&path)
+                .bind(stored_object_key)
+                .bind(content_type)
+                .bind(Some(actor))
+                .bind(now)
+                .bind(inline_data)
+                .execute(&state.db)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                let _ = sqlx::query("delete from documents where project_id = $1 and path = $2")
+                    .bind(project_id)
+                    .bind(&path)
+                    .execute(&state.db)
+                    .await;
+            }
             mark_project_dirty(&state.db, project_id, Some(actor)).await;
         }
     }

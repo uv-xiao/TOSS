@@ -540,6 +540,7 @@ pub struct UpsertDocumentByPathInput {
 #[derive(Deserialize)]
 pub struct ListDocumentsQuery {
     pub path: Option<String>,
+    pub since_updated_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Deserialize, Default)]

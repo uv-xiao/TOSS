@@ -188,6 +188,19 @@ function parseIsoMs(value?: string | null) {
   return Number.isFinite(ms) ? ms : null;
 }
 
+function maxDocumentUpdatedAtIso(
+  documents: Array<{ updated_at: string }>,
+  currentIso?: string | null
+) {
+  let maxMs = parseIsoMs(currentIso ?? null) ?? Number.NEGATIVE_INFINITY;
+  for (const document of documents) {
+    const nextMs = parseIsoMs(document.updated_at);
+    if (nextMs !== null && nextMs > maxMs) maxMs = nextMs;
+  }
+  if (Number.isFinite(maxMs)) return new Date(maxMs).toISOString();
+  return null;
+}
+
 type WorkspacePageProps = {
   projects: Project[];
   organizations: OrganizationMembership[];
@@ -221,6 +234,7 @@ export function WorkspacePage({
   const assetLoadInflightRef = useRef<Map<string, Promise<string | null>>>(new Map());
   const assetLoadFailedRef = useRef<Set<string>>(new Set());
   const remoteSyncInflightRef = useRef(false);
+  const lastDocsSyncAtRef = useRef<string | null>(null);
   const syncWorkspaceFromServerRef = useRef<() => Promise<void>>(async () => undefined);
 
   const [nodes, setNodes] = useState<ProjectNode[]>([]);
@@ -682,6 +696,7 @@ export function WorkspacePage({
     setDocText("");
     setContextMenu(null);
     setProjectTemplateOrgAccess([]);
+    lastDocsSyncAtRef.current = null;
     refreshProjectData().catch((err) => {
       const message = err instanceof Error ? err.message : "Unable to load workspace";
       setWorkspaceError(message);
@@ -777,73 +792,6 @@ export function WorkspacePage({
     if (!isRevisionMode) return;
     setDocText(revisionDocs[activePath] ?? "");
   }, [activePath, isRevisionMode, revisionDocs, setDocText]);
-
-  useEffect(() => {
-    if (!projectId || !workspaceLoaded || isRevisionMode || !realtimeDocReady) return;
-    const timer = window.setInterval(() => {
-      listDocuments(projectId)
-        .then((response) => {
-          setApiReachable(true);
-          const incomingByPath: Record<string, string> = {};
-          for (const doc of response.documents) incomingByPath[doc.path] = doc.content;
-          const activeIncoming = activePath ? incomingByPath[activePath] : undefined;
-          const localDirty = docText !== lastSavedDocRef.current;
-
-          if (
-            activePath &&
-            typeof activeIncoming === "string" &&
-            activeIncoming !== lastSavedDocRef.current &&
-            !localDirty
-          ) {
-            const ytext = ytextRef.current;
-            if (ytext) {
-              const current = ytext.toString();
-              if (current !== activeIncoming) {
-                ytext.doc?.transact(() => {
-                  ytext.delete(0, ytext.length);
-                  ytext.insert(0, activeIncoming);
-                }, "remote");
-              }
-            } else if (docText !== activeIncoming) {
-              setDocText(activeIncoming);
-            }
-            lastSavedDocRef.current = activeIncoming;
-          }
-
-          setDocs((previous) => {
-            let changed = false;
-            const next = { ...previous };
-            for (const [path, content] of Object.entries(incomingByPath)) {
-              if (next[path] !== content) {
-                if (path === activePath && localDirty) continue;
-                next[path] = content;
-                changed = true;
-              }
-            }
-            for (const path of Object.keys(next)) {
-              if (path === activePath && localDirty) continue;
-              if (!(path in incomingByPath)) {
-                delete next[path];
-                changed = true;
-              }
-            }
-            return changed ? next : previous;
-          });
-        })
-        .catch(() => setApiReachable(false));
-    }, 2200);
-    return () => window.clearInterval(timer);
-  }, [
-    activePath,
-    docText,
-    isRevisionMode,
-    lastSavedDocRef,
-    projectId,
-    realtimeDocReady,
-    setDocText,
-    workspaceLoaded,
-    ytextRef
-  ]);
 
   useEffect(() => {
     if (!projectId || !workspaceLoaded) return;
@@ -1186,6 +1134,7 @@ export function WorkspacePage({
 
     const nextDocs: Record<string, string> = {};
     for (const doc of docsRes.documents) nextDocs[doc.path] = doc.content;
+    lastDocsSyncAtRef.current = maxDocumentUpdatedAtIso(docsRes.documents, new Date().toISOString());
     setDocs(nextDocs);
     saveProjectSnapshotToCache({
       projectId,
@@ -1241,7 +1190,7 @@ export function WorkspacePage({
         getProjectSettings(projectId).catch(() => ({
           entry_file_path: entryFilePathRef.current || "main.typ"
         })),
-        listDocuments(projectId),
+        listDocuments(projectId, { sinceUpdatedAt: lastDocsSyncAtRef.current }),
         listProjectAssets(projectId)
       ]);
       setApiReachable(true);
@@ -1254,21 +1203,71 @@ export function WorkspacePage({
 
       const incomingDocs: Record<string, string> = {};
       for (const doc of docsRes.documents) incomingDocs[doc.path] = doc.content;
+      if (docsRes.documents.length > 0) {
+        lastDocsSyncAtRef.current = maxDocumentUpdatedAtIso(
+          docsRes.documents,
+          lastDocsSyncAtRef.current
+        );
+      }
       const currentActivePath = activePathRef.current;
       const localDirty =
         !!currentActivePath &&
         hasActiveLiveDocRef.current &&
-        Object.prototype.hasOwnProperty.call(incomingDocs, currentActivePath) &&
         docTextRef.current !== lastSavedDocRef.current;
-      if (localDirty && currentActivePath) {
-        incomingDocs[currentActivePath] = docTextRef.current;
+      const activeIncoming = currentActivePath ? incomingDocs[currentActivePath] : undefined;
+      if (
+        currentActivePath &&
+        typeof activeIncoming === "string" &&
+        activeIncoming !== lastSavedDocRef.current &&
+        !localDirty
+      ) {
+        const ytext = ytextRef.current;
+        if (ytext) {
+          const current = ytext.toString();
+          if (current !== activeIncoming) {
+            ytext.doc?.transact(() => {
+              ytext.delete(0, ytext.length);
+              ytext.insert(0, activeIncoming);
+            }, "remote");
+          }
+        } else if (docTextRef.current !== activeIncoming) {
+          setDocText(activeIncoming);
+        }
+        lastSavedDocRef.current = activeIncoming;
       }
-      setDocs(incomingDocs);
+      const textFilePaths = new Set(
+        nextNodes.filter((node) => node.kind === "file" && isTextFile(node.path)).map((node) => node.path)
+      );
+      let docsForCache: Record<string, string> = {};
+      setDocs((previous) => {
+        let changed = false;
+        const next = { ...previous };
+        for (const [path, content] of Object.entries(incomingDocs)) {
+          if (!isTextFile(path)) continue;
+          if (path === currentActivePath && localDirty) continue;
+          if (next[path] !== content) {
+            next[path] = content;
+            changed = true;
+          }
+        }
+        for (const path of Object.keys(next)) {
+          if (!textFilePaths.has(path)) {
+            if (path === currentActivePath && localDirty) {
+              next[path] = docTextRef.current;
+              continue;
+            }
+            delete next[path];
+            changed = true;
+          }
+        }
+        docsForCache = changed ? next : previous;
+        return changed ? next : previous;
+      });
       saveProjectSnapshotToCache({
         projectId,
         entryFilePath: nextEntry,
         nodes: nextNodes,
-        docs: incomingDocs
+        docs: docsForCache
       });
 
       const nextAssetMeta: Record<string, AssetMeta> = {};

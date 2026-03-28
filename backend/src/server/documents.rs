@@ -101,19 +101,21 @@ fn load_git_state_from_commit(
             }
         };
         let bytes = blob.content();
-        if let Ok(text) = std::str::from_utf8(bytes) {
-            documents.insert(clean_path, text.to_string());
-        } else {
-            assets.insert(
-                clean_path.clone(),
-                RevisionStoredAsset {
-                    object_key: format!("git://{}", blob.id()),
-                    content_type: guess_content_type(&clean_path),
-                    size_bytes: i64::try_from(bytes.len()).unwrap_or(i64::MAX),
-                    inline_data: Some(bytes.to_vec()),
-                },
-            );
+        if is_document_text_path(&clean_path) {
+            if let Ok(text) = std::str::from_utf8(bytes) {
+                documents.insert(clean_path, text.to_string());
+                return TreeWalkResult::Ok;
+            }
         }
+        assets.insert(
+            clean_path.clone(),
+            RevisionStoredAsset {
+                object_key: format!("git://{}", blob.id()),
+                content_type: guess_content_type(&clean_path),
+                size_bytes: i64::try_from(bytes.len()).unwrap_or(i64::MAX),
+                inline_data: Some(bytes.to_vec()),
+            },
+        );
         TreeWalkResult::Ok
     });
 
@@ -735,13 +737,33 @@ async fn list_documents(
     Query(query): Query<ListDocumentsQuery>,
 ) -> Result<Json<DocumentsResponse>, StatusCode> {
     ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
+    normalize_non_text_documents_to_assets(&state, project_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let rows = if let Some(path) = query.path {
+        let clean_path = sanitize_project_path(&path)?;
+        if !is_document_text_path(&clean_path) {
+            return Ok(Json(DocumentsResponse { documents: vec![] }));
+        }
         sqlx::query(
             "select id, project_id, path, content, updated_at
              from documents where project_id = $1 and path = $2 order by updated_at desc",
         )
         .bind(project_id)
-        .bind(path)
+        .bind(clean_path)
+        .fetch_all(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    } else if let Some(since_updated_at) = query.since_updated_at {
+        sqlx::query(
+            "select id, project_id, path, content, updated_at
+             from documents
+             where project_id = $1 and updated_at > $2
+             order by updated_at asc
+             limit 500",
+        )
+        .bind(project_id)
+        .bind(since_updated_at)
         .fetch_all(&state.db)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
@@ -758,12 +780,18 @@ async fn list_documents(
 
     let documents = rows
         .into_iter()
-        .map(|r| Document {
-            id: r.get("id"),
-            project_id: r.get("project_id"),
-            path: r.get("path"),
-            content: r.get("content"),
-            updated_at: r.get("updated_at"),
+        .filter_map(|r| {
+            let path: String = r.get("path");
+            if !is_document_text_path(&path) {
+                return None;
+            }
+            Some(Document {
+                id: r.get("id"),
+                project_id: r.get("project_id"),
+                path,
+                content: r.get("content"),
+                updated_at: r.get("updated_at"),
+            })
         })
         .collect();
 
@@ -1148,6 +1176,9 @@ async fn list_project_assets(
     Path(project_id): Path<Uuid>,
 ) -> Result<Json<ProjectAssetListResponse>, StatusCode> {
     ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
+    normalize_non_text_documents_to_assets(&state, project_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let rows = sqlx::query(
         "select id, project_id, path, object_key, content_type, size_bytes, uploaded_by, created_at
          from project_assets
