@@ -170,6 +170,18 @@ function prependUniqueRevisions(primary: Revision[], fallback: Revision[]) {
   return merged;
 }
 
+function pickWorkspaceOpenPath(
+  nodes: ProjectNode[],
+  preferredEntryPath: string | null | undefined,
+  currentActivePath?: string | null
+) {
+  const filePaths = nodes.filter((node) => node.kind === "file").map((node) => node.path);
+  const fileSet = new Set(filePaths);
+  if (currentActivePath && fileSet.has(currentActivePath)) return currentActivePath;
+  if (preferredEntryPath && fileSet.has(preferredEntryPath)) return preferredEntryPath;
+  return filePaths[0] || preferredEntryPath || "main.typ";
+}
+
 function parseIsoMs(value?: string | null) {
   if (!value) return null;
   const ms = Date.parse(value);
@@ -1027,11 +1039,11 @@ export function WorkspacePage({
       setNodes(freshCached.nodes);
       setEntryFilePath(freshCached.entryFilePath || "main.typ");
       setDocs(freshCached.docs || {});
-      const cachedPaths = new Set(freshCached.nodes.map((node) => node.path));
-      const fallbackPath =
-        activePath && cachedPaths.has(activePath)
-          ? activePath
-          : freshCached.nodes.find((node) => node.kind === "file")?.path || freshCached.entryFilePath || "main.typ";
+      const fallbackPath = pickWorkspaceOpenPath(
+        freshCached.nodes,
+        freshCached.entryFilePath || "main.typ",
+        activePath
+      );
       setActivePath(fallbackPath);
       setExpandedDirs((prev) => expandAncestors(fallbackPath, prev));
       setWorkspaceLoaded(true);
@@ -1061,11 +1073,11 @@ export function WorkspacePage({
           setNodes(anyCached.nodes);
           setEntryFilePath(anyCached.entryFilePath || "main.typ");
           setDocs(anyCached.docs || {});
-          const cachedPaths = new Set(anyCached.nodes.map((node) => node.path));
-          const fallbackPath =
-            activePath && cachedPaths.has(activePath)
-              ? activePath
-              : anyCached.nodes.find((node) => node.kind === "file")?.path || anyCached.entryFilePath || "main.typ";
+          const fallbackPath = pickWorkspaceOpenPath(
+            anyCached.nodes,
+            anyCached.entryFilePath || "main.typ",
+            activePath
+          );
           setActivePath(fallbackPath);
           setExpandedDirs((prev) => expandAncestors(fallbackPath, prev));
           setWorkspaceLoaded(true);
@@ -1145,8 +1157,11 @@ export function WorkspacePage({
     });
 
     if (!activePath || !treeRes.nodes.some((node) => node.path === activePath)) {
-      const firstFile = treeRes.nodes.find((n) => n.kind === "file")?.path || settings.entry_file_path;
-      const target = firstFile || "main.typ";
+      const target = pickWorkspaceOpenPath(
+        treeRes.nodes,
+        settings.entry_file_path || treeRes.entry_file_path || "main.typ",
+        activePath
+      );
       setActivePath(target);
       setExpandedDirs((prev) => expandAncestors(target, prev));
     }
@@ -1229,8 +1244,7 @@ export function WorkspacePage({
       const filePaths = new Set(nextNodes.filter((node) => node.kind === "file").map((node) => node.path));
       const currentPath = activePathRef.current;
       if (!currentPath || !filePaths.has(currentPath)) {
-        const fallbackPath =
-          nextNodes.find((node) => node.kind === "file")?.path || nextEntry || "main.typ";
+        const fallbackPath = pickWorkspaceOpenPath(nextNodes, nextEntry, currentPath);
         setActivePath(fallbackPath);
         setExpandedDirs((prev) => expandAncestors(fallbackPath, prev));
       }
