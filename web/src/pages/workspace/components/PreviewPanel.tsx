@@ -106,7 +106,7 @@ export function PreviewPanel({
             <strong>{t("preview.loadingProject")}</strong>
           </div>
         )}
-        {assetHydrationProgress.active && !workspaceSyncPending && (
+        {assetHydrationProgress.active && (
           <div className="preview-runtime-status">
             <strong>
               {t("preview.loadingProjectAssets")

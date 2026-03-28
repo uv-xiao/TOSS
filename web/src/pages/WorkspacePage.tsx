@@ -373,6 +373,56 @@ export function WorkspacePage({
     return loadPromise;
   }
 
+  async function hydrateProjectAssetsForInitialLoad(
+    nextDocs: Record<string, string>,
+    nextAssetMeta: Record<string, AssetMeta>
+  ) {
+    if (!projectId || isRevisionMode) return;
+    const assetPaths = Object.keys(nextAssetMeta);
+    const docsCount = Object.keys(nextDocs).length;
+    const docsBytes = Object.values(nextDocs).reduce((sum, content) => sum + content.length, 0);
+    const totalAssetBytes = assetPaths.reduce(
+      (sum, path) => sum + Math.max(0, nextAssetMeta[path]?.sizeBytes || 0),
+      0
+    );
+    const totalFiles = docsCount + assetPaths.length;
+    const totalBytes = docsBytes + totalAssetBytes;
+    let loadedFiles = docsCount;
+    let loadedBytes = docsBytes;
+
+    const publishProgress = () => {
+      setAssetHydrationProgress({
+        active: loadedFiles < totalFiles,
+        loaded: loadedFiles,
+        total: totalFiles,
+        loadedBytes,
+        totalBytes
+      });
+    };
+
+    publishProgress();
+    if (assetPaths.length === 0) return;
+
+    const concurrency = Math.min(6, assetPaths.length);
+    let cursor = 0;
+    const worker = async () => {
+      while (true) {
+        const index = cursor;
+        cursor += 1;
+        if (index >= assetPaths.length) return;
+        const path = assetPaths[index];
+        const loaded = await ensureLiveAssetLoaded(path);
+        loadedFiles += 1;
+        if (loaded) {
+          loadedBytes += Math.max(0, nextAssetMeta[path]?.sizeBytes || 0);
+        }
+        publishProgress();
+      }
+    };
+
+    await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  }
+
   const {
     tree,
     expandedDirs,
@@ -862,7 +912,7 @@ export function WorkspacePage({
   }, [activePath, assetBase64, isRevisionMode, projectId, workspaceLoaded]);
 
   useEffect(() => {
-    if (!projectId || !workspaceLoaded || isRevisionMode) return;
+    if (!projectId || !workspaceLoaded || isRevisionMode || workspaceSyncPending) return;
     const total = requiredAssetPaths.length;
     const loaded = requiredAssetPaths.filter((path) => !!assetBase64[path]).length;
     const totalBytes = requiredAssetPaths.reduce(
@@ -894,7 +944,15 @@ export function WorkspacePage({
     return () => {
       cancelled = true;
     };
-  }, [assetBase64, assetMeta, isRevisionMode, projectId, requiredAssetPaths, workspaceLoaded]);
+  }, [
+    assetBase64,
+    assetMeta,
+    isRevisionMode,
+    projectId,
+    requiredAssetPaths,
+    workspaceLoaded,
+    workspaceSyncPending
+  ]);
 
   useEffect(() => {
     if (!projectId || !workspaceLoaded) return;
@@ -1168,6 +1226,7 @@ export function WorkspacePage({
     setApiReachable(true);
     setWorkspaceError(null);
     setWorkspaceLoaded(true);
+    await hydrateProjectAssetsForInitialLoad(nextDocs, nextAssetMeta);
     setWorkspaceSyncPending(false);
   };
 
