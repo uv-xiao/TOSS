@@ -70,6 +70,9 @@ const messages: Record<UiLocale, Record<string, string>> = {
     "workspace.newFile": "New File",
     "workspace.newFolder": "New Folder",
     "workspace.download": "Download",
+    "workspace.fileLoading": "File content is loading.",
+    "workspace.pdfPreviewUnavailable":
+      "This browser is set to download PDF files instead of previewing them. Use download.",
     "workspace.notEditable":
       "This file is not editable in web editor. Edit offline and sync with Git.",
     "workspace.readOnlyProject":
@@ -237,6 +240,8 @@ const messages: Record<UiLocale, Record<string, string>> = {
     "workspace.newFile": "新建文件",
     "workspace.newFolder": "新建文件夹",
     "workspace.download": "下载",
+    "workspace.fileLoading": "文件内容加载中。",
+    "workspace.pdfPreviewUnavailable": "当前浏览器设置为下载 PDF，无法内嵌预览。请使用下载。",
     "workspace.notEditable": "该文件暂不支持网页编辑。请离线编辑后通过 Git 同步。",
     "workspace.readOnlyProject": "你对此项目只有只读权限。编辑和文件管理功能已禁用。",
     "workspace.connectionLost": "与服务器连接中断。恢复连接前编辑可能无法同步。",

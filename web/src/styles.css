@@ -1212,6 +1212,19 @@ a {
   border: 0;
 }
 
+.file-preview-pdf-fallback {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.file-preview-pdf-fallback p {
+  margin: 0;
+  max-width: 320px;
+}
+
 .remote-cursor {
   display: inline-block;
   width: 0;
