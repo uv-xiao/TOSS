@@ -31,15 +31,6 @@ export function UnsupportedFilePane({
     <div className="file-preview-pdf-fallback">
       <div className="file-icon" aria-hidden />
       <p>{t("workspace.pdfPreviewUnavailable")}</p>
-      <a
-        className="ui-icon-button"
-        href={dataUrl}
-        download={downloadName}
-        title={t("workspace.download")}
-        aria-label={t("workspace.download")}
-      >
-        <Download size={16} />
-      </a>
     </div>
   ) : (
     <div className="file-icon" aria-hidden />

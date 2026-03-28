@@ -553,13 +553,15 @@ export function WorkspacePage({
     return Array.from(values).sort((a, b) => a.localeCompare(b));
   }, [docs, entryFilePath, nodes]);
   const activePathExistsInTree = currentNodes.some((node) => node.kind === "file" && node.path === activePath);
+  const activePathIsTextFile = isTextFile(activePath);
   const isActiveTextDoc = isRevisionMode
     ? Object.prototype.hasOwnProperty.call(revisionDocs, activePath)
     : hasActiveLiveDoc;
+  const isActiveEditableTextDoc = isActiveTextDoc && activePathIsTextFile;
   const currentEditorLanguage = editorLanguageForPath(activePath);
   const previewPercent = Math.round(previewZoom * 100);
   const activeFileName = activePath.split("/").filter(Boolean).at(-1) || activePath;
-  const realtimeRequired = isActiveTextDoc && !isRevisionMode;
+  const realtimeRequired = isActiveEditableTextDoc && !isRevisionMode;
   const connectionOnline = apiReachable && (!realtimeRequired || realtimeStatus === "connected");
   const showConnectionWarning = realtimeRequired && !connectionOnline;
   const reconnectCountdownText = t("workspace.connectionLostReconnecting").replace(
@@ -2055,7 +2057,7 @@ export function WorkspacePage({
               </div>
             </div>
             <div className="panel-content flush editor-panel-content">
-              {isActiveTextDoc ? (
+              {isActiveEditableTextDoc ? (
                 <div className="editor-surface">
                   <EditorPane
                     editorInstanceKey={`${activePath}:${activeRevisionId ?? "live"}:${currentEditorLanguage}`}
@@ -2080,7 +2082,7 @@ export function WorkspacePage({
                   t={t}
                 />
               )}
-              {!isActiveTextDoc && <div className="error panel-inline-error">{t("workspace.notEditable")}</div>}
+              {!isActiveEditableTextDoc && <div className="error panel-inline-error">{t("workspace.notEditable")}</div>}
               {isRevisionMode && !activePathExistsInTree && (
                 <div className="error panel-inline-error">This file did not exist in this revision snapshot.</div>
               )}
