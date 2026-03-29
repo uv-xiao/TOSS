@@ -1,9 +1,11 @@
-fn revision_commit_time(commit: &Commit<'_>) -> DateTime<Utc> {
+use super::*;
+
+pub(super) fn revision_commit_time(commit: &Commit<'_>) -> DateTime<Utc> {
     let seconds = commit.time().seconds();
     DateTime::<Utc>::from_timestamp(seconds, 0).unwrap_or_else(Utc::now)
 }
 
-fn parse_co_authors(message: &str) -> Vec<(String, String)> {
+pub(super) fn parse_co_authors(message: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for line in message.lines() {
         let trimmed = line.trim();
@@ -39,7 +41,7 @@ type RevisionCommitRow = (
     Vec<(String, String)>,
 );
 
-fn load_git_state_from_commit(
+pub(super) fn load_git_state_from_commit(
     repo: &Repository,
     commit: &Commit<'_>,
 ) -> Result<RevisionStateData, String> {
@@ -113,7 +115,7 @@ fn load_git_state_from_commit(
     })
 }
 
-async fn resolve_revision_author(
+pub(super) async fn resolve_revision_author(
     db: &PgPool,
     default_name: String,
     email: String,
@@ -144,7 +146,7 @@ async fn resolve_revision_author(
     }
 }
 
-async fn list_revisions(
+pub(super) async fn list_revisions(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<ListRevisionsQuery>,
@@ -257,7 +259,7 @@ async fn list_revisions(
     Ok(Json(RevisionsResponse { revisions }))
 }
 
-async fn create_revision(
+pub(super) async fn create_revision(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
@@ -389,14 +391,14 @@ async fn create_revision(
 }
 
 #[derive(Clone)]
-enum RevisionAnchorKind {
+pub(super) enum RevisionAnchorKind {
     None,
     Live,
     Revision(String),
 }
 
 #[derive(Clone)]
-struct RevisionTransferCandidate {
+pub(super) struct RevisionTransferCandidate {
     transfer_mode: &'static str,
     anchor_kind: RevisionAnchorKind,
     document_upserts: HashMap<String, String>,
@@ -406,12 +408,12 @@ struct RevisionTransferCandidate {
     estimated_bytes: usize,
 }
 
-fn estimate_asset_b64_bytes(size_bytes: i64) -> usize {
+pub(super) fn estimate_asset_b64_bytes(size_bytes: i64) -> usize {
     let size = usize::try_from(size_bytes.max(0)).unwrap_or(0);
     size.div_ceil(3) * 4
 }
 
-fn build_transfer_candidate(
+pub(super) fn build_transfer_candidate(
     target: &RevisionStateData,
     baseline: Option<&RevisionStateData>,
     anchor_kind: RevisionAnchorKind,
@@ -496,7 +498,7 @@ fn build_transfer_candidate(
     }
 }
 
-async fn stored_asset_bytes(
+pub(super) async fn stored_asset_bytes(
     state: &AppState,
     asset: &RevisionStoredAsset,
 ) -> Result<Vec<u8>, StatusCode> {
@@ -511,7 +513,7 @@ async fn stored_asset_bytes(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
-fn build_nodes_from_state(state: &RevisionStateData) -> Result<Vec<ProjectFileNode>, StatusCode> {
+pub(super) fn build_nodes_from_state(state: &RevisionStateData) -> Result<Vec<ProjectFileNode>, StatusCode> {
     let mut dirs: HashSet<String> = HashSet::new();
     let mut nodes: Vec<ProjectFileNode> = Vec::new();
 
@@ -569,7 +571,7 @@ fn build_nodes_from_state(state: &RevisionStateData) -> Result<Vec<ProjectFileNo
     Ok(nodes)
 }
 
-async fn get_revision_documents(
+pub(super) async fn get_revision_documents(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<RevisionDocumentsQuery>,
@@ -713,7 +715,7 @@ async fn get_revision_documents(
     }))
 }
 
-async fn list_documents(
+pub(super) async fn list_documents(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
@@ -781,7 +783,7 @@ async fn list_documents(
     Ok(Json(DocumentsResponse { documents }))
 }
 
-async fn create_document(
+pub(super) async fn create_document(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
@@ -822,7 +824,7 @@ async fn create_document(
     }))
 }
 
-async fn upsert_document_by_path(
+pub(super) async fn upsert_document_by_path(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((project_id, path)): Path<(Uuid, String)>,
@@ -864,7 +866,7 @@ async fn upsert_document_by_path(
     }))
 }
 
-async fn get_document(
+pub(super) async fn get_document(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((project_id, document_id)): Path<(Uuid, Uuid)>,
@@ -892,7 +894,7 @@ async fn get_document(
     }))
 }
 
-async fn update_document(
+pub(super) async fn update_document(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((project_id, document_id)): Path<(Uuid, Uuid)>,
@@ -934,7 +936,7 @@ async fn update_document(
     }))
 }
 
-async fn delete_document(
+pub(super) async fn delete_document(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((project_id, document_id)): Path<(Uuid, Uuid)>,
@@ -963,7 +965,7 @@ async fn delete_document(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn list_project_assets(
+pub(super) async fn list_project_assets(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
@@ -999,7 +1001,7 @@ async fn list_project_assets(
     Ok(Json(ProjectAssetListResponse { assets }))
 }
 
-async fn upload_project_asset(
+pub(super) async fn upload_project_asset(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
@@ -1064,7 +1066,7 @@ async fn upload_project_asset(
     }))
 }
 
-async fn get_project_asset(
+pub(super) async fn get_project_asset(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((project_id, asset_id)): Path<(Uuid, Uuid)>,
@@ -1109,7 +1111,7 @@ async fn get_project_asset(
     }))
 }
 
-async fn delete_project_asset(
+pub(super) async fn delete_project_asset(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((project_id, asset_id)): Path<(Uuid, Uuid)>,
@@ -1151,7 +1153,7 @@ async fn delete_project_asset(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn get_project_asset_raw(
+pub(super) async fn get_project_asset_raw(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((project_id, asset_id)): Path<(Uuid, Uuid)>,
@@ -1189,7 +1191,7 @@ async fn get_project_asset_raw(
     Ok(resp)
 }
 
-async fn download_project_archive(
+pub(super) async fn download_project_archive(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
@@ -1262,7 +1264,7 @@ async fn download_project_archive(
     Ok(resp)
 }
 
-async fn update_project_archived(
+pub(super) async fn update_project_archived(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
@@ -1307,7 +1309,7 @@ async fn update_project_archived(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn upload_project_pdf_artifact(
+pub(super) async fn upload_project_pdf_artifact(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
@@ -1360,7 +1362,7 @@ async fn upload_project_pdf_artifact(
     }))
 }
 
-async fn download_latest_project_pdf_artifact(
+pub(super) async fn download_latest_project_pdf_artifact(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,

@@ -1,11 +1,13 @@
-async fn run_migrations(pool: &PgPool) {
+use super::*;
+
+pub(super) async fn run_migrations(pool: &PgPool) {
     if let Err(err) = sqlx::migrate!("./migrations").run(pool).await {
         error!("migration failed: {}", err);
         panic!("migration failed");
     }
 }
 
-async fn seed_default_data(pool: &PgPool) {
+pub(super) async fn seed_default_data(pool: &PgPool) {
     let admin_id = Uuid::parse_str("00000000-0000-0000-0000-000000000100").unwrap();
     let legacy_member_id = Uuid::parse_str("00000000-0000-0000-0000-000000000101").unwrap();
     let now = Utc::now();
@@ -73,14 +75,14 @@ async fn seed_default_data(pool: &PgPool) {
         .await;
 }
 
-async fn health() -> Json<HealthResponse> {
+pub(super) async fn health() -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok",
         service: "core-api",
     })
 }
 
-async fn auth_config(State(state): State<AppState>) -> Json<AuthConfigResponse> {
+pub(super) async fn auth_config(State(state): State<AppState>) -> Json<AuthConfigResponse> {
     let settings = load_auth_settings(&state.db, &state.oidc)
         .await
         .unwrap_or_else(|_| defaults_from_env(&state.oidc));
@@ -96,7 +98,7 @@ async fn auth_config(State(state): State<AppState>) -> Json<AuthConfigResponse> 
     })
 }
 
-async fn local_login(
+pub(super) async fn local_login(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(input): Json<LocalLoginInput>,
@@ -145,7 +147,7 @@ async fn local_login(
     issue_session_response(&state.db, &headers, user_id).await
 }
 
-async fn local_register(
+pub(super) async fn local_register(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(input): Json<LocalRegisterInput>,
@@ -252,7 +254,7 @@ async fn local_register(
     issue_session_response(&state.db, &headers, user_id).await
 }
 
-async fn oidc_login(State(state): State<AppState>) -> axum::response::Response {
+pub(super) async fn oidc_login(State(state): State<AppState>) -> axum::response::Response {
     let cookie_secure = env::var("COOKIE_SECURE")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
@@ -336,7 +338,7 @@ async fn oidc_login(State(state): State<AppState>) -> axum::response::Response {
     (jar, Redirect::to(authorize_url.as_ref())).into_response()
 }
 
-async fn oidc_callback(
+pub(super) async fn oidc_callback(
     State(state): State<AppState>,
     headers: HeaderMap,
     jar: CookieJar,
@@ -555,7 +557,7 @@ async fn oidc_callback(
         .into_response()
 }
 
-async fn auth_me(
+pub(super) async fn auth_me(
     State(state): State<AppState>,
     headers: HeaderMap,
     jar: CookieJar,
@@ -585,7 +587,7 @@ async fn auth_me(
     .into_response()
 }
 
-async fn auth_logout(State(state): State<AppState>, jar: CookieJar) -> impl IntoResponse {
+pub(super) async fn auth_logout(State(state): State<AppState>, jar: CookieJar) -> impl IntoResponse {
     if let Some(token) = jar.get("typst_session").map(|c| c.value().to_string()) {
         let _ = sqlx::query("delete from auth_sessions where session_token = $1")
             .bind(token)
@@ -596,7 +598,7 @@ async fn auth_logout(State(state): State<AppState>, jar: CookieJar) -> impl Into
     (jar, StatusCode::NO_CONTENT).into_response()
 }
 
-async fn issue_session_response(
+pub(super) async fn issue_session_response(
     db: &PgPool,
     headers: &HeaderMap,
     user_id: Uuid,
@@ -653,7 +655,7 @@ async fn issue_session_response(
         .into_response()
 }
 
-fn hash_password(raw: &str) -> Result<String, String> {
+pub(super) fn hash_password(raw: &str) -> Result<String, String> {
     let salt = SaltString::generate(&mut password_hash::rand_core::OsRng);
     Argon2::default()
         .hash_password(raw.as_bytes(), &salt)
@@ -661,7 +663,7 @@ fn hash_password(raw: &str) -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
-fn is_valid_email(email: &str) -> bool {
+pub(super) fn is_valid_email(email: &str) -> bool {
     let bytes = email.as_bytes();
     if email.len() < 3 || email.len() > 254 {
         return false;
@@ -676,11 +678,11 @@ fn is_valid_email(email: &str) -> bool {
     domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.')
 }
 
-fn normalize_username(input: &str) -> String {
+pub(super) fn normalize_username(input: &str) -> String {
     input.trim().to_ascii_lowercase()
 }
 
-fn is_valid_username(username: &str) -> bool {
+pub(super) fn is_valid_username(username: &str) -> bool {
     let bytes = username.as_bytes();
     if bytes.len() < 3 || bytes.len() > 32 {
         return false;
@@ -695,7 +697,7 @@ fn is_valid_username(username: &str) -> bool {
         .all(|b| b.is_ascii_alphanumeric() || matches!(*b, b'.' | b'_' | b'-'))
 }
 
-fn sanitize_username_seed(input: &str) -> String {
+pub(super) fn sanitize_username_seed(input: &str) -> String {
     let mut raw = String::with_capacity(input.len());
     for ch in input.chars() {
         if ch.is_ascii_alphanumeric() {
@@ -762,7 +764,7 @@ fn sanitize_username_seed(input: &str) -> String {
     }
 }
 
-fn oidc_username_candidate(base: &str, attempt: usize) -> String {
+pub(super) fn oidc_username_candidate(base: &str, attempt: usize) -> String {
     if attempt == 0 {
         return base.to_string();
     }
@@ -780,7 +782,7 @@ fn oidc_username_candidate(base: &str, attempt: usize) -> String {
     candidate
 }
 
-fn is_unique_violation(err: &sqlx::Error, constraint: &str) -> bool {
+pub(super) fn is_unique_violation(err: &sqlx::Error, constraint: &str) -> bool {
     match err {
         sqlx::Error::Database(db_err) => {
             db_err.code().as_deref() == Some("23505")
@@ -790,7 +792,7 @@ fn is_unique_violation(err: &sqlx::Error, constraint: &str) -> bool {
     }
 }
 
-fn defaults_from_env(oidc: &OidcSettings) -> AuthSettings {
+pub(super) fn defaults_from_env(oidc: &OidcSettings) -> AuthSettings {
     let env_site_name = env::var("SITE_NAME")
         .ok()
         .map(|v| v.trim().to_string())
@@ -830,7 +832,7 @@ fn defaults_from_env(oidc: &OidcSettings) -> AuthSettings {
     }
 }
 
-fn discovery_issuer(input: &str) -> Result<IssuerUrl, ()> {
+pub(super) fn discovery_issuer(input: &str) -> Result<IssuerUrl, ()> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return Err(());
@@ -841,7 +843,7 @@ fn discovery_issuer(input: &str) -> Result<IssuerUrl, ()> {
     IssuerUrl::new(trimmed.to_string()).map_err(|_| ())
 }
 
-async fn load_auth_settings(
+pub(super) async fn load_auth_settings(
     db: &PgPool,
     defaults: &OidcSettings,
 ) -> Result<AuthSettings, StatusCode> {
@@ -870,7 +872,7 @@ async fn load_auth_settings(
     Ok(defaults_from_env(defaults))
 }
 
-async fn realtime_auth(
+pub(super) async fn realtime_auth(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
@@ -879,7 +881,7 @@ async fn realtime_auth(
     Ok(Json(RealtimeAuthResponse { user_id }))
 }
 
-async fn list_personal_access_tokens(
+pub(super) async fn list_personal_access_tokens(
     State(state): State<AppState>,
     headers: HeaderMap,
     jar: CookieJar,
@@ -910,7 +912,7 @@ async fn list_personal_access_tokens(
     Ok(Json(PersonalAccessTokenListResponse { tokens }))
 }
 
-async fn create_personal_access_token(
+pub(super) async fn create_personal_access_token(
     State(state): State<AppState>,
     headers: HeaderMap,
     jar: CookieJar,
@@ -986,7 +988,7 @@ async fn create_personal_access_token(
     .into_response()
 }
 
-async fn revoke_personal_access_token(
+pub(super) async fn revoke_personal_access_token(
     State(state): State<AppState>,
     headers: HeaderMap,
     jar: CookieJar,

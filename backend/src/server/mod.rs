@@ -45,6 +45,17 @@ use tracing::{error, info};
 use uuid::Uuid;
 
 mod routes;
+mod auth;
+mod documents;
+mod git;
+mod projects;
+mod support;
+
+use auth::*;
+use documents::*;
+use git::*;
+use projects::*;
+use support::*;
 
 pub async fn run() {
     dotenvy::dotenv().ok();
@@ -118,9 +129,3 @@ pub async fn run() {
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
-
-include!("auth.rs");
-include!("projects.rs");
-include!("documents.rs");
-include!("git.rs");
-include!("support.rs");

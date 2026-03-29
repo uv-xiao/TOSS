@@ -1,10 +1,12 @@
-fn project_thumbnail_path(data_dir: &std::path::Path, project_id: Uuid) -> std::path::PathBuf {
+use super::*;
+
+pub(super) fn project_thumbnail_path(data_dir: &std::path::Path, project_id: Uuid) -> std::path::PathBuf {
     data_dir
         .join("thumbnails")
         .join(format!("{project_id}.thumb"))
 }
 
-async fn read_thumbnail_bytes_from_fs(
+pub(super) async fn read_thumbnail_bytes_from_fs(
     state: &AppState,
     project_id: Uuid,
 ) -> Result<Option<Vec<u8>>, StatusCode> {
@@ -16,7 +18,7 @@ async fn read_thumbnail_bytes_from_fs(
     }
 }
 
-async fn write_thumbnail_bytes_to_fs(
+pub(super) async fn write_thumbnail_bytes_to_fs(
     state: &AppState,
     project_id: Uuid,
     bytes: &[u8],
@@ -36,7 +38,7 @@ async fn write_thumbnail_bytes_to_fs(
     Ok(())
 }
 
-async fn upsert_thumbnail_metadata(
+pub(super) async fn upsert_thumbnail_metadata(
     db: &PgPool,
     project_id: Uuid,
     content_type: &str,
@@ -63,7 +65,7 @@ async fn upsert_thumbnail_metadata(
     Ok(())
 }
 
-async fn list_projects(
+pub(super) async fn list_projects(
     State(state): State<AppState>,
     Query(query): Query<ListProjectsQuery>,
     headers: HeaderMap,
@@ -269,7 +271,7 @@ async fn list_projects(
     Ok(Json(ProjectListResponse { projects }))
 }
 
-async fn list_my_organizations(
+pub(super) async fn list_my_organizations(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<OrganizationMembershipListResponse>, StatusCode> {
@@ -304,7 +306,7 @@ async fn list_my_organizations(
     Ok(Json(OrganizationMembershipListResponse { organizations }))
 }
 
-async fn user_organization_ids(db: &PgPool, user_id: Uuid) -> Result<Vec<Uuid>, StatusCode> {
+pub(super) async fn user_organization_ids(db: &PgPool, user_id: Uuid) -> Result<Vec<Uuid>, StatusCode> {
     let rows = sqlx::query(
         "select organization_id from organization_memberships where user_id = $1
          union
@@ -320,7 +322,7 @@ async fn user_organization_ids(db: &PgPool, user_id: Uuid) -> Result<Vec<Uuid>, 
         .collect())
 }
 
-async fn user_is_org_member(db: &PgPool, user_id: Uuid, org_id: Uuid) -> Result<bool, StatusCode> {
+pub(super) async fn user_is_org_member(db: &PgPool, user_id: Uuid, org_id: Uuid) -> Result<bool, StatusCode> {
     let row = sqlx::query(
         "select 1
          from (
@@ -339,7 +341,7 @@ async fn user_is_org_member(db: &PgPool, user_id: Uuid, org_id: Uuid) -> Result<
     Ok(row.is_some())
 }
 
-async fn resolve_project_organization_id(db: &PgPool, user_id: Uuid) -> Result<Uuid, StatusCode> {
+pub(super) async fn resolve_project_organization_id(db: &PgPool, user_id: Uuid) -> Result<Uuid, StatusCode> {
     if let Some(existing) = user_organization_ids(db, user_id).await?.into_iter().next() {
         return Ok(existing);
     }
@@ -390,7 +392,7 @@ async fn resolve_project_organization_id(db: &PgPool, user_id: Uuid) -> Result<U
     Ok(org_id)
 }
 
-async fn create_project(
+pub(super) async fn create_project(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(input): Json<CreateProjectInput>,
@@ -488,7 +490,7 @@ async fn create_project(
     }))
 }
 
-async fn update_project_name(
+pub(super) async fn update_project_name(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
@@ -521,7 +523,7 @@ async fn update_project_name(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn has_template_organization_access(
+pub(super) async fn has_template_organization_access(
     db: &PgPool,
     actor: Uuid,
     project_id: Uuid,
@@ -547,7 +549,7 @@ async fn has_template_organization_access(
     Ok(row.is_some())
 }
 
-async fn can_copy_project_for_user(
+pub(super) async fn can_copy_project_for_user(
     db: &PgPool,
     actor: Uuid,
     project_id: Uuid,
@@ -561,7 +563,7 @@ async fn can_copy_project_for_user(
     has_template_organization_access(db, actor, project_id).await
 }
 
-async fn copy_project(
+pub(super) async fn copy_project(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
@@ -838,7 +840,7 @@ async fn copy_project(
     }))
 }
 
-async fn update_project_template(
+pub(super) async fn update_project_template(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
@@ -883,7 +885,7 @@ async fn update_project_template(
     }))
 }
 
-async fn list_project_template_organization_access(
+pub(super) async fn list_project_template_organization_access(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
@@ -914,7 +916,7 @@ async fn list_project_template_organization_access(
     Ok(Json(items))
 }
 
-async fn upsert_project_template_organization_access(
+pub(super) async fn upsert_project_template_organization_access(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((project_id, org_id)): Path<(Uuid, Uuid)>,
@@ -972,7 +974,7 @@ async fn upsert_project_template_organization_access(
     }))
 }
 
-async fn delete_project_template_organization_access(
+pub(super) async fn delete_project_template_organization_access(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((project_id, org_id)): Path<(Uuid, Uuid)>,
@@ -999,7 +1001,7 @@ async fn delete_project_template_organization_access(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn upload_project_thumbnail(
+pub(super) async fn upload_project_thumbnail(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
@@ -1035,7 +1037,7 @@ async fn upload_project_thumbnail(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn get_project_thumbnail(
+pub(super) async fn get_project_thumbnail(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
@@ -1098,7 +1100,7 @@ async fn get_project_thumbnail(
     Ok(resp)
 }
 
-fn normalized_share_permission(raw: &str) -> Option<&'static str> {
+pub(super) fn normalized_share_permission(raw: &str) -> Option<&'static str> {
     let lowered = raw.trim().to_ascii_lowercase();
     match lowered.as_str() {
         "read" | "readonly" | "viewer" => Some("read"),
@@ -1107,7 +1109,7 @@ fn normalized_share_permission(raw: &str) -> Option<&'static str> {
     }
 }
 
-fn grant_role_from_share_permission(permission: &str) -> &'static str {
+pub(super) fn grant_role_from_share_permission(permission: &str) -> &'static str {
     if permission == "write" {
         "Student"
     } else {
@@ -1115,7 +1117,7 @@ fn grant_role_from_share_permission(permission: &str) -> &'static str {
     }
 }
 
-async fn list_project_share_links(
+pub(super) async fn list_project_share_links(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
@@ -1148,7 +1150,7 @@ async fn list_project_share_links(
     Ok(Json(items))
 }
 
-async fn create_project_share_link(
+pub(super) async fn create_project_share_link(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
@@ -1288,7 +1290,7 @@ async fn create_project_share_link(
     }))
 }
 
-async fn revoke_project_share_link(
+pub(super) async fn revoke_project_share_link(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((project_id, share_link_id)): Path<(Uuid, Uuid)>,
@@ -1318,7 +1320,7 @@ async fn revoke_project_share_link(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn join_project_share_link(
+pub(super) async fn join_project_share_link(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(token): Path<String>,
@@ -1408,7 +1410,7 @@ async fn join_project_share_link(
     }))
 }
 
-async fn list_roles(
+pub(super) async fn list_roles(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
@@ -1434,7 +1436,7 @@ async fn list_roles(
     Ok(Json(roles))
 }
 
-async fn upsert_role(
+pub(super) async fn upsert_role(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
@@ -1471,7 +1473,7 @@ async fn upsert_role(
     }))
 }
 
-fn sanitize_project_path(raw: &str) -> Result<String, StatusCode> {
+pub(super) fn sanitize_project_path(raw: &str) -> Result<String, StatusCode> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
@@ -1497,7 +1499,7 @@ fn sanitize_project_path(raw: &str) -> Result<String, StatusCode> {
     Ok(parts.join("/"))
 }
 
-async fn get_project_tree(
+pub(super) async fn get_project_tree(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
@@ -1595,7 +1597,7 @@ async fn get_project_tree(
     }))
 }
 
-async fn create_project_file(
+pub(super) async fn create_project_file(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
@@ -1691,7 +1693,7 @@ async fn create_project_file(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn move_project_file(
+pub(super) async fn move_project_file(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
@@ -1766,7 +1768,7 @@ async fn move_project_file(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn delete_project_file(
+pub(super) async fn delete_project_file(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((project_id, path)): Path<(Uuid, String)>,
@@ -1825,7 +1827,7 @@ async fn delete_project_file(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn get_project_settings(
+pub(super) async fn get_project_settings(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
@@ -1849,7 +1851,7 @@ async fn get_project_settings(
     }))
 }
 
-async fn upsert_project_settings(
+pub(super) async fn upsert_project_settings(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
@@ -1877,7 +1879,7 @@ async fn upsert_project_settings(
     }))
 }
 
-fn normalized_org_permission(raw: &str) -> Option<&'static str> {
+pub(super) fn normalized_org_permission(raw: &str) -> Option<&'static str> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "read" | "readonly" | "viewer" => Some("read"),
         "write" | "writable" | "edit" | "editor" => Some("write"),
@@ -1885,7 +1887,7 @@ fn normalized_org_permission(raw: &str) -> Option<&'static str> {
     }
 }
 
-async fn list_project_organization_access(
+pub(super) async fn list_project_organization_access(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
@@ -1917,7 +1919,7 @@ async fn list_project_organization_access(
     Ok(Json(items))
 }
 
-async fn upsert_project_organization_access(
+pub(super) async fn upsert_project_organization_access(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((project_id, org_id)): Path<(Uuid, Uuid)>,
@@ -1973,7 +1975,7 @@ async fn upsert_project_organization_access(
     }))
 }
 
-async fn delete_project_organization_access(
+pub(super) async fn delete_project_organization_access(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((project_id, org_id)): Path<(Uuid, Uuid)>,
@@ -2000,7 +2002,7 @@ async fn delete_project_organization_access(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn list_project_access_users(
+pub(super) async fn list_project_access_users(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
@@ -2094,7 +2096,7 @@ async fn list_project_access_users(
     Ok(Json(ProjectAccessUserListResponse { users: output }))
 }
 
-async fn list_group_roles(
+pub(super) async fn list_group_roles(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
@@ -2122,7 +2124,7 @@ async fn list_group_roles(
     Ok(Json(roles))
 }
 
-async fn upsert_group_role(
+pub(super) async fn upsert_group_role(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
@@ -2166,7 +2168,7 @@ async fn upsert_group_role(
     }))
 }
 
-async fn delete_group_role(
+pub(super) async fn delete_group_role(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((project_id, group_name)): Path<(Uuid, String)>,
@@ -2192,7 +2194,7 @@ async fn delete_group_role(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn ensure_org_admin(
+pub(super) async fn ensure_org_admin(
     db: &PgPool,
     headers: &HeaderMap,
     org_id: Uuid,
@@ -2212,7 +2214,7 @@ async fn ensure_org_admin(
     Ok(actor)
 }
 
-async fn list_org_group_role_mappings(
+pub(super) async fn list_org_group_role_mappings(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(org_id): Path<Uuid>,
@@ -2240,7 +2242,7 @@ async fn list_org_group_role_mappings(
     Ok(Json(items))
 }
 
-async fn upsert_org_group_role_mapping(
+pub(super) async fn upsert_org_group_role_mapping(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(org_id): Path<Uuid>,
@@ -2283,7 +2285,7 @@ async fn upsert_org_group_role_mapping(
     }))
 }
 
-async fn delete_org_group_role_mapping(
+pub(super) async fn delete_org_group_role_mapping(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((org_id, group_name)): Path<(Uuid, String)>,
@@ -2310,7 +2312,7 @@ async fn delete_org_group_role_mapping(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn get_admin_auth_settings(
+pub(super) async fn get_admin_auth_settings(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<AdminAuthSettingsResponse>, StatusCode> {
@@ -2329,7 +2331,7 @@ async fn get_admin_auth_settings(
     Ok(Json(AdminAuthSettingsResponse { settings }))
 }
 
-async fn upsert_admin_auth_settings(
+pub(super) async fn upsert_admin_auth_settings(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(input): Json<UpsertAdminAuthSettingsInput>,

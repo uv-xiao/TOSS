@@ -1,5 +1,7 @@
+use super::*;
+
 #[derive(Clone)]
-enum MergeFileValue {
+pub(super) enum MergeFileValue {
     Text(String),
     Binary {
         bytes: Vec<u8>,
@@ -7,7 +9,7 @@ enum MergeFileValue {
     },
 }
 
-fn merge_file_equal(a: &MergeFileValue, b: &MergeFileValue) -> bool {
+pub(super) fn merge_file_equal(a: &MergeFileValue, b: &MergeFileValue) -> bool {
     match (a, b) {
         (MergeFileValue::Text(x), MergeFileValue::Text(y)) => x == y,
         (
@@ -29,7 +31,7 @@ struct PushReject {
     reason: String,
 }
 
-fn push_reject_hint_lines(reason: &str) -> Vec<String> {
+pub(super) fn push_reject_hint_lines(reason: &str) -> Vec<String> {
     if reason == "forced push prohibited" {
         return vec![
             "error: forced push prohibited\n".to_string(),
@@ -46,19 +48,19 @@ fn push_reject_hint_lines(reason: &str) -> Vec<String> {
     vec![format!("error: {reason}\n")]
 }
 
-fn pkt_line(payload: &str) -> Vec<u8> {
+pub(super) fn pkt_line(payload: &str) -> Vec<u8> {
     let total_len = payload.len() + 4;
     format!("{total_len:04x}{payload}").into_bytes()
 }
 
-fn pkt_line_bytes(payload: &[u8]) -> Vec<u8> {
+pub(super) fn pkt_line_bytes(payload: &[u8]) -> Vec<u8> {
     let total_len = payload.len() + 4;
     let mut out = format!("{total_len:04x}").into_bytes();
     out.extend_from_slice(payload);
     out
 }
 
-fn git_receive_pack_reject_body(ref_name: &str, reason: &str, hints: &[String]) -> Vec<u8> {
+pub(super) fn git_receive_pack_reject_body(ref_name: &str, reason: &str, hints: &[String]) -> Vec<u8> {
     let mut report = Vec::new();
     report.extend(pkt_line("unpack ok\n"));
     report.extend(pkt_line(&format!("ng {ref_name} {reason}\n")));
@@ -79,7 +81,7 @@ fn git_receive_pack_reject_body(ref_name: &str, reason: &str, hints: &[String]) 
     out
 }
 
-fn merge_index_entry_from_text(
+pub(super) fn merge_index_entry_from_text(
     repo: &Repository,
     path: &str,
     content: &str,
@@ -101,7 +103,7 @@ fn merge_index_entry_from_text(
     })
 }
 
-fn three_way_merge_text(
+pub(super) fn three_way_merge_text(
     repo: &Repository,
     path: &str,
     base: &str,
@@ -127,7 +129,7 @@ fn three_way_merge_text(
     Ok(Some(text))
 }
 
-async fn state_to_merge_map(
+pub(super) async fn state_to_merge_map(
     state: &AppState,
     source: &RevisionStateData,
 ) -> Result<HashMap<String, MergeFileValue>, StatusCode> {
@@ -148,7 +150,7 @@ async fn state_to_merge_map(
     Ok(out)
 }
 
-fn merge_online_over_pushed(
+pub(super) fn merge_online_over_pushed(
     repo: &Repository,
     base: &HashMap<String, MergeFileValue>,
     pushed: &HashMap<String, MergeFileValue>,
@@ -221,7 +223,7 @@ fn merge_online_over_pushed(
     }
 }
 
-fn materialize_merge_map_to_dir(
+pub(super) fn materialize_merge_map_to_dir(
     root: &std::path::Path,
     merged: &HashMap<String, MergeFileValue>,
 ) -> Result<(), String> {
@@ -242,7 +244,7 @@ fn materialize_merge_map_to_dir(
     Ok(())
 }
 
-async fn pending_author_trailers(
+pub(super) async fn pending_author_trailers(
     db: &PgPool,
     project_id: Uuid,
     force_author: Option<Uuid>,
@@ -285,7 +287,7 @@ async fn pending_author_trailers(
     Ok(trailers)
 }
 
-async fn git_status(
+pub(super) async fn git_status(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
@@ -294,7 +296,7 @@ async fn git_status(
     git_status_by_project(&state.db, project_id).await
 }
 
-async fn git_repo_link(
+pub(super) async fn git_repo_link(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
@@ -328,7 +330,7 @@ async fn git_repo_link(
     }))
 }
 
-async fn git_status_by_project(
+pub(super) async fn git_status_by_project(
     db: &PgPool,
     project_id: Uuid,
 ) -> Result<Json<GitSyncState>, StatusCode> {
@@ -353,7 +355,7 @@ async fn git_status_by_project(
     }
 }
 
-async fn git_http_backend(
+pub(super) async fn git_http_backend(
     State(state): State<AppState>,
     headers: HeaderMap,
     method: Method,
