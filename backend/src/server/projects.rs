@@ -1503,7 +1503,7 @@ async fn get_project_tree(
     Path(project_id): Path<Uuid>,
 ) -> Result<Json<ProjectTreeResponse>, StatusCode> {
     ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
-    normalize_non_text_documents_to_assets(&state, project_id)
+    normalize_project_file_classification(&state, project_id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let rows = sqlx::query("select path from documents where project_id = $1 order by path asc")

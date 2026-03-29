@@ -402,6 +402,9 @@ try {
   const simpleSvg = new TextEncoder().encode(
     '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="#2f7d4a"/></svg>'
   );
+  const bibText = new TextEncoder().encode(
+    "@article{smoke2026,\n  title = {Headless Smoke},\n  author = {Tester, A.}\n}\n"
+  );
   const rawBinary = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 255, 254, 253, 252]);
   const tempUploadFile = path.join(await fs.mkdtemp(path.join(os.tmpdir(), "typst-upload-")), "upload.typ");
   await fs.writeFile(tempUploadFile, "= Uploaded From UI\n\nThis file came from file chooser.\n", "utf8");
@@ -462,6 +465,12 @@ try {
     content_base64: Buffer.from(rawBinary).toString("base64"),
     content_type: "application/octet-stream"
   });
+  // Intentionally uploaded as asset to verify backend migration into editable text document.
+  await bearerApi("POST", `/v1/projects/${projectId}/assets`, owner.sessionToken, {
+    path: "refs/library.bib",
+    content_base64: Buffer.from(bibText).toString("base64"),
+    content_type: "application/octet-stream"
+  });
 
   await login(pageA, owner.email, owner.password);
   currentStep = "login-owner";
@@ -476,6 +485,12 @@ try {
   await waitForCanvas(pageA, 60000);
   await assertVisiblePreviewPage(pageA);
   await assertWorkspaceLayout(pageA);
+  await ensureDirectoryExpanded(pageA, "refs");
+  await pageA.locator(".tree-label", { hasText: "library.bib" }).first().click();
+  currentStep = "editable-bib-file";
+  await waitForEditorContains(pageA, "@article{smoke2026", 12000);
+  await pageA.locator(".tree-label", { hasText: "main.typ" }).first().click();
+  await waitForActiveFile(pageA, "main.typ", 10000);
 
   const shot1 = path.join(outDir, "01-workspace-load.png");
   await pageA.screenshot({ path: shot1, fullPage: true });

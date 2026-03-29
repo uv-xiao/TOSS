@@ -419,12 +419,100 @@ async fn normalize_non_text_documents_to_assets(
     Ok(())
 }
 
+async fn normalize_text_assets_to_documents(
+    state: &AppState,
+    project_id: Uuid,
+) -> Result<(), String> {
+    let rows = sqlx::query(
+        "select id, path, object_key, inline_data
+         from project_assets
+         where project_id = $1",
+    )
+    .bind(project_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    for row in rows {
+        let asset_id: Uuid = row.get("id");
+        let path: String = row.get("path");
+        if !is_document_text_path(&path) {
+            continue;
+        }
+        let already_document = sqlx::query(
+            "select 1
+             from documents
+             where project_id = $1 and path = $2
+             limit 1",
+        )
+        .bind(project_id)
+        .bind(&path)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| e.to_string())?
+        .is_some();
+
+        let object_key: String = row.get("object_key");
+        let bytes = if let Some(inline) = row.get::<Option<Vec<u8>>, _>("inline_data") {
+            inline
+        } else if let Some(storage) = state.storage.clone() {
+            get_object(&storage, &object_key)
+                .await
+                .map_err(|e| e.to_string())?
+        } else {
+            continue;
+        };
+        if !looks_like_text(&bytes) {
+            continue;
+        }
+        let content = String::from_utf8(bytes).map_err(|e| e.to_string())?;
+        if !already_document {
+            sqlx::query(
+                "insert into documents (id, project_id, path, content, updated_at)
+                 values ($1, $2, $3, $4, $5)
+                 on conflict (project_id, path)
+                 do update set content = excluded.content, updated_at = excluded.updated_at",
+            )
+            .bind(Uuid::new_v4())
+            .bind(project_id)
+            .bind(&path)
+            .bind(content)
+            .bind(Utc::now())
+            .execute(&state.db)
+            .await
+            .map_err(|e| e.to_string())?;
+        }
+        if !object_key.starts_with("inline://") {
+            if let Some(storage) = state.storage.clone() {
+                let _ = delete_object(&storage, &object_key).await;
+            }
+        }
+        sqlx::query("delete from project_assets where project_id = $1 and id = $2")
+            .bind(project_id)
+            .bind(asset_id)
+            .execute(&state.db)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+async fn normalize_project_file_classification(
+    state: &AppState,
+    project_id: Uuid,
+) -> Result<(), String> {
+    normalize_non_text_documents_to_assets(state, project_id).await?;
+    normalize_text_assets_to_documents(state, project_id).await?;
+    Ok(())
+}
+
 async fn sync_project_documents_to_repo(
     state: &AppState,
     project_id: Uuid,
     repo_path: &str,
 ) -> Result<(), String> {
-    normalize_non_text_documents_to_assets(state, project_id).await?;
+    normalize_project_file_classification(state, project_id).await?;
     clear_repo_working_tree(repo_path)?;
     let doc_rows = sqlx::query("select path, content from documents where project_id = $1")
         .bind(project_id)

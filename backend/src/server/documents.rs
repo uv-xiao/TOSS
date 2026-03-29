@@ -720,7 +720,7 @@ async fn list_documents(
     Query(query): Query<ListDocumentsQuery>,
 ) -> Result<Json<DocumentsResponse>, StatusCode> {
     ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
-    normalize_non_text_documents_to_assets(&state, project_id)
+    normalize_project_file_classification(&state, project_id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let rows = if let Some(path) = query.path {
@@ -1159,7 +1159,7 @@ async fn list_project_assets(
     Path(project_id): Path<Uuid>,
 ) -> Result<Json<ProjectAssetListResponse>, StatusCode> {
     ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
-    normalize_non_text_documents_to_assets(&state, project_id)
+    normalize_project_file_classification(&state, project_id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let rows = sqlx::query(
