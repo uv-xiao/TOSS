@@ -819,16 +819,7 @@ pub(super) struct RevisionStateData {
 pub(super) struct RevisionStoredAsset {
     pub(super) object_key: String,
     pub(super) content_type: String,
-    pub(super) size_bytes: i64,
-    pub(super) fingerprint: String,
     pub(super) inline_data: Option<Vec<u8>>,
-}
-
-pub(super) fn bytes_sha256_hex(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    let digest = hasher.finalize();
-    digest.iter().map(|b| format!("{b:02x}")).collect::<String>()
 }
 
 pub(super) async fn load_project_state(db: &PgPool, project_id: Uuid) -> Result<RevisionStateData, sqlx::Error> {
@@ -864,51 +855,11 @@ pub(super) async fn load_project_state(db: &PgPool, project_id: Uuid) -> Result<
             RevisionStoredAsset {
                 object_key: row.get("object_key"),
                 content_type: row.get("content_type"),
-                size_bytes: row.get("size_bytes"),
-                fingerprint: String::new(),
                 inline_data: row.get("inline_data"),
             },
         );
     }
     Ok(state)
-}
-
-pub(super) fn same_asset(a: &RevisionStoredAsset, b: &RevisionStoredAsset) -> bool {
-    if !a.fingerprint.is_empty() && !b.fingerprint.is_empty() {
-        return a.fingerprint == b.fingerprint;
-    }
-    if a.size_bytes != b.size_bytes {
-        return false;
-    }
-    if a.content_type == b.content_type
-        && a.object_key == b.object_key
-        && a.inline_data == b.inline_data
-    {
-        return true;
-    }
-    a.object_key == b.object_key && a.inline_data == b.inline_data
-}
-
-pub(super) async fn populate_asset_fingerprints(
-    state: &AppState,
-    revision_state: &mut RevisionStateData,
-) -> Result<(), StatusCode> {
-    for asset in revision_state.assets.values_mut() {
-        if !asset.fingerprint.is_empty() {
-            continue;
-        }
-        if let Some(bytes) = asset.inline_data.as_ref() {
-            asset.fingerprint = bytes_sha256_hex(bytes);
-            continue;
-        }
-        if let Some(storage) = state.storage.as_ref() {
-            let bytes = get_object(storage, &asset.object_key)
-                .await
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            asset.fingerprint = bytes_sha256_hex(&bytes);
-        }
-    }
-    Ok(())
 }
 
 pub(super) async fn lookup_project_entry_file_path(db: &PgPool, project_id: Uuid) -> String {

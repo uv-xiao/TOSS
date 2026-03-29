@@ -98,8 +98,6 @@ pub(super) fn load_git_state_from_commit(
             RevisionStoredAsset {
                 object_key: format!("git://{}", blob.id()),
                 content_type: guess_content_type(&clean_path),
-                size_bytes: i64::try_from(bytes.len()).unwrap_or(i64::MAX),
-                fingerprint: bytes_sha256_hex(bytes),
                 inline_data: Some(bytes.to_vec()),
             },
         );
@@ -399,12 +397,31 @@ pub(super) enum RevisionAnchorKind {
 }
 
 #[derive(Clone)]
+pub(super) enum CommitPathKind {
+    Document,
+    Asset,
+}
+
+#[derive(Clone)]
+pub(super) struct CommitPathMeta {
+    kind: CommitPathKind,
+    content_type: String,
+    size_bytes: i64,
+}
+
+#[derive(Clone, Default)]
+pub(super) struct CommitManifest {
+    files: HashMap<String, CommitPathMeta>,
+    directories: HashSet<String>,
+}
+
+#[derive(Clone)]
 pub(super) struct RevisionTransferCandidate {
     transfer_mode: &'static str,
     anchor_kind: RevisionAnchorKind,
-    document_upserts: HashMap<String, String>,
+    document_paths: Vec<String>,
     deleted_documents: Vec<String>,
-    asset_upserts: HashMap<String, RevisionStoredAsset>,
+    asset_paths: Vec<String>,
     deleted_assets: Vec<String>,
     estimated_bytes: usize,
 }
@@ -414,89 +431,287 @@ pub(super) fn estimate_asset_b64_bytes(size_bytes: i64) -> usize {
     size.div_ceil(3) * 4
 }
 
+pub(super) fn load_commit_manifest(
+    _repo: &Repository,
+    commit: &Commit<'_>,
+) -> Result<CommitManifest, String> {
+    let tree = commit.tree().map_err(|e| e.to_string())?;
+    let mut manifest = CommitManifest::default();
+    let mut walk_error: Option<String> = None;
+
+    let _ = tree.walk(TreeWalkMode::PreOrder, |root, entry| {
+        if walk_error.is_some() {
+            return TreeWalkResult::Abort;
+        }
+        if entry.kind() != Some(git2::ObjectType::Blob) {
+            return TreeWalkResult::Ok;
+        }
+        let Some(name) = entry.name() else {
+            return TreeWalkResult::Ok;
+        };
+        let raw_path = format!("{root}{name}");
+        let Ok(clean_path) = sanitize_project_path(&raw_path) else {
+            walk_error = Some("invalid path in commit tree".to_string());
+            return TreeWalkResult::Abort;
+        };
+
+        let parts: Vec<&str> = clean_path.split('/').collect();
+        let mut acc = String::new();
+        for part in parts.iter().take(parts.len().saturating_sub(1)) {
+            if acc.is_empty() {
+                acc.push_str(part);
+            } else {
+                acc.push('/');
+                acc.push_str(part);
+            }
+            manifest.directories.insert(acc.clone());
+        }
+
+        // Keep manifest loading metadata-only; avoid blob reads for large projects.
+        let size_bytes = 0_i64;
+        let kind = if is_document_text_path(&clean_path) {
+            CommitPathKind::Document
+        } else {
+            CommitPathKind::Asset
+        };
+        manifest.files.insert(
+            clean_path.clone(),
+            CommitPathMeta {
+                kind,
+                content_type: guess_content_type(&clean_path),
+                size_bytes,
+            },
+        );
+        TreeWalkResult::Ok
+    });
+
+    if let Some(err) = walk_error {
+        return Err(err);
+    }
+    Ok(manifest)
+}
+
+pub(super) fn diff_changed_paths_between(
+    repo: &Repository,
+    base: &Commit<'_>,
+    target: &Commit<'_>,
+) -> Result<HashSet<String>, String> {
+    let base_tree = base.tree().map_err(|e| e.to_string())?;
+    let target_tree = target.tree().map_err(|e| e.to_string())?;
+    let mut diff_opts = git2::DiffOptions::new();
+    diff_opts
+        .include_typechange(true)
+        .include_typechange_trees(true);
+    let diff = repo
+        .diff_tree_to_tree(Some(&base_tree), Some(&target_tree), Some(&mut diff_opts))
+        .map_err(|e| e.to_string())?;
+    let mut out: HashSet<String> = HashSet::new();
+    for delta in diff.deltas() {
+        if let Some(old_path) = delta.old_file().path() {
+            if let Some(path) = old_path.to_str() {
+                if let Ok(clean) = sanitize_project_path(path) {
+                    out.insert(clean);
+                }
+            }
+        }
+        if let Some(new_path) = delta.new_file().path() {
+            if let Some(path) = new_path.to_str() {
+                if let Ok(clean) = sanitize_project_path(path) {
+                    out.insert(clean);
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 pub(super) fn build_transfer_candidate(
-    target: &RevisionStateData,
-    baseline: Option<&RevisionStateData>,
+    target_manifest: &CommitManifest,
+    changed_paths: Option<&HashSet<String>>,
     anchor_kind: RevisionAnchorKind,
 ) -> RevisionTransferCandidate {
-    let mut document_upserts: HashMap<String, String> = HashMap::new();
+    let mut document_paths: Vec<String> = Vec::new();
     let mut deleted_documents: Vec<String> = Vec::new();
-    let mut asset_upserts: HashMap<String, RevisionStoredAsset> = HashMap::new();
+    let mut asset_paths: Vec<String> = Vec::new();
     let mut deleted_assets: Vec<String> = Vec::new();
     let mut estimated_bytes = 0usize;
 
-    if let Some(base) = baseline {
-        for (path, content) in target.documents.iter() {
-            let needs_upsert = base
-                .documents
-                .get(path)
-                .map(|previous| previous != content)
-                .unwrap_or(true);
-            if needs_upsert {
-                estimated_bytes = estimated_bytes
-                    .saturating_add(path.len())
-                    .saturating_add(content.len())
-                    .saturating_add(24);
-                document_upserts.insert(path.clone(), content.clone());
+    if let Some(paths) = changed_paths {
+        let mut ordered_paths = paths.iter().cloned().collect::<Vec<_>>();
+        ordered_paths.sort();
+        ordered_paths.dedup();
+        for path in ordered_paths {
+            if let Some(meta) = target_manifest.files.get(&path) {
+                match meta.kind {
+                    CommitPathKind::Document => {
+                        let approx_doc_bytes = usize::try_from(meta.size_bytes.max(0))
+                            .unwrap_or(0)
+                            .max(1024);
+                        estimated_bytes = estimated_bytes
+                            .saturating_add(path.len())
+                            .saturating_add(approx_doc_bytes)
+                            .saturating_add(24);
+                        document_paths.push(path);
+                    }
+                    CommitPathKind::Asset => {
+                        let approx_asset_bytes = estimate_asset_b64_bytes(meta.size_bytes).max(256 * 1024);
+                        estimated_bytes = estimated_bytes
+                            .saturating_add(path.len())
+                            .saturating_add(meta.content_type.len())
+                            .saturating_add(approx_asset_bytes)
+                            .saturating_add(32);
+                        asset_paths.push(path);
+                    }
+                }
+            } else if is_document_text_path(&path) {
+                estimated_bytes = estimated_bytes.saturating_add(path.len()).saturating_add(12);
+                deleted_documents.push(path);
+            } else {
+                estimated_bytes = estimated_bytes.saturating_add(path.len()).saturating_add(12);
+                deleted_assets.push(path);
             }
-        }
-        for path in base.documents.keys() {
-            if target.documents.contains_key(path) {
-                continue;
-            }
-            estimated_bytes = estimated_bytes.saturating_add(path.len()).saturating_add(12);
-            deleted_documents.push(path.clone());
-        }
-
-        for (path, target_asset) in target.assets.iter() {
-            let needs_upsert = base
-                .assets
-                .get(path)
-                .map(|previous| !same_asset(previous, target_asset))
-                .unwrap_or(true);
-            if needs_upsert {
-                estimated_bytes = estimated_bytes
-                    .saturating_add(path.len())
-                    .saturating_add(target_asset.content_type.len())
-                    .saturating_add(estimate_asset_b64_bytes(target_asset.size_bytes))
-                    .saturating_add(32);
-                asset_upserts.insert(path.clone(), target_asset.clone());
-            }
-        }
-        for path in base.assets.keys() {
-            if target.assets.contains_key(path) {
-                continue;
-            }
-            estimated_bytes = estimated_bytes.saturating_add(path.len()).saturating_add(12);
-            deleted_assets.push(path.clone());
         }
     } else {
-        for (path, content) in target.documents.iter() {
-            estimated_bytes = estimated_bytes
-                .saturating_add(path.len())
-                .saturating_add(content.len())
-                .saturating_add(24);
-            document_upserts.insert(path.clone(), content.clone());
-        }
-        for (path, target_asset) in target.assets.iter() {
-            estimated_bytes = estimated_bytes
-                .saturating_add(path.len())
-                .saturating_add(target_asset.content_type.len())
-                .saturating_add(estimate_asset_b64_bytes(target_asset.size_bytes))
-                .saturating_add(32);
-            asset_upserts.insert(path.clone(), target_asset.clone());
+        let mut paths = target_manifest.files.keys().cloned().collect::<Vec<_>>();
+        paths.sort();
+        for path in paths {
+            let Some(meta) = target_manifest.files.get(&path) else {
+                continue;
+            };
+            match meta.kind {
+                CommitPathKind::Document => {
+                    let approx_doc_bytes = usize::try_from(meta.size_bytes.max(0))
+                        .unwrap_or(0)
+                        .max(1024);
+                    estimated_bytes = estimated_bytes
+                        .saturating_add(path.len())
+                        .saturating_add(approx_doc_bytes)
+                        .saturating_add(24);
+                    document_paths.push(path);
+                }
+                CommitPathKind::Asset => {
+                    let approx_asset_bytes = estimate_asset_b64_bytes(meta.size_bytes).max(256 * 1024);
+                    estimated_bytes = estimated_bytes
+                        .saturating_add(path.len())
+                        .saturating_add(meta.content_type.len())
+                        .saturating_add(approx_asset_bytes)
+                        .saturating_add(32);
+                    asset_paths.push(path);
+                }
+            }
         }
     }
 
     RevisionTransferCandidate {
-        transfer_mode: if baseline.is_some() { "delta" } else { "full" },
+        transfer_mode: if changed_paths.is_some() {
+            "delta"
+        } else {
+            "full"
+        },
         anchor_kind,
-        document_upserts,
+        document_paths,
         deleted_documents,
-        asset_upserts,
+        asset_paths,
         deleted_assets,
         estimated_bytes,
     }
+}
+
+pub(super) async fn live_vs_head_changed_paths(
+    state: &AppState,
+    project_id: Uuid,
+    head_manifest: &CommitManifest,
+) -> Result<HashSet<String>, StatusCode> {
+    let row = sqlx::query(
+        "select pending_sync, last_server_sync_at
+         from git_repositories
+         where project_id = $1",
+    )
+    .bind(project_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let Some(row) = row else {
+        return Ok(HashSet::new());
+    };
+    let pending_sync: bool = row.get("pending_sync");
+    if !pending_sync {
+        return Ok(HashSet::new());
+    }
+    let last_sync_at = row
+        .get::<Option<DateTime<Utc>>, _>("last_server_sync_at")
+        .unwrap_or(DateTime::<Utc>::UNIX_EPOCH);
+
+    let mut changed: HashSet<String> = HashSet::new();
+
+    let changed_doc_rows = sqlx::query(
+        "select path from documents
+         where project_id = $1 and updated_at > $2",
+    )
+    .bind(project_id)
+    .bind(last_sync_at)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    for row in changed_doc_rows {
+        let path: String = row.get("path");
+        if let Ok(clean) = sanitize_project_path(&path) {
+            changed.insert(clean);
+        }
+    }
+
+    let changed_asset_rows = sqlx::query(
+        "select path from project_assets
+         where project_id = $1 and created_at > $2",
+    )
+    .bind(project_id)
+    .bind(last_sync_at)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    for row in changed_asset_rows {
+        let path: String = row.get("path");
+        if let Ok(clean) = sanitize_project_path(&path) {
+            changed.insert(clean);
+        }
+    }
+
+    let mut live_paths: HashSet<String> = HashSet::new();
+    let live_doc_rows = sqlx::query("select path from documents where project_id = $1")
+        .bind(project_id)
+        .fetch_all(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    for row in live_doc_rows {
+        let path: String = row.get("path");
+        if let Ok(clean) = sanitize_project_path(&path) {
+            live_paths.insert(clean);
+        }
+    }
+    let live_asset_rows = sqlx::query("select path from project_assets where project_id = $1")
+        .bind(project_id)
+        .fetch_all(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    for row in live_asset_rows {
+        let path: String = row.get("path");
+        if let Ok(clean) = sanitize_project_path(&path) {
+            live_paths.insert(clean);
+        }
+    }
+
+    for head_path in head_manifest.files.keys() {
+        if !live_paths.contains(head_path) {
+            changed.insert(head_path.clone());
+        }
+    }
+    for live_path in live_paths {
+        if !head_manifest.files.contains_key(&live_path) {
+            changed.insert(live_path);
+        }
+    }
+    Ok(changed)
 }
 
 pub(super) async fn stored_asset_bytes(
@@ -514,11 +729,13 @@ pub(super) async fn stored_asset_bytes(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
-pub(super) fn build_nodes_from_state(state: &RevisionStateData) -> Result<Vec<ProjectFileNode>, StatusCode> {
+pub(super) fn build_nodes_from_manifest(
+    target_manifest: &CommitManifest,
+) -> Result<Vec<ProjectFileNode>, StatusCode> {
     let mut dirs: HashSet<String> = HashSet::new();
     let mut nodes: Vec<ProjectFileNode> = Vec::new();
 
-    for (path, _) in state.documents.iter() {
+    for path in target_manifest.files.keys() {
         let clean = sanitize_project_path(path)?;
         let mut acc = String::new();
         let parts: Vec<&str> = clean.split('/').collect();
@@ -537,28 +754,9 @@ pub(super) fn build_nodes_from_state(state: &RevisionStateData) -> Result<Vec<Pr
         });
     }
 
-    for dir in state.directories.iter() {
+    for dir in target_manifest.directories.iter() {
         let clean = sanitize_project_path(dir)?;
         dirs.insert(clean);
-    }
-
-    for (path, _) in state.assets.iter() {
-        let clean = sanitize_project_path(path)?;
-        let mut acc = String::new();
-        let parts: Vec<&str> = clean.split('/').collect();
-        for part in parts.iter().take(parts.len().saturating_sub(1)) {
-            if acc.is_empty() {
-                acc.push_str(part);
-            } else {
-                acc.push('/');
-                acc.push_str(part);
-            }
-            dirs.insert(acc.clone());
-        }
-        nodes.push(ProjectFileNode {
-            path: clean,
-            kind: "file".to_string(),
-        });
     }
 
     for dir in dirs {
@@ -570,6 +768,23 @@ pub(super) fn build_nodes_from_state(state: &RevisionStateData) -> Result<Vec<Pr
     nodes.sort_by(|a, b| a.path.cmp(&b.path));
     nodes.dedup_by(|a, b| a.path == b.path && a.kind == b.kind);
     Ok(nodes)
+}
+
+pub(super) fn load_blob_bytes_at_path(
+    repo: &Repository,
+    commit: &Commit<'_>,
+    path: &str,
+) -> Result<Vec<u8>, StatusCode> {
+    let tree = commit
+        .tree()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let entry = tree
+        .get_path(std::path::Path::new(path))
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    let blob = repo
+        .find_blob(entry.id())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(blob.content().to_vec())
 }
 
 pub(super) async fn get_revision_documents(
@@ -586,41 +801,51 @@ pub(super) async fn get_revision_documents(
     ensure_git_branch_checked_out(&config.local_path, &config.default_branch)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let entry_file_path = lookup_project_entry_file_path(&state.db, project_id).await;
-    let (target_state, nodes, mut candidates) = {
+    let (target_manifest, nodes, mut candidates, live_base_context) = {
         let repo =
             Repository::open(&config.local_path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         let revision_oid = Oid::from_str(&revision_id).map_err(|_| StatusCode::NOT_FOUND)?;
         let target_commit = repo
             .find_commit(revision_oid)
             .map_err(|_| StatusCode::NOT_FOUND)?;
-        let target_state = load_git_state_from_commit(&repo, &target_commit)
+        let target_manifest = load_commit_manifest(&repo, &target_commit)
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        let nodes = build_nodes_from_state(&target_state)?;
+        let nodes = build_nodes_from_manifest(&target_manifest)?;
         let mut candidates = vec![build_transfer_candidate(
-            &target_state,
+            &target_manifest,
             None,
             RevisionAnchorKind::None,
         )];
+        let mut live_base_context: Option<(CommitManifest, HashSet<String>)> = None;
+
+        let has_client_revision_anchor = query.current_revision_id.is_some();
         if let Ok(head_ref) = repo.find_reference(&format!("refs/heads/{}", config.default_branch)) {
             if let Ok(head_commit) = head_ref.peel_to_commit() {
                 let head_id = head_commit.id().to_string();
-                if head_id != revision_id {
-                    let head_revision_state = load_git_state_from_commit(&repo, &head_commit)
+                let head_manifest = load_commit_manifest(&repo, &head_commit)
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                let head_to_target = if head_id != revision_id {
+                    let changed_paths = diff_changed_paths_between(&repo, &head_commit, &target_commit)
                         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-                    candidates.push(build_transfer_candidate(
-                        &target_state,
-                        Some(&head_revision_state),
-                        RevisionAnchorKind::Revision(head_id),
-                    ));
-                }
+                    if has_client_revision_anchor {
+                        candidates.push(build_transfer_candidate(
+                            &target_manifest,
+                            Some(&changed_paths),
+                            RevisionAnchorKind::Revision(head_id),
+                        ));
+                    }
+                    changed_paths
+                } else {
+                    HashSet::new()
+                };
+                live_base_context = Some((head_manifest, head_to_target));
             }
         }
+
         if let Some(base_revision_id) = query.current_revision_id.clone() {
             if base_revision_id != revision_id {
                 if let Ok(base_oid) = Oid::from_str(&base_revision_id) {
                     if let Ok(base_commit) = repo.find_commit(base_oid) {
-                        let base_revision_state = load_git_state_from_commit(&repo, &base_commit)
-                            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
                         let duplicate = candidates.iter().any(|candidate| {
                             matches!(
                                 &candidate.anchor_kind,
@@ -628,9 +853,11 @@ pub(super) async fn get_revision_documents(
                             )
                         });
                         if !duplicate {
+                            let changed_paths = diff_changed_paths_between(&repo, &base_commit, &target_commit)
+                                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
                             candidates.push(build_transfer_candidate(
-                                &target_state,
-                                Some(&base_revision_state),
+                                &target_manifest,
+                                Some(&changed_paths),
                                 RevisionAnchorKind::Revision(base_revision_id),
                             ));
                         }
@@ -638,19 +865,20 @@ pub(super) async fn get_revision_documents(
                 }
             }
         }
-        (target_state, nodes, candidates)
+        (target_manifest, nodes, candidates, live_base_context)
     };
 
-    if query.include_live_anchor.unwrap_or(false) {
-        let mut live_state = load_project_state(&state.db, project_id)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        populate_asset_fingerprints(&state, &mut live_state).await?;
-        candidates.push(build_transfer_candidate(
-            &target_state,
-            Some(&live_state),
-            RevisionAnchorKind::Live,
-        ));
+    if query.include_live_anchor.unwrap_or(false) && query.current_revision_id.is_none() {
+        if let Some((head_manifest, head_to_target)) = live_base_context.as_ref() {
+            let live_to_head = live_vs_head_changed_paths(&state, project_id, head_manifest).await?;
+            let mut live_union = head_to_target.clone();
+            live_union.extend(live_to_head);
+            candidates.push(build_transfer_candidate(
+                &target_manifest,
+                Some(&live_union),
+                RevisionAnchorKind::Live,
+            ));
+        }
     }
 
     let selected = candidates
@@ -662,31 +890,37 @@ pub(super) async fn get_revision_documents(
             )
         })
         .unwrap_or_else(|| {
-            build_transfer_candidate(&target_state, None, RevisionAnchorKind::None)
+            build_transfer_candidate(&target_manifest, None, RevisionAnchorKind::None)
         });
 
     let RevisionTransferCandidate {
         transfer_mode,
         anchor_kind,
-        document_upserts,
+        document_paths,
         deleted_documents: raw_deleted_documents,
-        asset_upserts,
+        asset_paths,
         deleted_assets: raw_deleted_assets,
         ..
     } = selected;
 
-    let mut document_pairs = document_upserts.into_iter().collect::<Vec<_>>();
-    document_pairs.sort_by(|a, b| a.0.cmp(&b.0));
-    let documents: Vec<RevisionDocument> = document_pairs
+    let mut clean_document_paths = document_paths
         .into_iter()
-        .map(|(path, content)| {
-            let clean = sanitize_project_path(&path)?;
-            Ok(RevisionDocument {
-                path: clean,
-                content,
-            })
-        })
+        .map(|path| sanitize_project_path(&path))
         .collect::<Result<Vec<_>, StatusCode>>()?;
+    clean_document_paths.sort();
+    clean_document_paths.dedup();
+    let repo = Repository::open(&config.local_path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let revision_oid = Oid::from_str(&revision_id).map_err(|_| StatusCode::NOT_FOUND)?;
+    let target_commit = repo
+        .find_commit(revision_oid)
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+
+    let mut documents: Vec<RevisionDocument> = Vec::with_capacity(clean_document_paths.len());
+    for path in clean_document_paths {
+        let bytes = load_blob_bytes_at_path(&repo, &target_commit, &path)?;
+        let content = String::from_utf8(bytes).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        documents.push(RevisionDocument { path, content });
+    }
 
     let mut deleted_documents = raw_deleted_documents
         .into_iter()
@@ -695,16 +929,22 @@ pub(super) async fn get_revision_documents(
     deleted_documents.sort();
     deleted_documents.dedup();
 
-    let mut asset_pairs = asset_upserts.into_iter().collect::<Vec<_>>();
-    asset_pairs.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut assets: Vec<RevisionAsset> = Vec::with_capacity(asset_pairs.len());
-    for (path, asset_meta) in asset_pairs {
-        let clean = sanitize_project_path(&path)?;
-        let bytes = stored_asset_bytes(&state, &asset_meta).await?;
+    let mut clean_asset_paths = asset_paths
+        .into_iter()
+        .map(|path| sanitize_project_path(&path))
+        .collect::<Result<Vec<_>, StatusCode>>()?;
+    clean_asset_paths.sort();
+    clean_asset_paths.dedup();
+    let mut assets: Vec<RevisionAsset> = Vec::with_capacity(clean_asset_paths.len());
+    for path in clean_asset_paths {
+        let Some(meta) = target_manifest.files.get(&path) else {
+            continue;
+        };
+        let bytes = load_blob_bytes_at_path(&repo, &target_commit, &path)?;
         assets.push(RevisionAsset {
-            path: clean,
-            content_type: asset_meta.content_type,
-            size_bytes: asset_meta.size_bytes,
+            path,
+            content_type: meta.content_type.clone(),
+            size_bytes: i64::try_from(bytes.len()).unwrap_or(i64::MAX),
             content_base64: base64::Engine::encode(
                 &base64::engine::general_purpose::STANDARD,
                 bytes,
