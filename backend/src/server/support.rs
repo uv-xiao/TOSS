@@ -294,7 +294,7 @@ fn clear_repo_working_tree(repo_path: &str) -> Result<(), String> {
 fn is_document_text_path(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     [
-        ".typ", ".txt", ".md", ".json", ".toml", ".yaml", ".yml", ".csv", ".xml", ".html",
+        ".typ", ".bib", ".txt", ".md", ".json", ".toml", ".yaml", ".yml", ".csv", ".xml", ".html",
         ".css", ".js", ".ts", ".tsx", ".jsx",
     ]
     .iter()

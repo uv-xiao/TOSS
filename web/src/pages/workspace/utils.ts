@@ -72,7 +72,7 @@ export function parentProjectPath(path: string) {
 }
 
 export function isTextFile(path: string) {
-  return /\.(typ|txt|md|json|toml|yaml|yml|csv|xml|html|css|js|ts|tsx|jsx)$/i.test(path);
+  return /\.(typ|bib|txt|md|json|toml|yaml|yml|csv|xml|html|css|js|ts|tsx|jsx)$/i.test(path);
 }
 
 export function editorLanguageForPath(path: string): "typst" | "markdown" | "plain" {
