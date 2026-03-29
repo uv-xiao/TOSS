@@ -99,6 +99,7 @@ pub(super) fn load_git_state_from_commit(
                 object_key: format!("git://{}", blob.id()),
                 content_type: guess_content_type(&clean_path),
                 size_bytes: i64::try_from(bytes.len()).unwrap_or(i64::MAX),
+                fingerprint: bytes_sha256_hex(bytes),
                 inline_data: Some(bytes.to_vec()),
             },
         );
@@ -619,9 +620,10 @@ pub(super) async fn get_revision_documents(
     };
 
     if query.include_live_anchor.unwrap_or(false) {
-        let live_state = load_project_state(&state.db, project_id)
+        let mut live_state = load_project_state(&state.db, project_id)
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        populate_asset_fingerprints(&state, &mut live_state).await?;
         candidates.push(build_transfer_candidate(
             &target_state,
             Some(&live_state),
