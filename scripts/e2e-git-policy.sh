@@ -13,7 +13,7 @@ echo "[1/7] create PAT"
 resp="$(curl -sS -H "x-user-id: ${DEV_USER_ID}" -X POST \
   -H "content-type: application/json" \
   -d '{"label":"e2e-git-policy","expires_at":null}' \
-  "${CORE_API_URL}/v1/security/tokens")"
+  "${CORE_API_URL}/v1/profile/security/tokens")"
 token="$(echo "$resp" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
 token_id="$(echo "$resp" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')"
 if [[ -z "$token" ]]; then
@@ -62,7 +62,7 @@ fi
 
 echo "[7/7] revoke PAT and verify auth fails"
 curl -sS -X DELETE -H "x-user-id: ${DEV_USER_ID}" \
-  "${CORE_API_URL}/v1/security/tokens/${token_id}" >/dev/null
+  "${CORE_API_URL}/v1/profile/security/tokens/${token_id}" >/dev/null
 set +e
 git ls-remote "http://oauth2:${token}@${CORE_API_URL#http://}/v1/git/repo/${PROJECT_ID}" >/dev/null 2>&1
 auth_exit=$?

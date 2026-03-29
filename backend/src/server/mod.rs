@@ -28,7 +28,7 @@ use openidconnect::{
 };
 use rand::distr::{Alphanumeric, SampleString};
 use reqwest::redirect::Policy;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
@@ -116,14 +116,6 @@ pub async fn run() {
         )
         .route(
             "/v1/profile/security/tokens/{token_id}",
-            delete(revoke_personal_access_token),
-        )
-        .route(
-            "/v1/security/tokens",
-            get(list_personal_access_tokens).post(create_personal_access_token),
-        )
-        .route(
-            "/v1/security/tokens/{token_id}",
             delete(revoke_personal_access_token),
         )
         .route("/v1/organizations/mine", get(list_my_organizations))
@@ -214,14 +206,6 @@ pub async fn run() {
             get(get_document)
                 .put(update_document)
                 .delete(delete_document),
-        )
-        .route(
-            "/v1/projects/{project_id}/snapshots",
-            get(list_project_snapshots).post(create_project_snapshot),
-        )
-        .route(
-            "/v1/projects/{project_id}/snapshots/{snapshot_id}/restore",
-            post(restore_project_snapshot),
         )
         .route(
             "/v1/projects/{project_id}/assets",

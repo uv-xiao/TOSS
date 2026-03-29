@@ -487,22 +487,6 @@ pub struct UpdateDocumentInput {
 }
 
 #[derive(Serialize)]
-pub struct ProjectSnapshot {
-    pub id: Uuid,
-    pub project_id: Uuid,
-    pub object_key: String,
-    pub created_by: Option<Uuid>,
-    pub created_at: DateTime<Utc>,
-    pub document_count: i32,
-    pub byte_size: i64,
-}
-
-#[derive(Serialize)]
-pub struct ProjectSnapshotListResponse {
-    pub snapshots: Vec<ProjectSnapshot>,
-}
-
-#[derive(Serialize)]
 pub struct ProjectAsset {
     pub id: Uuid,
     pub project_id: Uuid,

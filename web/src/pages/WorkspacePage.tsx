@@ -10,7 +10,7 @@ import {
 } from "react";
 import { Navigate, useNavigate, useParams } from "react-router-dom";
 import { EditorPane } from "@/components/EditorPane";
-import { UiButton, UiCard, UiDialog, UiInput } from "@/components/ui";
+import { UiButton, UiDialog, UiInput } from "@/components/ui";
 import {
   copyProject,
   createProjectFile,

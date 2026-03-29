@@ -4,9 +4,8 @@ use std::path::{Component, Path as FsPath, PathBuf};
 use std::str;
 
 use git2::{
-    build::CheckoutBuilder,
-    Cred, FetchOptions, IndexAddOption, Oid, PushOptions, RemoteCallbacks, Repository, Signature,
-    StatusOptions,
+    build::CheckoutBuilder, Cred, FetchOptions, IndexAddOption, Oid, PushOptions, RemoteCallbacks,
+    Repository, Signature, StatusOptions,
 };
 use uuid::Uuid;
 
@@ -205,8 +204,15 @@ pub fn git_commit_staged_if_changed(
     let author = Signature::now(author_name, author_email).map_err(|e| e.to_string())?;
     let committer = default_git_signature()?;
     let commit_id = if let Some(parent) = head_commit {
-        repo.commit(Some("HEAD"), &author, &committer, message, &tree, &[&parent])
-            .map_err(|e| e.to_string())?
+        repo.commit(
+            Some("HEAD"),
+            &author,
+            &committer,
+            message,
+            &tree,
+            &[&parent],
+        )
+        .map_err(|e| e.to_string())?
     } else {
         repo.commit(Some("HEAD"), &author, &committer, message, &tree, &[])
             .map_err(|e| e.to_string())?
@@ -238,8 +244,15 @@ pub fn git_commit_allow_empty(
     let author = Signature::now(author_name, author_email).map_err(|e| e.to_string())?;
     let committer = default_git_signature()?;
     let commit_id = if let Some(parent) = head_commit {
-        repo.commit(Some("HEAD"), &author, &committer, message, &tree, &[&parent])
-            .map_err(|e| e.to_string())?
+        repo.commit(
+            Some("HEAD"),
+            &author,
+            &committer,
+            message,
+            &tree,
+            &[&parent],
+        )
+        .map_err(|e| e.to_string())?
     } else {
         repo.commit(Some("HEAD"), &author, &committer, message, &tree, &[])
             .map_err(|e| e.to_string())?
