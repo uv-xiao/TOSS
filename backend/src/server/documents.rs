@@ -601,17 +601,39 @@ pub(super) async fn get_revision_documents(
             None,
             RevisionAnchorKind::None,
         )];
+        if let Ok(head_ref) = repo.find_reference(&format!("refs/heads/{}", config.default_branch)) {
+            if let Ok(head_commit) = head_ref.peel_to_commit() {
+                let head_id = head_commit.id().to_string();
+                if head_id != revision_id {
+                    let head_revision_state = load_git_state_from_commit(&repo, &head_commit)
+                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                    candidates.push(build_transfer_candidate(
+                        &target_state,
+                        Some(&head_revision_state),
+                        RevisionAnchorKind::Revision(head_id),
+                    ));
+                }
+            }
+        }
         if let Some(base_revision_id) = query.current_revision_id.clone() {
             if base_revision_id != revision_id {
                 if let Ok(base_oid) = Oid::from_str(&base_revision_id) {
                     if let Ok(base_commit) = repo.find_commit(base_oid) {
                         let base_revision_state = load_git_state_from_commit(&repo, &base_commit)
                             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-                        candidates.push(build_transfer_candidate(
-                            &target_state,
-                            Some(&base_revision_state),
-                            RevisionAnchorKind::Revision(base_revision_id),
-                        ));
+                        let duplicate = candidates.iter().any(|candidate| {
+                            matches!(
+                                &candidate.anchor_kind,
+                                RevisionAnchorKind::Revision(existing) if existing == &base_revision_id
+                            )
+                        });
+                        if !duplicate {
+                            candidates.push(build_transfer_candidate(
+                                &target_state,
+                                Some(&base_revision_state),
+                                RevisionAnchorKind::Revision(base_revision_id),
+                            ));
+                        }
                     }
                 }
             }

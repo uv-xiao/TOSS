@@ -874,11 +874,17 @@ pub(super) async fn load_project_state(db: &PgPool, project_id: Uuid) -> Result<
 }
 
 pub(super) fn same_asset(a: &RevisionStoredAsset, b: &RevisionStoredAsset) -> bool {
-    if a.content_type != b.content_type || a.size_bytes != b.size_bytes {
-        return false;
-    }
     if !a.fingerprint.is_empty() && !b.fingerprint.is_empty() {
         return a.fingerprint == b.fingerprint;
+    }
+    if a.size_bytes != b.size_bytes {
+        return false;
+    }
+    if a.content_type == b.content_type
+        && a.object_key == b.object_key
+        && a.inline_data == b.inline_data
+    {
+        return true;
     }
     a.object_key == b.object_key && a.inline_data == b.inline_data
 }
