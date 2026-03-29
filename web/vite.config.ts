@@ -9,6 +9,34 @@ export default defineConfig({
   worker: {
     format: "es"
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("/node_modules/react") || id.includes("/node_modules/scheduler")) {
+            return "vendor-react";
+          }
+          if (id.includes("/node_modules/react-router")) {
+            return "vendor-router";
+          }
+          if (
+            id.includes("/node_modules/@codemirror/") ||
+            id.includes("/node_modules/codemirror") ||
+            id.includes("/node_modules/@lezer/")
+          ) {
+            return "vendor-editor";
+          }
+          if (
+            id.includes("/node_modules/yjs") ||
+            id.includes("/node_modules/@myriaddreamin/")
+          ) {
+            return "vendor-collab-typst";
+          }
+          return undefined;
+        }
+      }
+    }
+  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "src")

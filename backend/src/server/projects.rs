@@ -1885,14 +1885,6 @@ fn normalized_org_permission(raw: &str) -> Option<&'static str> {
     }
 }
 
-fn role_from_org_permission(permission: &str) -> &'static str {
-    if permission == "write" {
-        "Student"
-    } else {
-        "Viewer"
-    }
-}
-
 async fn list_project_organization_access(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -2061,58 +2053,34 @@ async fn list_project_access_users(
     for row in direct_rows {
         let user_id: Uuid = row.get("user_id");
         let role: String = row.get("role");
-        let access_type = access_type_from_role(&role).to_string();
         let source = if share_user_ids.contains(&user_id) {
             "share_link_invite".to_string()
         } else {
             "direct_role".to_string()
         };
-        users
-            .entry(user_id)
-            .and_modify(|entry| {
-                if role_rank(&role) > role_rank(&entry.role) {
-                    entry.role = role.clone();
-                    entry.access_type = access_type.clone();
-                }
-                if !entry.sources.contains(&source) {
-                    entry.sources.push(source.clone());
-                }
-            })
-            .or_insert_with(|| ProjectAccessUser {
-                user_id,
-                email: row.get("email"),
-                display_name: row.get("display_name"),
-                role,
-                access_type,
-                sources: vec![source],
-            });
+        merge_project_access_user(
+            &mut users,
+            user_id,
+            row.get("email"),
+            row.get("display_name"),
+            role,
+            source,
+        );
     }
     for row in org_rows {
         let user_id: Uuid = row.get("user_id");
         let permission: String = row.get("permission");
         let organization_name: String = row.get("organization_name");
         let role = role_from_org_permission(&permission).to_string();
-        let access_type = access_type_from_role(&role).to_string();
         let source = format!("organization:{organization_name}");
-        users
-            .entry(user_id)
-            .and_modify(|entry| {
-                if role_rank(&role) > role_rank(&entry.role) {
-                    entry.role = role.clone();
-                    entry.access_type = access_type.clone();
-                }
-                if !entry.sources.contains(&source) {
-                    entry.sources.push(source.clone());
-                }
-            })
-            .or_insert_with(|| ProjectAccessUser {
-                user_id,
-                email: row.get("email"),
-                display_name: row.get("display_name"),
-                role,
-                access_type,
-                sources: vec![source],
-            });
+        merge_project_access_user(
+            &mut users,
+            user_id,
+            row.get("email"),
+            row.get("display_name"),
+            role,
+            source,
+        );
     }
     let mut output = users.into_values().collect::<Vec<_>>();
     for user in &mut output {

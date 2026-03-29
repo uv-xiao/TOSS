@@ -117,6 +117,45 @@ fn access_type_from_role(role: &str) -> &'static str {
     }
 }
 
+fn role_from_org_permission(permission: &str) -> &'static str {
+    match permission {
+        "read" => "Viewer",
+        "write" => "Student",
+        "manage" => "Teacher",
+        _ => "Viewer",
+    }
+}
+
+fn merge_project_access_user(
+    users: &mut HashMap<Uuid, ProjectAccessUser>,
+    user_id: Uuid,
+    email: String,
+    display_name: String,
+    role: String,
+    source: String,
+) {
+    let access_type = access_type_from_role(&role).to_string();
+    users
+        .entry(user_id)
+        .and_modify(|entry| {
+            if role_rank(&role) > role_rank(&entry.role) {
+                entry.role = role.clone();
+                entry.access_type = access_type.clone();
+            }
+            if !entry.sources.contains(&source) {
+                entry.sources.push(source.clone());
+            }
+        })
+        .or_insert_with(|| ProjectAccessUser {
+            user_id,
+            email,
+            display_name,
+            role,
+            access_type,
+            sources: vec![source],
+        });
+}
+
 async fn apply_project_group_roles(
     db: &PgPool,
     user_id: Uuid,

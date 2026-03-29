@@ -1,4 +1,5 @@
 import type {
+  AssetMeta,
   PreviewFitMode,
   ProjectNode,
   ProjectTreeNodeView,
@@ -21,6 +22,121 @@ export const PREVIEW_MAX_ZOOM = 5;
 
 export function clampNumber(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
+}
+
+function summarizeContentForHash(content: string) {
+  if (content.length <= 96) return content;
+  return `${content.slice(0, 48)}::${content.slice(-48)}`;
+}
+
+export function buildCompileInputKey(params: {
+  entryFilePath: string;
+  documents: Array<{ path: string; content: string }>;
+  assets: Array<{ path: string; contentBase64: string }>;
+  fontData: Uint8Array[];
+}) {
+  const docsPart = params.documents
+    .map((doc) => `${doc.path}:${doc.content.length}:${summarizeContentForHash(doc.content)}`)
+    .join("|");
+  const assetsPart = params.assets
+    .map((asset) => `${asset.path}:${asset.contentBase64.length}:${summarizeContentForHash(asset.contentBase64)}`)
+    .join("|");
+  const fontsPart = params.fontData
+    .map((font) => `${font.byteLength}:${font[0] ?? 0}:${font[Math.floor(font.byteLength / 2)] ?? 0}:${font[font.byteLength - 1] ?? 0}`)
+    .join("|");
+  return `${params.entryFilePath}::${docsPart}::${assetsPart}::${fontsPart}`;
+}
+
+export function buildTopPreviewThumbnail(canvas: HTMLCanvasElement) {
+  const srcWidth = Math.max(1, canvas.width || canvas.clientWidth || 1);
+  const srcHeight = Math.max(1, canvas.height || canvas.clientHeight || 1);
+  const targetRatio = 88 / 54;
+  let cropWidth = srcWidth;
+  let cropHeight = Math.round(cropWidth / targetRatio);
+  if (cropHeight > srcHeight) {
+    cropHeight = srcHeight;
+    cropWidth = Math.round(cropHeight * targetRatio);
+  }
+  const cropX = Math.max(0, Math.floor((srcWidth - cropWidth) / 2));
+  const cropY = 0;
+  const out = document.createElement("canvas");
+  out.width = Math.max(1, Math.min(880, cropWidth));
+  out.height = Math.max(1, Math.round(out.width / targetRatio));
+  const ctx = out.getContext("2d");
+  if (!ctx) return "";
+  ctx.fillStyle = "#f3f6fb";
+  ctx.fillRect(0, 0, out.width, out.height);
+  ctx.drawImage(canvas, cropX, cropY, cropWidth, cropHeight, 0, 0, out.width, out.height);
+  return out.toDataURL("image/png");
+}
+
+const QUOTED_PATH_REGEX = /"([^"\r\n]+)"/g;
+const ABSOLUTE_OR_REMOTE_PATH_REGEX = /^(?:[a-zA-Z]+:|\/)/;
+
+export function collectReferencedAssetPaths(
+  docsList: Array<{ path: string; content: string }>,
+  assetsByPath: Record<string, AssetMeta>
+) {
+  const references = new Set<string>();
+  for (const doc of docsList) {
+    const baseDir = parentProjectPath(doc.path);
+    QUOTED_PATH_REGEX.lastIndex = 0;
+    let match = QUOTED_PATH_REGEX.exec(doc.content);
+    while (match) {
+      const quoted = match[1]?.trim() || "";
+      if (quoted && !ABSOLUTE_OR_REMOTE_PATH_REGEX.test(quoted) && !quoted.startsWith("#")) {
+        const candidatePath = normalizePath(baseDir ? joinProjectPath(baseDir, quoted) : quoted);
+        if (candidatePath && assetsByPath[candidatePath]) references.add(candidatePath);
+      }
+      match = QUOTED_PATH_REGEX.exec(doc.content);
+    }
+  }
+  for (const path of Object.keys(assetsByPath)) {
+    if (isFontFile(path)) references.add(path);
+  }
+  return Array.from(references);
+}
+
+export function prependUniqueById<T extends { id: string }>(primary: T[], fallback: T[]) {
+  const merged: T[] = [];
+  const seen = new Set<string>();
+  for (const item of primary) {
+    if (seen.has(item.id)) continue;
+    seen.add(item.id);
+    merged.push(item);
+  }
+  for (const item of fallback) {
+    if (seen.has(item.id)) continue;
+    seen.add(item.id);
+    merged.push(item);
+  }
+  return merged;
+}
+
+export function pickWorkspaceOpenPath(
+  nodes: ProjectNode[],
+  preferredEntryPath: string | null | undefined,
+  currentActivePath?: string | null
+) {
+  const filePaths = nodes.filter((node) => node.kind === "file").map((node) => node.path);
+  const fileSet = new Set(filePaths);
+  if (currentActivePath && fileSet.has(currentActivePath)) return currentActivePath;
+  if (preferredEntryPath && fileSet.has(preferredEntryPath)) return preferredEntryPath;
+  return filePaths[0] || preferredEntryPath || "main.typ";
+}
+
+export function maxDocumentUpdatedAtIso(
+  documents: Array<{ updated_at: string }>,
+  currentIso?: string | null
+) {
+  let maxMs = currentIso ? Date.parse(currentIso) : Number.NEGATIVE_INFINITY;
+  if (!Number.isFinite(maxMs)) maxMs = Number.NEGATIVE_INFINITY;
+  for (const document of documents) {
+    const nextMs = Date.parse(document.updated_at);
+    if (Number.isFinite(nextMs) && nextMs > maxMs) maxMs = nextMs;
+  }
+  if (Number.isFinite(maxMs)) return new Date(maxMs).toISOString();
+  return null;
 }
 
 export function readWorkspaceLayoutPrefs(): WorkspaceLayoutPrefs {

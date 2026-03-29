@@ -29,6 +29,23 @@ struct PushReject {
     reason: String,
 }
 
+fn push_reject_hint_lines(reason: &str) -> Vec<String> {
+    if reason == "forced push prohibited" {
+        return vec![
+            "error: forced push prohibited\n".to_string(),
+            "\n".to_string(),
+            "hint: You can't git push --force to this Typst project. Rebase or merge on top of current head.\n".to_string(),
+        ];
+    }
+    if reason.starts_with("fetch first:") {
+        return vec![
+            "error: push rejected because server has newer online updates\n".to_string(),
+            "hint: Pull latest changes, rebase/merge your local commit, then push again.\n".to_string(),
+        ];
+    }
+    vec![format!("error: {reason}\n")]
+}
+
 fn pkt_line(payload: &str) -> Vec<u8> {
     let total_len = payload.len() + 4;
     format!("{total_len:04x}{payload}").into_bytes()
@@ -670,20 +687,7 @@ async fn git_http_backend(
     if let Some(reject) = post_sync_error {
         if can_push {
             let ref_name = format!("refs/heads/{}", config.default_branch);
-            let hint_lines = if reject.reason == "forced push prohibited" {
-                vec![
-                    "error: forced push prohibited\n".to_string(),
-                    "\n".to_string(),
-                    "hint: You can't git push --force to this Typst project. Rebase or merge on top of current head.\n".to_string(),
-                ]
-            } else if reject.reason.starts_with("fetch first:") {
-                vec![
-                    "error: push rejected because server has newer online updates\n".to_string(),
-                    "hint: Pull latest changes, rebase/merge your local commit, then push again.\n".to_string(),
-                ]
-            } else {
-                vec![format!("error: {}\n", reject.reason)]
-            };
+            let hint_lines = push_reject_hint_lines(&reject.reason);
             let body = git_receive_pack_reject_body(&ref_name, &reject.reason, &hint_lines);
             let mut builder = axum::http::Response::builder().status(StatusCode::OK);
             builder = builder.header(
