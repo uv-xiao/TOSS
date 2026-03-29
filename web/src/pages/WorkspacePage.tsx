@@ -2003,6 +2003,7 @@ export function WorkspacePage({
               onAddFile={() => addPath("file")}
               onAddDirectory={() => addPath("directory")}
               onUpload={() => uploadFromPicker()}
+              onDownloadArchive={downloadArchive}
               tree={tree}
               activePath={activePath}
               expandedDirs={expandedDirs}
@@ -2119,7 +2120,6 @@ export function WorkspacePage({
               onDecreaseZoom={decreasePreviewZoom}
               onIncreaseZoom={increasePreviewZoom}
               onDownloadPdf={downloadCompiledPdf}
-              onDownloadArchive={downloadArchive}
               onJumpToDiagnostic={jumpToDiagnostic}
               t={t}
             />

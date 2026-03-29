@@ -1,5 +1,5 @@
 import type { DragEvent as ReactDragEvent } from "react";
-import { FilePlus2, FolderPlus, Upload } from "lucide-react";
+import { Archive, FilePlus2, FolderPlus, Upload } from "lucide-react";
 import { UiIconButton } from "@/components/ui";
 import { TreeNodeRow } from "@/pages/workspace/components/TreeNodeRow";
 import type { ContextMenuState, ProjectTreeNodeView } from "@/pages/workspace/types";
@@ -15,6 +15,7 @@ export function FileTreePanel({
   onAddFile,
   onAddDirectory,
   onUpload,
+  onDownloadArchive,
   tree,
   activePath,
   expandedDirs,
@@ -33,6 +34,7 @@ export function FileTreePanel({
   onAddFile: () => void;
   onAddDirectory: () => void;
   onUpload: () => void;
+  onDownloadArchive: () => void;
   tree: ProjectTreeNodeView[];
   activePath: string;
   expandedDirs: Set<string>;
@@ -43,16 +45,9 @@ export function FileTreePanel({
 }) {
   return (
     <aside className="panel panel-files" style={{ width }}>
-      <div className="panel-header">
+      <div className="panel-header workspace-main-header">
         <h2>{t("workspace.files")}</h2>
-      </div>
-      <div
-        className={`panel-content ${filesDropActive ? "drop-active" : ""}`}
-        onDragOver={onDragOver}
-        onDragLeave={onDragLeave}
-        onDrop={onDrop}
-      >
-        <div className="toolbar compact-left">
+        <div className="toolbar compact">
           <UiIconButton
             tooltip={t("workspace.newFile")}
             label={t("workspace.newFile")}
@@ -77,7 +72,17 @@ export function FileTreePanel({
           >
             <Upload size={16} />
           </UiIconButton>
+          <UiIconButton tooltip={t("preview.downloadZip")} label={t("preview.downloadZip")} onClick={onDownloadArchive}>
+            <Archive size={16} />
+          </UiIconButton>
         </div>
+      </div>
+      <div
+        className={`panel-content ${filesDropActive ? "drop-active" : ""}`}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
+      >
         <div className="tree">
           {tree.map((node) => (
             <TreeNodeRow

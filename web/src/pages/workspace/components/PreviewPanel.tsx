@@ -1,4 +1,4 @@
-import { Archive, Download, ZoomIn, ZoomOut } from "lucide-react";
+import { Download, ZoomIn, ZoomOut } from "lucide-react";
 import { UiIconButton } from "@/components/ui";
 import type { CompileDiagnostic, TypstRuntimeStatus } from "@/lib/typst";
 
@@ -22,7 +22,6 @@ export function PreviewPanel({
   onDecreaseZoom,
   onIncreaseZoom,
   onDownloadPdf,
-  onDownloadArchive,
   onJumpToDiagnostic,
   t
 }: {
@@ -51,7 +50,6 @@ export function PreviewPanel({
   onDecreaseZoom: () => void;
   onIncreaseZoom: () => void;
   onDownloadPdf: () => void;
-  onDownloadArchive: () => void;
   onJumpToDiagnostic: (diagnostic: CompileDiagnostic) => void;
   t: (key: string) => string;
 }) {
@@ -94,9 +92,6 @@ export function PreviewPanel({
             disabled={!pdfData}
           >
             <Download size={16} />
-          </UiIconButton>
-          <UiIconButton tooltip={t("preview.downloadZip")} label={t("preview.downloadZip")} onClick={onDownloadArchive}>
-            <Archive size={16} />
           </UiIconButton>
         </div>
       </div>
