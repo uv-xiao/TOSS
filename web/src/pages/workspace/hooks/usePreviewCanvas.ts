@@ -27,6 +27,35 @@ function syncPreviewScrollbarWidth(frame: HTMLElement) {
   frame.style.setProperty("--preview-scrollbar-width", `${Math.round(width * 10) / 10}px`);
 }
 
+type PreviewViewportAnchor = {
+  xRatio: number;
+  yRatio: number;
+};
+
+function captureViewportAnchor(frame: HTMLElement): PreviewViewportAnchor {
+  const scrollWidth = Math.max(1, frame.scrollWidth);
+  const scrollHeight = Math.max(1, frame.scrollHeight);
+  const centerX = frame.scrollLeft + frame.clientWidth / 2;
+  const centerY = frame.scrollTop + frame.clientHeight / 2;
+  return {
+    xRatio: centerX / scrollWidth,
+    yRatio: centerY / scrollHeight
+  };
+}
+
+function restoreViewportAnchor(frame: HTMLElement, anchor: PreviewViewportAnchor) {
+  const scrollWidth = Math.max(1, frame.scrollWidth);
+  const scrollHeight = Math.max(1, frame.scrollHeight);
+  const targetCenterX = anchor.xRatio * scrollWidth;
+  const targetCenterY = anchor.yRatio * scrollHeight;
+  const maxLeft = Math.max(0, frame.scrollWidth - frame.clientWidth);
+  const maxTop = Math.max(0, frame.scrollHeight - frame.clientHeight);
+  const nextLeft = Math.min(maxLeft, Math.max(0, targetCenterX - frame.clientWidth / 2));
+  const nextTop = Math.min(maxTop, Math.max(0, targetCenterY - frame.clientHeight / 2));
+  frame.scrollLeft = nextLeft;
+  frame.scrollTop = nextTop;
+}
+
 export function usePreviewCanvas({
   showPreviewPanel,
   vectorData,
@@ -73,6 +102,7 @@ export function usePreviewCanvas({
     const frame = canvasPreviewRef.current;
     if (!frame) return;
     syncPreviewScrollbarWidth(frame);
+    const preRenderAnchor = captureViewportAnchor(frame);
     if (!vectorData) {
       lastRenderSignatureRef.current = "";
       setHasPreviewPage(!!frame.querySelector(".pdf-pages .typst-page, .pdf-pages canvas"));
@@ -101,9 +131,7 @@ export function usePreviewCanvas({
           const zoom = fitMode === "manual" ? currentZoom : deriveFitZoom(frame, pages, fitMode);
           applyPreviewZoom(frame, zoom);
           syncPreviewScrollbarWidth(frame);
-          if (fitMode !== "manual" && frame.scrollLeft !== 0) {
-            frame.scrollLeft = 0;
-          }
+          restoreViewportAnchor(frame, preRenderAnchor);
           if (fitMode !== "manual" && Math.abs(zoom - currentZoom) > 0.01) {
             setPreviewZoom(zoom);
           }
@@ -131,12 +159,11 @@ export function usePreviewCanvas({
     if (!frame) return;
     const pages = frame.querySelector(".pdf-pages") as HTMLElement | null;
     if (!pages) return;
+    const anchor = captureViewportAnchor(frame);
     const zoom = previewFitMode === "manual" ? previewZoom : deriveFitZoom(frame, pages, previewFitMode);
     applyPreviewZoom(frame, zoom);
     syncPreviewScrollbarWidth(frame);
-    if (previewFitMode !== "manual" && frame.scrollLeft !== 0) {
-      frame.scrollLeft = 0;
-    }
+    restoreViewportAnchor(frame, anchor);
     if (previewFitMode !== "manual" && Math.abs(zoom - previewZoom) > 0.01) {
       setPreviewZoom(zoom);
     }
@@ -151,12 +178,11 @@ export function usePreviewCanvas({
       syncPreviewScrollbarWidth(frame);
       const pages = frame.querySelector(".pdf-pages") as HTMLElement | null;
       if (!pages || previewFitMode === "manual") return;
+      const anchor = captureViewportAnchor(frame);
       const zoom = deriveFitZoom(frame, pages, previewFitMode);
       applyPreviewZoom(frame, zoom);
       syncPreviewScrollbarWidth(frame);
-      if (frame.scrollLeft !== 0) {
-        frame.scrollLeft = 0;
-      }
+      restoreViewportAnchor(frame, anchor);
       setPreviewZoom((current) => (Math.abs(current - zoom) > 0.01 ? zoom : current));
     });
     observer.observe(frame);
@@ -172,12 +198,11 @@ export function usePreviewCanvas({
       syncPreviewScrollbarWidth(frame);
       const pages = frame.querySelector(".pdf-pages") as HTMLElement | null;
       if (!pages) return;
+      const anchor = captureViewportAnchor(frame);
       const zoom = deriveFitZoom(frame, pages, previewFitMode);
       applyPreviewZoom(frame, zoom);
       syncPreviewScrollbarWidth(frame);
-      if (frame.scrollLeft !== 0) {
-        frame.scrollLeft = 0;
-      }
+      restoreViewportAnchor(frame, anchor);
       setPreviewZoom((current) => (Math.abs(current - zoom) > 0.01 ? zoom : current));
     };
     window.addEventListener("resize", onResize);
