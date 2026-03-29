@@ -234,12 +234,6 @@ pub async fn run() {
         .route("/v1/typst/packages/{*path}", get(typst_package_proxy))
         .route("/v1/git/status/{project_id}", get(git_status))
         .route("/v1/git/repo-link/{project_id}", get(git_repo_link))
-        .route(
-            "/v1/git/config/{project_id}",
-            get(get_git_config).put(upsert_git_config),
-        )
-        .route("/v1/git/sync/pull/{project_id}", post(git_pull))
-        .route("/v1/git/sync/push/{project_id}", post(git_push))
         .route("/v1/git/repo/{project_id}/{*rest}", any(git_http_backend))
         .route("/v1/share/{token}/join", post(join_project_share_link))
         .route(

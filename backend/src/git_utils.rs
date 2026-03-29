@@ -3,10 +3,7 @@ use std::env;
 use std::path::{Component, Path as FsPath, PathBuf};
 use std::str;
 
-use git2::{
-    build::CheckoutBuilder, Cred, FetchOptions, IndexAddOption, Oid, PushOptions, RemoteCallbacks,
-    Repository, Signature, StatusOptions,
-};
+use git2::{build::CheckoutBuilder, IndexAddOption, Oid, Repository, Signature, StatusOptions};
 use uuid::Uuid;
 
 pub fn git_storage_root() -> PathBuf {
@@ -57,107 +54,6 @@ pub fn ensure_git_branch_checked_out(repo_path: &str, default_branch: &str) -> R
 
 fn default_git_signature() -> Result<Signature<'static>, String> {
     Signature::now("Typst Server", "noreply@typst-server.local").map_err(|e| e.to_string())
-}
-
-pub fn set_git_remote(repo_path: &str, remote_name: &str, remote_url: &str) -> Result<(), String> {
-    let repo = Repository::open(repo_path).map_err(|e| e.to_string())?;
-    if repo.find_remote(remote_name).is_ok() {
-        repo.remote_set_url(remote_name, remote_url)
-            .map_err(|e| e.to_string())?;
-    } else {
-        repo.remote(remote_name, remote_url)
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
-fn fetch_options() -> FetchOptions<'static> {
-    let mut callbacks = RemoteCallbacks::new();
-    callbacks.credentials(|_url, username_from_url, _allowed| {
-        if let Some(username) = username_from_url {
-            Cred::username(username)
-        } else {
-            Cred::default()
-        }
-    });
-    let mut fetch = FetchOptions::new();
-    fetch.remote_callbacks(callbacks);
-    fetch
-}
-
-fn push_options() -> PushOptions<'static> {
-    let mut callbacks = RemoteCallbacks::new();
-    callbacks.credentials(|_url, username_from_url, _allowed| {
-        if let Some(username) = username_from_url {
-            Cred::username(username)
-        } else {
-            Cred::default()
-        }
-    });
-    let mut push = PushOptions::new();
-    push.remote_callbacks(callbacks);
-    push
-}
-
-pub fn git_fetch_branch(repo_path: &str, remote_name: &str, branch: &str) -> Result<(), String> {
-    let repo = Repository::open(repo_path).map_err(|e| e.to_string())?;
-    let mut remote = repo.find_remote(remote_name).map_err(|e| e.to_string())?;
-    let mut fetch = fetch_options();
-    remote
-        .fetch(&[branch], Some(&mut fetch), None)
-        .map_err(|e| e.to_string())
-}
-
-pub fn git_fast_forward_from_remote(
-    repo_path: &str,
-    branch: &str,
-    remote_name: &str,
-) -> Result<(), String> {
-    let repo = Repository::open(repo_path).map_err(|e| e.to_string())?;
-    let local_ref_name = format!("refs/heads/{branch}");
-    let remote_ref_name = format!("refs/remotes/{remote_name}/{branch}");
-
-    let remote_ref = repo
-        .find_reference(&remote_ref_name)
-        .map_err(|e| e.to_string())?;
-    let remote_target = remote_ref
-        .target()
-        .ok_or_else(|| "remote branch has no target".to_string())?;
-
-    if let Ok(local_ref) = repo.find_reference(&local_ref_name) {
-        let local_target = local_ref
-            .target()
-            .ok_or_else(|| "local branch has no target".to_string())?;
-        let merge_base = repo
-            .merge_base(local_target, remote_target)
-            .map_err(|e| e.to_string())?;
-        if merge_base != local_target {
-            return Err("non fast-forward pull would be required".to_string());
-        }
-    }
-
-    repo.reference(&local_ref_name, remote_target, true, "fast-forward")
-        .map_err(|e| e.to_string())?;
-    repo.set_head(&local_ref_name).map_err(|e| e.to_string())?;
-
-    let mut checkout = CheckoutBuilder::new();
-    checkout.force();
-    repo.checkout_head(Some(&mut checkout))
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-pub fn git_push_branch(repo_path: &str, remote_name: &str, branch: &str) -> Result<(), String> {
-    let repo = Repository::open(repo_path).map_err(|e| e.to_string())?;
-    let mut remote = repo.find_remote(remote_name).map_err(|e| e.to_string())?;
-    let mut push = push_options();
-    remote
-        .push(
-            &[&format!("refs/heads/{branch}:refs/heads/{branch}")],
-            Some(&mut push),
-        )
-        .map_err(|e| e.to_string())?;
-    Ok(())
 }
 
 pub fn git_worktree_is_clean(repo_path: &str) -> Result<bool, String> {

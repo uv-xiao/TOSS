@@ -67,10 +67,6 @@ WS payloads include:
 
 - `GET /v1/git/status/{project_id}`
 - `GET /v1/git/repo-link/{project_id}`
-- `GET /v1/git/config/{project_id}`
-- `PUT /v1/git/config/{project_id}`
-- `POST /v1/git/sync/pull/{project_id}`
-- `POST /v1/git/sync/push/{project_id}`
 - `GET|POST /v1/git/repo/{project_id}/{*rest}` (smart HTTP Git transport)
 
 Policy:

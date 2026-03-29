@@ -208,24 +208,21 @@ async fn write_audit(
 }
 
 struct LoadedGitConfig {
-    remote_url: Option<String>,
     local_path: String,
     default_branch: String,
 }
 
 async fn load_git_config(db: &PgPool, project_id: Uuid) -> Result<LoadedGitConfig, StatusCode> {
-    let row = sqlx::query(
-        "select remote_url, local_path, default_branch from git_repositories where project_id = $1",
-    )
-    .bind(project_id)
-    .fetch_optional(db)
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let row =
+        sqlx::query("select local_path, default_branch from git_repositories where project_id = $1")
+            .bind(project_id)
+            .fetch_optional(db)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let Some(row) = row else {
         return Err(StatusCode::NOT_FOUND);
     };
     Ok(LoadedGitConfig {
-        remote_url: row.get("remote_url"),
         local_path: row.get("local_path"),
         default_branch: row.get("default_branch"),
     })

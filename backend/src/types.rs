@@ -240,29 +240,10 @@ pub struct GitSyncState {
     pub status: String,
 }
 
-#[derive(Deserialize)]
-pub struct SyncRequest {
-    pub actor_user_id: Option<Uuid>,
-}
-
-#[derive(Serialize)]
-pub struct GitRemoteConfig {
-    pub project_id: Uuid,
-    pub remote_url: Option<String>,
-    pub local_path: String,
-    pub default_branch: String,
-}
-
 #[derive(Serialize)]
 pub struct GitRepoLink {
     pub project_id: Uuid,
     pub repo_url: String,
-}
-
-#[derive(Deserialize)]
-pub struct UpsertGitRemoteConfigInput {
-    pub remote_url: Option<String>,
-    pub default_branch: Option<String>,
 }
 
 #[derive(Serialize)]
