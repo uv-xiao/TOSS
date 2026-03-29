@@ -667,15 +667,6 @@ export async function getProjectAssetContentCached(projectId: string, asset: Pro
   } satisfies ProjectAssetContent;
 }
 
-export async function getProjectAssetContent(projectId: string, assetId: string) {
-  const res = await fetch(apiUrl(`/v1/projects/${projectId}/assets/${assetId}`), {
-    cache: "no-store",
-    credentials: authCredentials(),
-    headers: authHeaders()
-  });
-  return parseJsonOrThrow<ProjectAssetContent>(res, "Unable to load asset");
-}
-
 export async function uploadProjectAsset(
   projectId: string,
   input: { path: string; content_base64: string; content_type?: string }
@@ -725,10 +716,6 @@ export async function updateProjectTemplate(projectId: string, isTemplate: boole
     body: JSON.stringify({ is_template: isTemplate })
   });
   return parseJsonOrThrow<ProjectTemplateState>(res, "Unable to update template state");
-}
-
-export function projectArchiveUrl(projectId: string) {
-  return apiUrl(`/v1/projects/${projectId}/archive`);
 }
 
 export async function downloadProjectArchive(projectId: string) {
