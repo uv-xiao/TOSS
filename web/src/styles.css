@@ -579,6 +579,7 @@ a {
   align-items: center;
   gap: 8px;
   overflow: visible;
+  margin-right: 8px;
   padding-bottom: 1px;
   flex: 0 0 auto;
 }
@@ -633,6 +634,22 @@ a {
 
 .workspace-view-menu-item.active .view-item-icon {
   color: #ffffff;
+}
+
+.preview-page-indicator {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.preview-page-indicator:hover {
+  border-color: #bdd0e4;
+  color: var(--text);
 }
 
 .icon-toggle {
@@ -1616,6 +1633,10 @@ label {
 @media (max-width: 1180px) {
   .topbar.workspace .workspace-meta {
     display: none;
+  }
+
+  .topbar.workspace .workspace-icon-toggles {
+    margin-right: 0;
   }
 }
 

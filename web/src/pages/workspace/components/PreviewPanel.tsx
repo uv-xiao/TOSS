@@ -1,4 +1,4 @@
-import { ArrowLeftRight, Download, Maximize2, ZoomIn, ZoomOut } from "lucide-react";
+import { Download, Maximize2, MoveHorizontal, ZoomIn, ZoomOut } from "lucide-react";
 import { UiIconButton } from "@/components/ui";
 import type { CompileDiagnostic, TypstRuntimeStatus } from "@/lib/typst";
 
@@ -6,6 +6,8 @@ export function PreviewPanel({
   editorRatio,
   previewFitMode,
   previewPercent,
+  previewPageCurrent,
+  previewPageTotal,
   pdfData,
   typstRuntimeStatus,
   workspaceSyncPending,
@@ -21,6 +23,7 @@ export function PreviewPanel({
   onSetFitPageWidth,
   onDecreaseZoom,
   onIncreaseZoom,
+  onJumpToPage,
   onDownloadPdf,
   onJumpToDiagnostic,
   t
@@ -28,6 +31,8 @@ export function PreviewPanel({
   editorRatio: number;
   previewFitMode: "manual" | "page" | "width";
   previewPercent: number;
+  previewPageCurrent: number;
+  previewPageTotal: number;
   pdfData: Uint8Array | null;
   typstRuntimeStatus: TypstRuntimeStatus;
   workspaceSyncPending: boolean;
@@ -49,6 +54,7 @@ export function PreviewPanel({
   onSetFitPageWidth: () => void;
   onDecreaseZoom: () => void;
   onIncreaseZoom: () => void;
+  onJumpToPage: (pageNumber: number) => void;
   onDownloadPdf: () => void;
   onJumpToDiagnostic: (diagnostic: CompileDiagnostic) => void;
   t: (key: string) => string;
@@ -56,11 +62,36 @@ export function PreviewPanel({
   const hasCompileFailure = compileDiagnostics.length > 0 || compileErrors.length > 0;
   const showStaleOverlay = hasCompileFailure && hasPreviewPage;
   const showEmptyErrorState = hasCompileFailure && !hasPreviewPage;
+  const previewTitle = t("workspace.preview");
+  const previewPageLabel =
+    previewPageTotal > 0
+      ? t("preview.pageIndicator")
+          .replace("{current}", String(previewPageCurrent))
+          .replace("{total}", String(previewPageTotal))
+      : null;
 
   return (
     <aside className="panel panel-preview" style={{ flex: `${1 - editorRatio} 1 0`, minWidth: 280 }}>
       <div className="panel-header workspace-main-header">
-        <h2>{t("workspace.preview")}</h2>
+        <h2>{previewTitle}</h2>
+        {previewPageLabel && (
+          <button
+            type="button"
+            className="preview-page-indicator"
+            onClick={() => {
+              const raw = window.prompt(
+                t("preview.jumpPrompt").replace("{total}", String(previewPageTotal)),
+                String(previewPageCurrent)
+              );
+              if (!raw) return;
+              const parsed = Number.parseInt(raw, 10);
+              if (!Number.isFinite(parsed)) return;
+              onJumpToPage(Math.min(previewPageTotal, Math.max(1, parsed)));
+            }}
+          >
+            {previewPageLabel}
+          </button>
+        )}
         <div className="toolbar compact">
           <UiIconButton
             tooltip={t("preview.fitWhole")}
@@ -76,7 +107,7 @@ export function PreviewPanel({
             className={previewFitMode === "width" ? "active" : ""}
             onClick={onSetFitPageWidth}
           >
-            <ArrowLeftRight size={16} />
+            <MoveHorizontal size={16} />
           </UiIconButton>
           <UiIconButton tooltip={t("preview.zoomOut")} label={t("preview.zoomOut")} onClick={onDecreaseZoom}>
             <ZoomOut size={16} />

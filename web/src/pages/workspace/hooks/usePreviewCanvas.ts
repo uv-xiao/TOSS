@@ -75,6 +75,32 @@ export function usePreviewCanvas({
   const [previewRenderTick, setPreviewRenderTick] = useState(0);
   const [previewIsPanning, setPreviewIsPanning] = useState(false);
   const [hasPreviewPage, setHasPreviewPage] = useState(false);
+  const [previewPageCurrent, setPreviewPageCurrent] = useState(0);
+  const [previewPageTotal, setPreviewPageTotal] = useState(0);
+
+  const refreshPageIndicator = (frame: HTMLElement) => {
+    const pages = Array.from(frame.querySelectorAll(".pdf-pages .typst-page, .pdf-pages canvas")) as HTMLElement[];
+    if (pages.length === 0) {
+      setPreviewPageCurrent(0);
+      setPreviewPageTotal(0);
+      return;
+    }
+    const frameRect = frame.getBoundingClientRect();
+    const centerY = frameRect.top + frame.clientHeight / 2;
+    let bestIndex = 0;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < pages.length; i += 1) {
+      const rect = pages[i].getBoundingClientRect();
+      const pageCenter = rect.top + rect.height / 2;
+      const distance = Math.abs(pageCenter - centerY);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestIndex = i;
+      }
+    }
+    setPreviewPageCurrent(bestIndex + 1);
+    setPreviewPageTotal(pages.length);
+  };
 
   useEffect(() => {
     onRenderErrorRef.current = onRenderError;
@@ -106,6 +132,7 @@ export function usePreviewCanvas({
     if (!vectorData) {
       lastRenderSignatureRef.current = "";
       setHasPreviewPage(!!frame.querySelector(".pdf-pages .typst-page, .pdf-pages canvas"));
+      refreshPageIndicator(frame);
       setPreviewRenderTick((value) => value + 1);
       return;
     }
@@ -116,6 +143,7 @@ export function usePreviewCanvas({
       lastRenderSignatureRef.current === renderSignature && !!frame.querySelector(".pdf-pages .typst-page, .pdf-pages canvas");
     if (alreadyRendered) {
       setHasPreviewPage(true);
+      refreshPageIndicator(frame);
       setPreviewRenderTick((value) => value + 1);
       return;
     }
@@ -137,10 +165,12 @@ export function usePreviewCanvas({
           }
         }
         setHasPreviewPage(!!frame.querySelector(".pdf-pages .typst-page, .pdf-pages canvas"));
+        refreshPageIndicator(frame);
         setPreviewRenderTick((value) => value + 1);
       })
       .catch((err) => {
         setHasPreviewPage(!!frame.querySelector(".pdf-pages .typst-page, .pdf-pages canvas"));
+        refreshPageIndicator(frame);
         const message = err instanceof Error ? err.message : "Preview render failed";
         onRenderErrorRef.current(message);
       });
@@ -188,6 +218,15 @@ export function usePreviewCanvas({
     observer.observe(frame);
     return () => observer.disconnect();
   }, [previewFitMode, setPreviewZoom, showPreviewPanel]);
+
+  useEffect(() => {
+    const frame = canvasPreviewRef.current;
+    if (!frame) return;
+    const onScroll = () => refreshPageIndicator(frame);
+    frame.addEventListener("scroll", onScroll, { passive: true });
+    refreshPageIndicator(frame);
+    return () => frame.removeEventListener("scroll", onScroll);
+  }, [previewRenderTick]);
 
   useEffect(() => {
     if (!showPreviewPanel) return;
@@ -243,11 +282,27 @@ export function usePreviewCanvas({
     window.addEventListener("mouseup", onUp);
   }
 
+  function jumpToPreviewPage(pageNumber: number) {
+    const frame = canvasPreviewRef.current;
+    if (!frame) return;
+    const pages = Array.from(frame.querySelectorAll(".pdf-pages .typst-page, .pdf-pages canvas")) as HTMLElement[];
+    if (pages.length === 0) return;
+    const targetIndex = Math.min(pages.length - 1, Math.max(0, Math.floor(pageNumber) - 1));
+    const target = pages[targetIndex];
+    const desiredTop = target.offsetTop - Math.max(0, (frame.clientHeight - target.clientHeight) / 2);
+    const maxTop = Math.max(0, frame.scrollHeight - frame.clientHeight);
+    frame.scrollTop = Math.min(maxTop, Math.max(0, desiredTop));
+    refreshPageIndicator(frame);
+  }
+
   return {
     canvasPreviewRef,
     previewRenderTick,
     previewIsPanning,
     hasPreviewPage,
+    previewPageCurrent,
+    previewPageTotal,
+    jumpToPreviewPage,
     beginPreviewPan
   };
 }

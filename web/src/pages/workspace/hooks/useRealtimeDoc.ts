@@ -43,7 +43,8 @@ export function useRealtimeDoc({
   const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>("connecting");
   const [reconnectState, setReconnectState] = useState<ReconnectState>({
     active: false,
-    secondsRemaining: 0
+    secondsRemaining: 0,
+    attempt: 0
   });
   const [docText, setDocText] = useState("");
   const [realtimeDocReady, setRealtimeDocReady] = useState(false);
@@ -77,7 +78,7 @@ export function useRealtimeDoc({
       setDocText("");
       setRealtimeDocReady(false);
       setRealtimeStatus("disconnected");
-      setReconnectState({ active: false, secondsRemaining: 0 });
+      setReconnectState({ active: false, secondsRemaining: 0, attempt: 0 });
       return;
     }
     const fileContent = activeFileContent;
@@ -145,7 +146,7 @@ export function useRealtimeDoc({
       setPresence([]);
       setRealtimeDocReady(false);
       setRealtimeStatus("disconnected");
-      setReconnectState({ active: false, secondsRemaining: 0 });
+      setReconnectState({ active: false, secondsRemaining: 0, attempt: 0 });
     };
   }, [
     activePath,

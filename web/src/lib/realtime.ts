@@ -28,6 +28,7 @@ export type RealtimeStatus = "connecting" | "connected" | "disconnected";
 export type ReconnectState = {
   active: boolean;
   secondsRemaining: number;
+  attempt: number;
 };
 
 type CursorPayload = {
@@ -77,6 +78,7 @@ export function bindRealtimeYDoc(params: {
   let reconnectCountdownTimer: number | null = null;
   let reconnectAttemptTimer: number | null = null;
   let reconnectSecondsRemaining = 0;
+  let reconnectAttemptCount = 0;
   let bootstrapComplete = false;
   const origin = `client-${crypto.randomUUID()}`;
   const peers = new Map<string, PresencePeer>();
@@ -93,7 +95,7 @@ export function bindRealtimeYDoc(params: {
   };
 
   const notifyReconnect = (active: boolean, secondsRemaining: number) => {
-    params.onReconnectChange?.({ active, secondsRemaining });
+    params.onReconnectChange?.({ active, secondsRemaining, attempt: reconnectAttemptCount });
   };
 
   const stopReconnectCountdown = () => {
@@ -114,6 +116,7 @@ export function bindRealtimeYDoc(params: {
     if (reconnectAttemptTimer !== null) return;
     params.onStatusChange?.("disconnected");
     resetPresenceToSelf();
+    reconnectAttemptCount += 1;
     reconnectSecondsRemaining = reconnectDelaySeconds;
     notifyReconnect(true, reconnectSecondsRemaining);
     reconnectCountdownTimer = window.setInterval(() => {
@@ -153,6 +156,7 @@ export function bindRealtimeYDoc(params: {
     socket.addEventListener("open", () => {
       if (closed || ws !== socket) return;
       params.onStatusChange?.("connected");
+      reconnectAttemptCount = 0;
       stopReconnectCountdown();
       notifyPresence();
       socket.send(

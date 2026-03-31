@@ -504,6 +504,9 @@ export function WorkspacePage({
     previewRenderTick,
     previewIsPanning,
     hasPreviewPage,
+    previewPageCurrent,
+    previewPageTotal,
+    jumpToPreviewPage,
     beginPreviewPan
   } = usePreviewCanvas({
     showPreviewPanel: effectiveShowPreviewPanel,
@@ -566,8 +569,10 @@ export function WorkspacePage({
   const previewPercent = Math.round(previewZoom * 100);
   const activeFileName = activePath.split("/").filter(Boolean).at(-1) || activePath;
   const realtimeRequired = isActiveEditableTextDoc && !isRevisionMode;
-  const connectionOnline = apiReachable && (!realtimeRequired || realtimeStatus === "connected");
-  const showConnectionWarning = realtimeRequired && !connectionOnline;
+  const reconnectNoticeActive = reconnectState.attempt >= 2;
+  const connectionOnline =
+    apiReachable && (!realtimeRequired || realtimeStatus === "connected" || !reconnectNoticeActive);
+  const showConnectionWarning = realtimeRequired && reconnectNoticeActive && !connectionOnline;
   const reconnectCountdownText = t("workspace.connectionLostReconnecting").replace(
     "{seconds}",
     String(Math.max(0, reconnectState.secondsRemaining))
@@ -2224,6 +2229,8 @@ export function WorkspacePage({
               editorRatio={editorRatio}
               previewFitMode={previewFitMode}
               previewPercent={previewPercent}
+              previewPageCurrent={previewPageCurrent}
+              previewPageTotal={previewPageTotal}
               pdfData={pdfData}
               typstRuntimeStatus={typstRuntimeStatus}
               workspaceSyncPending={workspaceSyncPending}
@@ -2239,6 +2246,7 @@ export function WorkspacePage({
               onSetFitPageWidth={setPreviewFitPageWidth}
               onDecreaseZoom={decreasePreviewZoom}
               onIncreaseZoom={increasePreviewZoom}
+              onJumpToPage={jumpToPreviewPage}
               onDownloadPdf={downloadCompiledPdf}
               onJumpToDiagnostic={jumpToDiagnostic}
               t={t}
