@@ -271,6 +271,7 @@ export function bindRealtimeYDoc(params: {
   };
 
   const sendSyncSnapshot = () => {
+    if (!canWrite) return;
     if (!bootstrapComplete) return;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     const snapshot = Y.encodeStateAsUpdate(params.ydoc);
