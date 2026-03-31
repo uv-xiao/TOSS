@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import { Download, Maximize2, MoveHorizontal, ZoomIn, ZoomOut } from "lucide-react";
 import { UiIconButton } from "@/components/ui";
 import type { CompileDiagnostic, TypstRuntimeStatus } from "@/lib/typst";
@@ -59,6 +60,9 @@ export function PreviewPanel({
   onJumpToDiagnostic: (diagnostic: CompileDiagnostic) => void;
   t: (key: string) => string;
 }) {
+  const [pageJumpOpen, setPageJumpOpen] = useState(false);
+  const [pageJumpInput, setPageJumpInput] = useState("");
+  const pageJumpRef = useRef<HTMLDivElement | null>(null);
   const hasCompileFailure = compileDiagnostics.length > 0 || compileErrors.length > 0;
   const showStaleOverlay = hasCompileFailure && hasPreviewPage;
   const showEmptyErrorState = hasCompileFailure && !hasPreviewPage;
@@ -70,28 +74,64 @@ export function PreviewPanel({
           .replace("{total}", String(previewPageTotal))
       : null;
 
+  useEffect(() => {
+    if (!pageJumpOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!pageJumpRef.current) return;
+      if (!pageJumpRef.current.contains(event.target as Node)) {
+        setPageJumpOpen(false);
+      }
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
+  }, [pageJumpOpen]);
+
+  function submitPageJump() {
+    const parsed = Number.parseInt(pageJumpInput, 10);
+    if (!Number.isFinite(parsed)) return;
+    onJumpToPage(Math.min(previewPageTotal, Math.max(1, parsed)));
+    setPageJumpOpen(false);
+  }
+
   return (
     <aside className="panel panel-preview" style={{ flex: `${1 - editorRatio} 1 0`, minWidth: 280 }}>
       <div className="panel-header workspace-main-header">
         <div className="preview-title-group">
           <h2>{previewTitle}</h2>
           {previewPageLabel && (
-            <button
-              type="button"
-              className="preview-page-indicator"
-              onClick={() => {
-                const raw = window.prompt(
-                  t("preview.jumpPrompt").replace("{total}", String(previewPageTotal)),
-                  String(previewPageCurrent)
-                );
-                if (!raw) return;
-                const parsed = Number.parseInt(raw, 10);
-                if (!Number.isFinite(parsed)) return;
-                onJumpToPage(Math.min(previewPageTotal, Math.max(1, parsed)));
-              }}
-            >
-              {previewPageLabel}
-            </button>
+            <div className="preview-page-jump-wrap" ref={pageJumpRef}>
+              <button
+                type="button"
+                className="preview-page-indicator"
+                onClick={() => {
+                  setPageJumpInput(String(previewPageCurrent));
+                  setPageJumpOpen((open) => !open);
+                }}
+              >
+                {previewPageLabel}
+              </button>
+              {pageJumpOpen && (
+                <div className="preview-page-popover">
+                  <strong>{t("preview.goToPage")}</strong>
+                  <div className="preview-page-popover-row">
+                    <input
+                      value={pageJumpInput}
+                      onChange={(event) => setPageJumpInput(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") submitPageJump();
+                      }}
+                      inputMode="numeric"
+                      aria-label={t("preview.pageIndicator")
+                        .replace("{current}", String(previewPageCurrent))
+                        .replace("{total}", String(previewPageTotal))}
+                    />
+                    <button type="button" onClick={submitPageJump}>
+                      {t("preview.goAction")}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           )}
         </div>
         <div className="toolbar compact">

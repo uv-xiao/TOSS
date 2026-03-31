@@ -652,6 +652,50 @@ a {
   color: var(--text);
 }
 
+.preview-page-jump-wrap {
+  position: relative;
+}
+
+.preview-page-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: var(--shadow-md);
+  padding: 10px;
+  min-width: 160px;
+  display: grid;
+  gap: 8px;
+  z-index: 90;
+}
+
+.preview-page-popover-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.preview-page-popover-row input {
+  width: 52px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 5px 6px;
+  font: inherit;
+}
+
+.preview-page-popover-row button {
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
 .preview-title-group {
   display: inline-flex;
   align-items: center;
