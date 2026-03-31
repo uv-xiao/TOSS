@@ -393,7 +393,8 @@ async fn handle_socket(
         payload: serde_json::json!({
             "user_id": user_id,
             "user_name": user_name,
-            "auth_kind": "project-scoped"
+            "auth_kind": "project-scoped",
+            "can_write": auth.can_write
         }),
         at: Utc::now(),
     };

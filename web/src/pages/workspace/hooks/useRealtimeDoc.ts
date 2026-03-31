@@ -128,6 +128,7 @@ export function useRealtimeDoc({
       userName: effectiveUserName,
       shareToken: shareToken ?? undefined,
       guestSession: guestSession ?? undefined,
+      canWrite,
       onPresenceChange: setPresence,
       onStatusChange: setRealtimeStatus,
       onReconnectChange: setReconnectState,

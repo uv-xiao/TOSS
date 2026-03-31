@@ -155,7 +155,11 @@ export function WorkspacePage({
   const [guestAuthError, setGuestAuthError] = useState<string | null>(null);
   const isAnonymousShare = !!shareToken && !authUser;
   const effectiveUserId = authUser?.user_id || guestSessionId || `guest-${projectId || "workspace"}`;
-  const effectiveUserName = authUser?.display_name || guestDisplayName || "Guest";
+  const effectiveUserName = authUser
+    ? authUser.display_name || "User"
+    : guestDisplayName
+      ? `${guestDisplayName} (Unverified)`
+      : "Guest";
   const centerSplitRef = useRef<HTMLDivElement | null>(null);
   const copyNoticeTimerRef = useRef<number | null>(null);
   const thumbnailUploadTimerRef = useRef<number | null>(null);

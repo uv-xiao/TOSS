@@ -45,6 +45,7 @@ export function bindRealtimeYDoc(params: {
   sessionToken?: string;
   shareToken?: string;
   guestSession?: string;
+  canWrite?: boolean;
   onPresenceChange?: (users: PresencePeer[]) => void;
   onStatusChange?: (status: RealtimeStatus) => void;
   onReconnectChange?: (state: ReconnectState) => void;
@@ -53,6 +54,7 @@ export function bindRealtimeYDoc(params: {
 }) {
   const userId = params.userId ?? crypto.randomUUID();
   const userName = params.userName?.trim() || `User-${userId.slice(0, 8)}`;
+  const canWrite = params.canWrite ?? true;
   const reconnectDelaySeconds = Math.max(1, Math.floor(params.reconnectDelaySeconds ?? 5));
   const query = new URLSearchParams({
     project_id: params.projectId,
@@ -157,7 +159,10 @@ export function bindRealtimeYDoc(params: {
         JSON.stringify({
           kind: "presence.meta",
           origin,
-          payload: { user_name: userName }
+          payload: {
+            user_name: userName,
+            can_write: canWrite
+          }
         })
       );
     });
@@ -171,8 +176,15 @@ export function bindRealtimeYDoc(params: {
         const eventUserId = typeof parsed?.user_id === "string" ? parsed.user_id : "";
         const payloadUserName =
           typeof incoming?.user_name === "string" ? incoming.user_name : undefined;
+        const payloadCanWrite =
+          typeof incoming?.can_write === "boolean" ? incoming.can_write : true;
 
         if (kind === "presence.join" && eventUserId) {
+          if (!payloadCanWrite && eventUserId !== userId) {
+            peers.delete(eventUserId);
+            notifyPresence();
+            return;
+          }
           peers.set(eventUserId, {
             id: eventUserId,
             name: payloadUserName || peers.get(eventUserId)?.name || eventUserId
@@ -184,6 +196,11 @@ export function bindRealtimeYDoc(params: {
           notifyPresence();
         }
         if (kind === "presence.meta" && eventUserId) {
+          if (!payloadCanWrite && eventUserId !== userId) {
+            peers.delete(eventUserId);
+            notifyPresence();
+            return;
+          }
           const previous: PresencePeer = peers.get(eventUserId) ?? { id: eventUserId, name: eventUserId };
           peers.set(eventUserId, {
             ...previous,
@@ -192,6 +209,9 @@ export function bindRealtimeYDoc(params: {
           notifyPresence();
         }
         if (kind === "presence.cursor" && eventUserId) {
+          if (!payloadCanWrite && eventUserId !== userId) {
+            return;
+          }
           const previous: PresencePeer = peers.get(eventUserId) ?? { id: eventUserId, name: eventUserId };
           peers.set(eventUserId, {
             ...previous,
@@ -235,6 +255,7 @@ export function bindRealtimeYDoc(params: {
   connect();
 
   const sendCursor = (cursor: CursorPayload) => {
+    if (!canWrite) return;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     ws.send(
       JSON.stringify({
@@ -242,7 +263,8 @@ export function bindRealtimeYDoc(params: {
         origin,
         payload: {
           ...cursor,
-          user_name: userName
+          user_name: userName,
+          can_write: canWrite
         }
       })
     );
