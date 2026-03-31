@@ -176,6 +176,8 @@ export function WorkspacePage({
   const revisionLoadSeqRef = useRef(0);
   const revisionHeadSeqRef = useRef(0);
   const revisionMoreSeqRef = useRef(0);
+  const compileRequestSeqRef = useRef(0);
+  const compileInFlightKeyRef = useRef<string | null>(null);
   const assetLoadInflightRef = useRef<Map<string, Promise<string | null>>>(new Map());
   const assetLoadFailedRef = useRef<Set<string>>(new Set());
   const remoteSyncInflightRef = useRef(false);
@@ -462,11 +464,11 @@ export function WorkspacePage({
 
   const compileDocuments = useMemo(() => {
     const baseDocs = { ...sourceDocs };
-    if (!isRevisionMode && realtimeDocReady && activePath && activePath in baseDocs) {
+    if (!isRevisionMode && hasActiveLiveDoc && activePath && activePath in baseDocs) {
       baseDocs[activePath] = docText;
     }
     return Object.entries(baseDocs).map(([path, content]) => ({ path, content }));
-  }, [activePath, docText, isRevisionMode, realtimeDocReady, sourceDocs]);
+  }, [activePath, docText, hasActiveLiveDoc, isRevisionMode, sourceDocs]);
   const compileAssets = useMemo(
     () => Object.entries(sourceAssetBase64).map(([path, contentBase64]) => ({ path, contentBase64 })),
     [sourceAssetBase64]
@@ -920,6 +922,8 @@ export function WorkspacePage({
   useEffect(() => {
     if (!projectId || !workspaceLoaded) return;
     if (!effectiveShowPreviewPanel) {
+      compileRequestSeqRef.current += 1;
+      compileInFlightKeyRef.current = null;
       setCompileActive(false);
       return;
     }
@@ -955,6 +959,12 @@ export function WorkspacePage({
       applyCompileOutput(lastCompileOutputRef.current);
       return;
     }
+    if (compileInFlightKeyRef.current === compileInputKey) {
+      return;
+    }
+    const requestSeq = compileRequestSeqRef.current + 1;
+    compileRequestSeqRef.current = requestSeq;
+    compileInFlightKeyRef.current = compileInputKey;
     setCompileActive(true);
     startTransition(() => {
       compileTypstClientSide({
@@ -964,18 +974,26 @@ export function WorkspacePage({
         coreApiUrl: "",
         fontData,
         appOrigin: window.location.origin
-      }).then((output) => {
-        if (cancelled) return;
-        lastCompileInputKeyRef.current = compileInputKey;
-        lastCompileOutputRef.current = output;
-        applyCompileOutput(output);
-        setCompileActive(false);
-      });
+      })
+        .then((output) => {
+          if (compileRequestSeqRef.current !== requestSeq) return;
+          lastCompileInputKeyRef.current = compileInputKey;
+          lastCompileOutputRef.current = output;
+          applyCompileOutput(output);
+        })
+        .catch((err) => {
+          if (compileRequestSeqRef.current !== requestSeq) return;
+          const message = err instanceof Error ? err.message : "Typst compile failed";
+          setCompileErrors([message]);
+          setCompileDiagnostics([]);
+        })
+        .finally(() => {
+          if (compileRequestSeqRef.current !== requestSeq) return;
+          compileInFlightKeyRef.current = null;
+          setCompileActive(false);
+        });
     });
-    return () => {
-      cancelled = true;
-      setCompileActive(false);
-    };
+    return;
   }, [
     assetBase64,
     assetMeta,
