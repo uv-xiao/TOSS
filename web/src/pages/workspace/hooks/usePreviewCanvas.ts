@@ -78,8 +78,14 @@ export function usePreviewCanvas({
   const [previewPageCurrent, setPreviewPageCurrent] = useState(0);
   const [previewPageTotal, setPreviewPageTotal] = useState(0);
 
+  const collectRenderedPages = (frame: HTMLElement): HTMLElement[] => {
+    const wrapperPages = Array.from(frame.querySelectorAll(".pdf-pages .typst-page")) as HTMLElement[];
+    if (wrapperPages.length > 0) return wrapperPages;
+    return Array.from(frame.querySelectorAll(".pdf-pages canvas")) as HTMLElement[];
+  };
+
   const refreshPageIndicator = (frame: HTMLElement) => {
-    const pages = Array.from(frame.querySelectorAll(".pdf-pages .typst-page, .pdf-pages canvas")) as HTMLElement[];
+    const pages = collectRenderedPages(frame);
     if (pages.length === 0) {
       setPreviewPageCurrent(0);
       setPreviewPageTotal(0);
@@ -285,7 +291,7 @@ export function usePreviewCanvas({
   function jumpToPreviewPage(pageNumber: number) {
     const frame = canvasPreviewRef.current;
     if (!frame) return;
-    const pages = Array.from(frame.querySelectorAll(".pdf-pages .typst-page, .pdf-pages canvas")) as HTMLElement[];
+    const pages = collectRenderedPages(frame);
     if (pages.length === 0) return;
     const targetIndex = Math.min(pages.length - 1, Math.max(0, Math.floor(pageNumber) - 1));
     const target = pages[targetIndex];
