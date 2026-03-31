@@ -163,30 +163,43 @@ export function App() {
             {t("nav.backToProjects")}
           </UiButton>
         )}
-        <div className="topbar-workspace-slot">{onWorkspaceRoute ? workspaceTopbar : null}</div>
-        <div className="meta">
-          {!onWorkspaceRoute && !!authUser && (
-            <>
-              <Link className={`ui-button ui-secondary ui-md tab ${onProjectsRoute ? "active" : ""}`} to="/projects">
-                {t("nav.projects")}
-              </Link>
-              <Link className={`ui-button ui-secondary ui-md tab ${onProfileRoute ? "active" : ""}`} to="/profile">
-                {t("nav.profile")}
-              </Link>
-              {hasAdminAccess && (
-                <Link className={`ui-button ui-secondary ui-md tab ${onAdminRoute ? "active" : ""}`} to="/admin">
-                  {t("nav.admin")}
+        {onWorkspaceRoute ? (
+          <div className="topbar-workspace-slot workspace-slot-layout">
+            <div className="workspace-slot-center">{workspaceTopbar}</div>
+            <div className="meta workspace-meta">
+              {authUser ? (
+                <>
+                  <span>{authUser.display_name}</span>
+                  <UiButton onClick={handleLogout}>{t("nav.logout")}</UiButton>
+                </>
+              ) : null}
+            </div>
+          </div>
+        ) : (
+          <div className="meta">
+            {!!authUser && (
+              <>
+                <Link className={`ui-button ui-secondary ui-md tab ${onProjectsRoute ? "active" : ""}`} to="/projects">
+                  {t("nav.projects")}
                 </Link>
-              )}
-            </>
-          )}
-          {authUser ? (
-            <>
-              <span>{authUser.display_name}</span>
-              <UiButton onClick={handleLogout}>{t("nav.logout")}</UiButton>
-            </>
-          ) : null}
-        </div>
+                <Link className={`ui-button ui-secondary ui-md tab ${onProfileRoute ? "active" : ""}`} to="/profile">
+                  {t("nav.profile")}
+                </Link>
+                {hasAdminAccess && (
+                  <Link className={`ui-button ui-secondary ui-md tab ${onAdminRoute ? "active" : ""}`} to="/admin">
+                    {t("nav.admin")}
+                  </Link>
+                )}
+              </>
+            )}
+            {authUser ? (
+              <>
+                <span>{authUser.display_name}</span>
+                <UiButton onClick={handleLogout}>{t("nav.logout")}</UiButton>
+              </>
+            ) : null}
+          </div>
+        )}
       </header>
       {error && <div className="error-banner">{error}</div>}
       <section className="app-content">

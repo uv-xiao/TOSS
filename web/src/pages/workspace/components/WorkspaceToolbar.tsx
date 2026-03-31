@@ -54,7 +54,6 @@ export function WorkspaceToolbar({
 
   return (
     <div className="workspace-topbar-controls">
-      <div />
       <div className="workspace-project-menu-wrap" ref={menuRef}>
         <button
           type="button"
