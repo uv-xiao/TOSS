@@ -192,10 +192,7 @@ export function PreviewPanel({
             </span>
           </div>
         )}
-        {(typstRuntimeStatus.stage === "downloading-compiler" ||
-          compileActive ||
-          typstRuntimeStatus.stage === "compiling" ||
-          previewRendering) && (
+        {(compileActive || previewRendering) && (
           <div className="preview-runtime-status">
             <strong>
               {typstRuntimeStatus.stage === "downloading-compiler"
