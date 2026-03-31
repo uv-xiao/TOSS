@@ -475,20 +475,22 @@ a {
 }
 
 .workspace-topbar-controls {
-  display: flex;
-  justify-content: flex-end;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
   gap: 10px;
   min-width: 0;
   width: 100%;
-  position: relative;
+}
+
+.workspace-topbar-left-spacer {
+  min-width: 0;
 }
 
 .workspace-project-menu-wrap {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
+  position: relative;
   min-width: 0;
+  justify-self: center;
   max-width: min(58vw, 680px);
 }
 
@@ -566,7 +568,7 @@ a {
   gap: 6px;
   overflow-x: auto;
   padding-bottom: 1px;
-  margin-left: auto;
+  justify-self: end;
 }
 
 .icon-toggle {
@@ -1466,13 +1468,14 @@ label {
     display: grid;
     grid-template-columns: 1fr;
     justify-items: stretch;
-    position: static;
+  }
+
+  .workspace-topbar-left-spacer {
+    display: none;
   }
 
   .workspace-project-menu-wrap {
     position: relative;
-    left: auto;
-    transform: none;
     justify-self: start;
     max-width: 100%;
   }
@@ -1483,7 +1486,7 @@ label {
   }
 
   .workspace-icon-toggles {
-    margin-left: 0;
+    justify-content: flex-start;
     justify-self: start;
   }
 
