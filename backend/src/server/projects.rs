@@ -1558,32 +1558,6 @@ pub(super) async fn upsert_role(
     }))
 }
 
-pub(super) fn sanitize_project_path(raw: &str) -> Result<String, StatusCode> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    if trimmed.starts_with('/') {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    let canonical = trimmed.replace('\\', "/");
-    let mut parts: Vec<&str> = Vec::new();
-    for segment in canonical.split('/') {
-        let s = segment.trim();
-        if s.is_empty() || s == "." || s == ".." {
-            return Err(StatusCode::BAD_REQUEST);
-        }
-        if s.contains('\0') {
-            return Err(StatusCode::BAD_REQUEST);
-        }
-        parts.push(s);
-    }
-    if parts.is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    Ok(parts.join("/"))
-}
-
 pub(super) async fn get_project_tree(
     State(state): State<AppState>,
     headers: HeaderMap,

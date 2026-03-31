@@ -1,11 +1,28 @@
-use super::*;
+use crate::git_utils::*;
+use crate::object_storage::*;
+use crate::types::*;
+use axum::http::{header, HeaderMap, StatusCode};
+use axum::response::IntoResponse;
+use axum::Json;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use chrono::{DateTime, Utc};
+use rand::distr::{Alphanumeric, SampleString};
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+use sqlx::{PgPool, Row};
+use std::collections::{HashMap, HashSet};
+use std::env;
+use std::sync::Arc;
+use std::time::Duration;
+use tracing::error;
+use uuid::Uuid;
 
 #[derive(Serialize)]
 struct ApiErrorResponse {
     error: String,
 }
 
-pub(super) fn error_response(
+pub(crate) fn error_response(
     status: StatusCode,
     message: impl Into<String>,
 ) -> axum::response::Response {
@@ -15,7 +32,7 @@ pub(super) fn error_response(
     (status, Json(payload)).into_response()
 }
 
-pub(super) async fn get_or_create_git_project_lock(
+pub(crate) async fn get_or_create_git_project_lock(
     state: &AppState,
     project_id: Uuid,
 ) -> Arc<tokio::sync::Mutex<()>> {
@@ -37,7 +54,7 @@ pub(super) async fn get_or_create_git_project_lock(
     lock
 }
 
-pub(super) async fn acquire_git_project_lock(
+pub(crate) async fn acquire_git_project_lock(
     state: &AppState,
     project_id: Uuid,
 ) -> tokio::sync::OwnedMutexGuard<()> {
@@ -45,7 +62,7 @@ pub(super) async fn acquire_git_project_lock(
     lock.lock_owned().await
 }
 
-pub(super) fn extract_groups_from_id_token(raw_id_token: String, claim_name: &str) -> Vec<String> {
+pub(crate) fn extract_groups_from_id_token(raw_id_token: String, claim_name: &str) -> Vec<String> {
     let mut groups = Vec::new();
     let claims = decode_jwt_claims(&raw_id_token);
     let Some(claims) = claims else {
@@ -76,7 +93,7 @@ pub(super) fn extract_groups_from_id_token(raw_id_token: String, claim_name: &st
     groups
 }
 
-pub(super) fn decode_jwt_claims(raw_token: &str) -> Option<serde_json::Value> {
+pub(crate) fn decode_jwt_claims(raw_token: &str) -> Option<serde_json::Value> {
     let mut parts = raw_token.split('.');
     let _header = parts.next()?;
     let payload = parts.next()?;
@@ -84,7 +101,7 @@ pub(super) fn decode_jwt_claims(raw_token: &str) -> Option<serde_json::Value> {
     serde_json::from_slice::<serde_json::Value>(&bytes).ok()
 }
 
-pub(super) async fn sync_user_oidc_groups(
+pub(crate) async fn sync_user_oidc_groups(
     db: &PgPool,
     user_id: Uuid,
     groups: &[String],
@@ -108,7 +125,7 @@ pub(super) async fn sync_user_oidc_groups(
     Ok(())
 }
 
-pub(super) fn role_rank(role: &str) -> i32 {
+pub(crate) fn role_rank(role: &str) -> i32 {
     match role {
         "Owner" => 3,
         "ReadWrite" => 2,
@@ -117,7 +134,7 @@ pub(super) fn role_rank(role: &str) -> i32 {
     }
 }
 
-pub(super) fn access_type_from_role(role: &str) -> &'static str {
+pub(crate) fn access_type_from_role(role: &str) -> &'static str {
     match role {
         "ReadOnly" => "read",
         "ReadWrite" => "write",
@@ -126,7 +143,7 @@ pub(super) fn access_type_from_role(role: &str) -> &'static str {
     }
 }
 
-pub(super) fn role_from_org_permission(permission: &str) -> &'static str {
+pub(crate) fn role_from_org_permission(permission: &str) -> &'static str {
     match permission {
         "read" => "ReadOnly",
         "write" => "ReadWrite",
@@ -134,7 +151,7 @@ pub(super) fn role_from_org_permission(permission: &str) -> &'static str {
     }
 }
 
-pub(super) fn merge_project_access_user(
+pub(crate) fn merge_project_access_user(
     users: &mut HashMap<Uuid, ProjectAccessUser>,
     user_id: Uuid,
     email: String,
@@ -164,7 +181,7 @@ pub(super) fn merge_project_access_user(
         });
 }
 
-pub(super) async fn apply_org_group_memberships(
+pub(crate) async fn apply_org_group_memberships(
     db: &PgPool,
     user_id: Uuid,
     groups: &[String],
@@ -250,7 +267,7 @@ pub(super) async fn apply_org_group_memberships(
     Ok(())
 }
 
-pub(super) async fn write_audit(
+pub(crate) async fn write_audit(
     db: &PgPool,
     actor_user_id: Option<Uuid>,
     event_type: &str,
@@ -268,12 +285,12 @@ pub(super) async fn write_audit(
     .await;
 }
 
-pub(super) struct LoadedGitConfig {
-    pub(super) local_path: String,
-    pub(super) default_branch: String,
+pub(crate) struct LoadedGitConfig {
+    pub(crate) local_path: String,
+    pub(crate) default_branch: String,
 }
 
-pub(super) async fn load_git_config(
+pub(crate) async fn load_git_config(
     db: &PgPool,
     project_id: Uuid,
 ) -> Result<LoadedGitConfig, StatusCode> {
@@ -293,7 +310,7 @@ pub(super) async fn load_git_config(
     })
 }
 
-pub(super) async fn update_git_sync_state(
+pub(crate) async fn update_git_sync_state(
     db: &PgPool,
     project_id: Uuid,
     status: &str,
@@ -319,7 +336,7 @@ pub(super) async fn update_git_sync_state(
     Ok(())
 }
 
-pub(super) async fn create_git_bundle_artifact(
+pub(crate) async fn create_git_bundle_artifact(
     state: &AppState,
     project_id: Uuid,
     repo_path: &str,
@@ -329,7 +346,7 @@ pub(super) async fn create_git_bundle_artifact(
     Ok(())
 }
 
-pub(super) fn clear_repo_working_tree(repo_path: &str) -> Result<(), String> {
+pub(crate) fn clear_repo_working_tree(repo_path: &str) -> Result<(), String> {
     let root = std::path::Path::new(repo_path);
     let entries = std::fs::read_dir(root).map_err(|e| e.to_string())?;
     for entry in entries {
@@ -353,7 +370,33 @@ pub(super) fn clear_repo_working_tree(repo_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub(super) fn is_document_text_path(path: &str) -> bool {
+pub(crate) fn sanitize_project_path(raw: &str) -> Result<String, StatusCode> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if trimmed.starts_with('/') {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let canonical = trimmed.replace('\\', "/");
+    let mut parts: Vec<&str> = Vec::new();
+    for segment in canonical.split('/') {
+        let s = segment.trim();
+        if s.is_empty() || s == "." || s == ".." {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        if s.contains('\0') {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        parts.push(s);
+    }
+    if parts.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok(parts.join("/"))
+}
+
+pub(crate) fn is_document_text_path(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     [
         ".typ", ".bib", ".txt", ".md", ".json", ".toml", ".yaml", ".yml", ".csv", ".xml", ".html",
@@ -363,7 +406,7 @@ pub(super) fn is_document_text_path(path: &str) -> bool {
     .any(|ext| lower.ends_with(ext))
 }
 
-pub(super) fn guess_content_type(path: &str) -> String {
+pub(crate) fn guess_content_type(path: &str) -> String {
     let lower = path.to_ascii_lowercase();
     if lower.ends_with(".png") {
         "image/png".to_string()
@@ -388,14 +431,14 @@ pub(super) fn guess_content_type(path: &str) -> String {
     }
 }
 
-pub(super) fn looks_like_text(bytes: &[u8]) -> bool {
+pub(crate) fn looks_like_text(bytes: &[u8]) -> bool {
     if bytes.contains(&0) {
         return false;
     }
     std::str::from_utf8(bytes).is_ok()
 }
 
-pub(super) async fn normalize_non_text_documents_to_assets(
+pub(crate) async fn normalize_non_text_documents_to_assets(
     state: &AppState,
     project_id: Uuid,
 ) -> Result<(), String> {
@@ -481,7 +524,7 @@ pub(super) async fn normalize_non_text_documents_to_assets(
     Ok(())
 }
 
-pub(super) async fn normalize_text_assets_to_documents(
+pub(crate) async fn normalize_text_assets_to_documents(
     state: &AppState,
     project_id: Uuid,
 ) -> Result<(), String> {
@@ -560,7 +603,7 @@ pub(super) async fn normalize_text_assets_to_documents(
     Ok(())
 }
 
-pub(super) async fn normalize_project_file_classification(
+pub(crate) async fn normalize_project_file_classification(
     state: &AppState,
     project_id: Uuid,
 ) -> Result<(), String> {
@@ -569,7 +612,7 @@ pub(super) async fn normalize_project_file_classification(
     Ok(())
 }
 
-pub(super) async fn sync_project_documents_to_repo(
+pub(crate) async fn sync_project_documents_to_repo(
     state: &AppState,
     project_id: Uuid,
     repo_path: &str,
@@ -634,7 +677,7 @@ pub(super) async fn sync_project_documents_to_repo(
     Ok(())
 }
 
-pub(super) async fn sync_repo_documents_to_project(
+pub(crate) async fn sync_repo_documents_to_project(
     state: &AppState,
     project_id: Uuid,
     repo_path: &str,
@@ -815,7 +858,7 @@ pub(super) async fn sync_repo_documents_to_project(
     Ok(())
 }
 
-pub(super) async fn lookup_user_display_name(db: &PgPool, user_id: Uuid) -> Option<String> {
+pub(crate) async fn lookup_user_display_name(db: &PgPool, user_id: Uuid) -> Option<String> {
     let row = sqlx::query("select display_name from users where id = $1")
         .bind(user_id)
         .fetch_optional(db)
@@ -824,7 +867,7 @@ pub(super) async fn lookup_user_display_name(db: &PgPool, user_id: Uuid) -> Opti
     Some(row.get("display_name"))
 }
 
-pub(super) async fn lookup_user_email(db: &PgPool, user_id: Uuid) -> Option<String> {
+pub(crate) async fn lookup_user_email(db: &PgPool, user_id: Uuid) -> Option<String> {
     let row = sqlx::query("select email from users where id = $1")
         .bind(user_id)
         .fetch_optional(db)
@@ -834,20 +877,20 @@ pub(super) async fn lookup_user_email(db: &PgPool, user_id: Uuid) -> Option<Stri
 }
 
 #[derive(Clone, Default)]
-pub(super) struct RevisionStateData {
-    pub(super) documents: HashMap<String, String>,
-    pub(super) directories: HashSet<String>,
-    pub(super) assets: HashMap<String, RevisionStoredAsset>,
+pub(crate) struct RevisionStateData {
+    pub(crate) documents: HashMap<String, String>,
+    pub(crate) directories: HashSet<String>,
+    pub(crate) assets: HashMap<String, RevisionStoredAsset>,
 }
 
 #[derive(Clone)]
-pub(super) struct RevisionStoredAsset {
-    pub(super) object_key: String,
-    pub(super) content_type: String,
-    pub(super) inline_data: Option<Vec<u8>>,
+pub(crate) struct RevisionStoredAsset {
+    pub(crate) object_key: String,
+    pub(crate) content_type: String,
+    pub(crate) inline_data: Option<Vec<u8>>,
 }
 
-pub(super) async fn load_project_state(
+pub(crate) async fn load_project_state(
     db: &PgPool,
     project_id: Uuid,
 ) -> Result<RevisionStateData, sqlx::Error> {
@@ -890,7 +933,7 @@ pub(super) async fn load_project_state(
     Ok(state)
 }
 
-pub(super) async fn lookup_project_entry_file_path(db: &PgPool, project_id: Uuid) -> String {
+pub(crate) async fn lookup_project_entry_file_path(db: &PgPool, project_id: Uuid) -> String {
     sqlx::query("select entry_file_path from project_settings where project_id = $1")
         .bind(project_id)
         .fetch_optional(db)
@@ -901,7 +944,7 @@ pub(super) async fn lookup_project_entry_file_path(db: &PgPool, project_id: Uuid
         .unwrap_or_else(|| "main.typ".to_string())
 }
 
-pub(super) async fn mark_project_dirty(db: &PgPool, project_id: Uuid, actor_user_id: Option<Uuid>) {
+pub(crate) async fn mark_project_dirty(db: &PgPool, project_id: Uuid, actor_user_id: Option<Uuid>) {
     let now = Utc::now();
     let _ = sqlx::query(
         "insert into git_repositories (project_id, remote_url, local_path, default_branch, pending_sync, updated_at)
@@ -939,7 +982,7 @@ pub(super) async fn mark_project_dirty(db: &PgPool, project_id: Uuid, actor_user
     }
 }
 
-pub(super) async fn mark_project_dirty_guest(db: &PgPool, project_id: Uuid, display_name: &str) {
+pub(crate) async fn mark_project_dirty_guest(db: &PgPool, project_id: Uuid, display_name: &str) {
     mark_project_dirty(db, project_id, None).await;
     let trimmed = display_name.trim();
     if trimmed.is_empty() {
@@ -957,7 +1000,7 @@ pub(super) async fn mark_project_dirty_guest(db: &PgPool, project_id: Uuid, disp
     .await;
 }
 
-pub(super) async fn flush_pending_server_commit(
+pub(crate) async fn flush_pending_server_commit(
     state: &AppState,
     project_id: Uuid,
     force_author: Option<Uuid>,
@@ -1102,7 +1145,7 @@ pub(super) async fn flush_pending_server_commit(
     Ok(())
 }
 
-pub(super) fn git_flush_worker_interval_seconds() -> u64 {
+pub(crate) fn git_flush_worker_interval_seconds() -> u64 {
     env::var("GIT_FLUSH_WORKER_INTERVAL_SECONDS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
@@ -1110,7 +1153,7 @@ pub(super) fn git_flush_worker_interval_seconds() -> u64 {
         .unwrap_or(3)
 }
 
-pub(super) fn git_autosave_interval_seconds() -> i64 {
+pub(crate) fn git_autosave_interval_seconds() -> i64 {
     env::var("GIT_AUTOSAVE_INTERVAL_SECONDS")
         .ok()
         .and_then(|v| v.parse::<i64>().ok())
@@ -1118,7 +1161,7 @@ pub(super) fn git_autosave_interval_seconds() -> i64 {
         .unwrap_or(600)
 }
 
-pub(super) fn git_flush_worker_batch_size() -> i64 {
+pub(crate) fn git_flush_worker_batch_size() -> i64 {
     env::var("GIT_FLUSH_WORKER_BATCH_SIZE")
         .ok()
         .and_then(|v| v.parse::<i64>().ok())
@@ -1126,7 +1169,7 @@ pub(super) fn git_flush_worker_batch_size() -> i64 {
         .unwrap_or(64)
 }
 
-pub(super) async fn list_pending_sync_projects(
+pub(crate) async fn list_pending_sync_projects(
     db: &PgPool,
     limit: i64,
 ) -> Result<Vec<Uuid>, sqlx::Error> {
@@ -1149,7 +1192,7 @@ pub(super) async fn list_pending_sync_projects(
         .collect())
 }
 
-pub(super) async fn mark_project_sync_attempt(db: &PgPool, project_id: Uuid) {
+pub(crate) async fn mark_project_sync_attempt(db: &PgPool, project_id: Uuid) {
     let _ = sqlx::query(
         "update project_sync_queue
          set last_attempt_at = $2,
@@ -1162,14 +1205,14 @@ pub(super) async fn mark_project_sync_attempt(db: &PgPool, project_id: Uuid) {
     .await;
 }
 
-pub(super) async fn clear_project_sync_queue_item(db: &PgPool, project_id: Uuid) {
+pub(crate) async fn clear_project_sync_queue_item(db: &PgPool, project_id: Uuid) {
     let _ = sqlx::query("delete from project_sync_queue where project_id = $1")
         .bind(project_id)
         .execute(db)
         .await;
 }
 
-pub(super) async fn fail_project_sync_queue_item(
+pub(crate) async fn fail_project_sync_queue_item(
     db: &PgPool,
     project_id: Uuid,
     error_message: &str,
@@ -1185,7 +1228,7 @@ pub(super) async fn fail_project_sync_queue_item(
     .await;
 }
 
-pub(super) fn spawn_git_flush_worker(state: AppState) {
+pub(crate) fn spawn_git_flush_worker(state: AppState) {
     let interval = Duration::from_secs(git_flush_worker_interval_seconds());
     let batch_size = git_flush_worker_batch_size();
     tokio::spawn(async move {
@@ -1217,7 +1260,7 @@ pub(super) fn spawn_git_flush_worker(state: AppState) {
     });
 }
 
-pub(super) fn parse_cgi_http_backend_output(
+pub(crate) fn parse_cgi_http_backend_output(
     raw: &[u8],
 ) -> (StatusCode, Vec<(String, String)>, Vec<u8>) {
     let split = raw
@@ -1249,7 +1292,7 @@ pub(super) fn parse_cgi_http_backend_output(
     (status, headers, body)
 }
 
-pub(super) async fn git_http_user(db: &PgPool, headers: &HeaderMap) -> Option<Uuid> {
+pub(crate) async fn git_http_user(db: &PgPool, headers: &HeaderMap) -> Option<Uuid> {
     let auth = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
     let basic = auth.strip_prefix("Basic ")?;
     let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, basic).ok()?;
@@ -1276,11 +1319,11 @@ pub(super) async fn git_http_user(db: &PgPool, headers: &HeaderMap) -> Option<Uu
     Some(user_id)
 }
 
-pub(super) fn random_token(length: usize) -> String {
+pub(crate) fn random_token(length: usize) -> String {
     Alphanumeric.sample_string(&mut rand::rng(), length)
 }
 
-pub(super) fn token_sha256(value: &str) -> String {
+pub(crate) fn token_sha256(value: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(value.as_bytes());
     let bytes = hasher.finalize();

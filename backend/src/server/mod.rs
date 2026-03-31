@@ -1,6 +1,7 @@
 use crate::git_utils::*;
 use crate::object_storage::*;
 use crate::realtime::ws_handler as realtime_ws_handler;
+use crate::services::*;
 use crate::types::*;
 use crate::typst_cache::typst_package_proxy;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
@@ -12,7 +13,6 @@ use axum::response::{IntoResponse, Redirect};
 use axum::routing::{any, delete, get, get_service, patch, post, put};
 use axum::{Json, Router};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
 use git2::{
     Commit, IndexEntry, IndexTime, MergeFileOptions, Oid, Repository, Sort, TreeWalkMode,
@@ -25,10 +25,7 @@ use openidconnect::{
     AuthorizationCode, ClientId, ClientSecret, CsrfToken, IssuerUrl, Nonce, RedirectUrl, Scope,
     TokenResponse,
 };
-use rand::distr::{Alphanumeric, SampleString};
 use reqwest::redirect::Policy;
-use serde::Serialize;
-use sha2::{Digest, Sha256};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
 use std::collections::{HashMap, HashSet};
@@ -43,20 +40,16 @@ use tower_http::trace::TraceLayer;
 use tracing::{error, info};
 use uuid::Uuid;
 
-mod auth;
-pub(crate) mod authz;
+mod authn;
 mod documents;
 mod git;
 mod projects;
 mod routes;
-mod support;
 
-use auth::*;
-use authz::*;
+use authn::*;
 use documents::*;
 use git::*;
 use projects::*;
-use support::*;
 
 pub async fn run() {
     dotenvy::dotenv().ok();
