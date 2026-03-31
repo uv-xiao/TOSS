@@ -8,22 +8,19 @@ import {
   upsertOrgGroupRoleMapping,
   type AdminAuthSettings,
   type OrgGroupRoleMapping,
-  type ProjectRole
+  type OrganizationMembershipRole
 } from "@/lib/api";
 
 export function AdminPage({ t }: { t: (key: string) => string }) {
   const defaultOrgId = "00000000-0000-0000-0000-000000000001";
-  const roleOptions: Array<{ value: ProjectRole; label: string }> = [
-    { value: "Owner", label: "Owner" },
-    { value: "Teacher", label: "Manager" },
-    { value: "TA", label: "Maintainer" },
-    { value: "Student", label: "Contributor" },
-    { value: "Viewer", label: "Viewer" }
+  const roleOptions: Array<{ value: OrganizationMembershipRole; label: string }> = [
+    { value: "owner", label: "Owner" },
+    { value: "member", label: "Member" }
   ];
   const [orgId, setOrgId] = useState(defaultOrgId);
   const [mappings, setMappings] = useState<OrgGroupRoleMapping[]>([]);
   const [groupName, setGroupName] = useState("");
-  const [role, setRole] = useState<ProjectRole>("Student");
+  const [role, setRole] = useState<OrganizationMembershipRole>("member");
   const [settings, setSettings] = useState<AdminAuthSettings | null>(null);
   const [discoveryUrl, setDiscoveryUrl] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -152,7 +149,7 @@ export function AdminPage({ t }: { t: (key: string) => string }) {
         </UiCard>
 
         <UiCard className="card">
-          <strong>OIDC Group to Project Role Mapping</strong>
+          <strong>OIDC Group to Organization Membership Mapping</strong>
           <div className="toolbar">
             <UiInput value={orgId} onChange={(e) => setOrgId(e.target.value)} placeholder="Organization ID" />
             <UiInput
@@ -160,7 +157,7 @@ export function AdminPage({ t }: { t: (key: string) => string }) {
               onChange={(e) => setGroupName(e.target.value)}
               placeholder="OIDC group"
             />
-            <UiSelect value={role} onChange={(e) => setRole(e.target.value as ProjectRole)}>
+            <UiSelect value={role} onChange={(e) => setRole(e.target.value as OrganizationMembershipRole)}>
               {roleOptions.map((option) => (
                 <option value={option.value} key={option.value}>
                   {option.label}

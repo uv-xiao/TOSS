@@ -63,7 +63,7 @@ export function ShareWorkspacePage({
               name: resolved.projectName,
               owner_user_id: null,
               owner_display_name: "",
-              my_role: resolved.permission === "write" ? "Student" : "Viewer",
+              my_role: resolved.permission === "write" ? "ReadWrite" : "ReadOnly",
               can_read: true,
               is_template: false,
               has_thumbnail: false,

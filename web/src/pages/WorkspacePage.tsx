@@ -275,10 +275,10 @@ export function WorkspacePage({
     anonymousMode === "read_write_named" &&
     !guestSessionToken;
   const canWrite = authUser
-    ? project?.my_role !== "Viewer"
+    ? project?.my_role !== "ReadOnly"
     : sharePermission === "write" && anonymousMode === "read_write_named" && !!guestSessionToken;
   const canManageProject = authUser
-    ? project?.my_role === "Owner" || project?.my_role === "Teacher"
+    ? project?.my_role === "Owner"
     : false;
 
   const isRevisionMode = !!activeRevisionId;
@@ -567,9 +567,8 @@ export function WorkspacePage({
     return role;
   };
   const formatRoleLabel = (role: string) => {
-    if (role === "Teacher") return "Manager";
-    if (role === "TA") return "Maintainer";
-    if (role === "Student") return "Contributor";
+    if (role === "ReadWrite") return "Read write";
+    if (role === "ReadOnly") return "Read only";
     return role;
   };
   const formatAccessSource = (source: string) => {

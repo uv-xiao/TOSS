@@ -5,7 +5,10 @@ struct ApiErrorResponse {
     error: String,
 }
 
-pub(super) fn error_response(status: StatusCode, message: impl Into<String>) -> axum::response::Response {
+pub(super) fn error_response(
+    status: StatusCode,
+    message: impl Into<String>,
+) -> axum::response::Response {
     let payload = ApiErrorResponse {
         error: message.into(),
     };
@@ -16,7 +19,13 @@ pub(super) async fn get_or_create_git_project_lock(
     state: &AppState,
     project_id: Uuid,
 ) -> Arc<tokio::sync::Mutex<()>> {
-    if let Some(lock) = state.git_project_locks.read().await.get(&project_id).cloned() {
+    if let Some(lock) = state
+        .git_project_locks
+        .read()
+        .await
+        .get(&project_id)
+        .cloned()
+    {
         return lock;
     }
     let mut write = state.git_project_locks.write().await;
@@ -101,19 +110,17 @@ pub(super) async fn sync_user_oidc_groups(
 
 pub(super) fn role_rank(role: &str) -> i32 {
     match role {
-        "Owner" => 5,
-        "Teacher" => 4,
-        "TA" => 3,
-        "Student" => 2,
-        "Viewer" => 1,
+        "Owner" => 3,
+        "ReadWrite" => 2,
+        "ReadOnly" => 1,
         _ => 0,
     }
 }
 
 pub(super) fn access_type_from_role(role: &str) -> &'static str {
     match role {
-        "Viewer" => "read",
-        "Student" | "TA" | "Teacher" => "write",
+        "ReadOnly" => "read",
+        "ReadWrite" => "write",
         "Owner" => "manage",
         _ => "read",
     }
@@ -121,10 +128,9 @@ pub(super) fn access_type_from_role(role: &str) -> &'static str {
 
 pub(super) fn role_from_org_permission(permission: &str) -> &'static str {
     match permission {
-        "read" => "Viewer",
-        "write" => "Student",
-        "manage" => "Teacher",
-        _ => "Viewer",
+        "read" => "ReadOnly",
+        "write" => "ReadWrite",
+        _ => "ReadOnly",
     }
 }
 
@@ -158,70 +164,84 @@ pub(super) fn merge_project_access_user(
         });
 }
 
-pub(super) async fn apply_project_group_roles(
+pub(super) async fn apply_org_group_memberships(
     db: &PgPool,
     user_id: Uuid,
     groups: &[String],
 ) -> Result<(), sqlx::Error> {
     let rows = sqlx::query(
-        "select p.id as project_id, m.group_name, m.role
-         from projects p
-         join org_oidc_group_role_mappings m on m.organization_id = p.organization_id",
+        "select m.organization_id, m.group_name, m.role
+         from org_oidc_group_role_mappings m",
     )
     .fetch_all(db)
     .await?;
     let group_set: HashSet<String> = groups.iter().cloned().collect();
-    let mut mapped_projects: HashSet<Uuid> = HashSet::new();
     let mut desired: HashMap<Uuid, String> = HashMap::new();
     for row in rows {
         let group_name: String = row.get("group_name");
-        let project_id: Uuid = row.get("project_id");
-        mapped_projects.insert(project_id);
         if !group_set.contains(&group_name) {
             continue;
         }
         let role: String = row.get("role");
-        let entry = desired.entry(project_id).or_insert_with(|| role.clone());
-        if role_rank(&role) > role_rank(entry) {
+        let org_id: Uuid = row.get("organization_id");
+        let entry = desired.entry(org_id).or_insert_with(|| role.clone());
+        if role == "owner" && entry != "owner" {
             *entry = role;
         }
     }
 
-    let current_rows = sqlx::query("select project_id, role from project_roles where user_id = $1")
-        .bind(user_id)
-        .fetch_all(db)
-        .await?;
+    let current_rows = sqlx::query(
+        "select organization_id, role
+         from organization_memberships
+         where user_id = $1",
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await?;
     let mut current_roles: HashMap<Uuid, String> = HashMap::new();
     for row in current_rows {
-        current_roles.insert(row.get("project_id"), row.get("role"));
+        current_roles.insert(row.get("organization_id"), row.get("role"));
     }
 
-    for project_id in mapped_projects {
-        if let Some(mapped_role) = desired.get(&project_id) {
-            let should_write = match current_roles.get(&project_id) {
-                Some(existing_role) => existing_role != mapped_role,
-                None => true,
-            };
-            if should_write {
-                sqlx::query(
-                    "insert into project_roles (project_id, user_id, role, granted_at)
-                     values ($1, $2, $3, $4)
-                     on conflict (project_id, user_id) do update
-                     set role = excluded.role, granted_at = excluded.granted_at",
-                )
-                .bind(project_id)
-                .bind(user_id)
-                .bind(mapped_role)
-                .bind(Utc::now())
-                .execute(db)
-                .await?;
-            }
-        } else {
+    for (organization_id, mapped_role) in &desired {
+        let should_write = match current_roles.get(organization_id) {
+            Some(existing_role) => existing_role != mapped_role,
+            None => true,
+        };
+        if should_write {
             sqlx::query(
-                "delete from project_roles
-                 where project_id = $1 and user_id = $2",
+                "insert into organization_memberships (organization_id, user_id, joined_at, role)
+                 values ($1, $2, $3, $4)
+                 on conflict (organization_id, user_id) do update
+                 set role = excluded.role",
             )
-            .bind(project_id)
+            .bind(*organization_id)
+            .bind(user_id)
+            .bind(Utc::now())
+            .bind(mapped_role)
+            .execute(db)
+            .await?;
+        }
+    }
+    for (organization_id, existing_role) in current_roles {
+        if existing_role == "owner" {
+            continue;
+        }
+        if !groups.is_empty() && desired.contains_key(&organization_id) {
+            continue;
+        }
+        let mapped = sqlx::query(
+            "select 1 from org_oidc_group_role_mappings where organization_id = $1 limit 1",
+        )
+        .bind(organization_id)
+        .fetch_optional(db)
+        .await?;
+        if mapped.is_some() {
+            sqlx::query(
+                "delete from organization_memberships
+                 where organization_id = $1 and user_id = $2 and role != 'owner'",
+            )
+            .bind(organization_id)
             .bind(user_id)
             .execute(db)
             .await?;
@@ -253,13 +273,17 @@ pub(super) struct LoadedGitConfig {
     pub(super) default_branch: String,
 }
 
-pub(super) async fn load_git_config(db: &PgPool, project_id: Uuid) -> Result<LoadedGitConfig, StatusCode> {
-    let row =
-        sqlx::query("select local_path, default_branch from git_repositories where project_id = $1")
-            .bind(project_id)
-            .fetch_optional(db)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+pub(super) async fn load_git_config(
+    db: &PgPool,
+    project_id: Uuid,
+) -> Result<LoadedGitConfig, StatusCode> {
+    let row = sqlx::query(
+        "select local_path, default_branch from git_repositories where project_id = $1",
+    )
+    .bind(project_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let Some(row) = row else {
         return Err(StatusCode::NOT_FOUND);
     };
@@ -646,7 +670,8 @@ pub(super) async fn sync_repo_documents_to_project(
 
     for (path, bytes) in repo_files {
         repo_paths.insert(path.clone());
-        let clean_path = sanitize_project_path(&path).map_err(|_| "invalid repo path".to_string())?;
+        let clean_path =
+            sanitize_project_path(&path).map_err(|_| "invalid repo path".to_string())?;
         let parts = clean_path.split('/').collect::<Vec<_>>();
         let mut acc = String::new();
         for part in parts.iter().take(parts.len().saturating_sub(1)) {
@@ -822,7 +847,10 @@ pub(super) struct RevisionStoredAsset {
     pub(super) inline_data: Option<Vec<u8>>,
 }
 
-pub(super) async fn load_project_state(db: &PgPool, project_id: Uuid) -> Result<RevisionStateData, sqlx::Error> {
+pub(super) async fn load_project_state(
+    db: &PgPool,
+    project_id: Uuid,
+) -> Result<RevisionStateData, sqlx::Error> {
     let doc_rows = sqlx::query("select path, content from documents where project_id = $1")
         .bind(project_id)
         .fetch_all(db)
@@ -1037,22 +1065,24 @@ pub(super) async fn flush_pending_server_commit(
             let email = trimmed[start + 1..end].trim().to_string();
             (name, email)
         } else {
-            ("Typst Server".to_string(), "noreply@typst-server.local".to_string())
+            (
+                "Typst Server".to_string(),
+                "noreply@typst-server.local".to_string(),
+            )
         }
     } else {
-        ("Typst Server".to_string(), "noreply@typst-server.local".to_string())
+        (
+            "Typst Server".to_string(),
+            "noreply@typst-server.local".to_string(),
+        )
     };
     let message = if trailers.is_empty() {
         "Online updates".to_string()
     } else {
         format!("Online updates\n\n{}", trailers.join("\n"))
     };
-    let _ = git_commit_staged_if_changed(
-        &local_path,
-        &message,
-        &commit_author.0,
-        &commit_author.1,
-    )?;
+    let _ =
+        git_commit_staged_if_changed(&local_path, &message, &commit_author.0, &commit_author.1)?;
     let _ = sqlx::query(
         "update git_repositories set pending_sync = false, last_server_sync_at = $2 where project_id = $1",
     )
@@ -1096,7 +1126,10 @@ pub(super) fn git_flush_worker_batch_size() -> i64 {
         .unwrap_or(64)
 }
 
-pub(super) async fn list_pending_sync_projects(db: &PgPool, limit: i64) -> Result<Vec<Uuid>, sqlx::Error> {
+pub(super) async fn list_pending_sync_projects(
+    db: &PgPool,
+    limit: i64,
+) -> Result<Vec<Uuid>, sqlx::Error> {
     let now = Utc::now();
     let due_before = now - chrono::Duration::seconds(git_autosave_interval_seconds());
     let rows = sqlx::query(
@@ -1136,7 +1169,11 @@ pub(super) async fn clear_project_sync_queue_item(db: &PgPool, project_id: Uuid)
         .await;
 }
 
-pub(super) async fn fail_project_sync_queue_item(db: &PgPool, project_id: Uuid, error_message: &str) {
+pub(super) async fn fail_project_sync_queue_item(
+    db: &PgPool,
+    project_id: Uuid,
+    error_message: &str,
+) {
     let _ = sqlx::query(
         "update project_sync_queue
          set last_error = $2
@@ -1158,7 +1195,8 @@ pub(super) fn spawn_git_flush_worker(state: AppState) {
                     for project_id in projects {
                         mark_project_sync_attempt(&state.db, project_id).await;
                         let _git_lock = acquire_git_project_lock(&state, project_id).await;
-                        if let Err(err) = flush_pending_server_commit(&state, project_id, None).await
+                        if let Err(err) =
+                            flush_pending_server_commit(&state, project_id, None).await
                         {
                             error!(
                                 "git flush worker failed for project {}: {}",
@@ -1179,7 +1217,9 @@ pub(super) fn spawn_git_flush_worker(state: AppState) {
     });
 }
 
-pub(super) fn parse_cgi_http_backend_output(raw: &[u8]) -> (StatusCode, Vec<(String, String)>, Vec<u8>) {
+pub(super) fn parse_cgi_http_backend_output(
+    raw: &[u8],
+) -> (StatusCode, Vec<(String, String)>, Vec<u8>) {
     let split = raw
         .windows(4)
         .position(|w| w == b"\r\n\r\n")

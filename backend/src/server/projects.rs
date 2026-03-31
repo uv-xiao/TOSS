@@ -1,6 +1,9 @@
 use super::*;
 
-pub(super) fn project_thumbnail_path(data_dir: &std::path::Path, project_id: Uuid) -> std::path::PathBuf {
+pub(super) fn project_thumbnail_path(
+    data_dir: &std::path::Path,
+    project_id: Uuid,
+) -> std::path::PathBuf {
     data_dir
         .join("thumbnails")
         .join(format!("{project_id}.thumb"))
@@ -208,9 +211,9 @@ pub(super) async fn list_projects(
         let project_id: Uuid = row.get("id");
         let permission: String = row.get("permission");
         let derived_role = if permission == "write" {
-            "Student".to_string()
+            "ReadWrite".to_string()
         } else {
-            "Viewer".to_string()
+            "ReadOnly".to_string()
         };
         if let Some(existing) = projects_by_id.get_mut(&project_id) {
             if role_rank(&derived_role) > role_rank(&existing.my_role) {
@@ -252,7 +255,7 @@ pub(super) async fn list_projects(
                 name: row.get("name"),
                 owner_user_id: row.get("owner_user_id"),
                 owner_display_name: row.get("owner_display_name"),
-                my_role: "Viewer".to_string(),
+                my_role: "ReadOnly".to_string(),
                 can_read: false,
                 is_template: row.get("is_template"),
                 has_thumbnail: row.get("has_thumbnail"),
@@ -280,14 +283,11 @@ pub(super) async fn list_my_organizations(
     };
     let rows = sqlx::query(
         "select o.id as organization_id, o.name as organization_name,
-                (oa.user_id is not null) as is_admin,
-                coalesce(om.joined_at, oa.granted_at, o.created_at) as joined_at
+                om.role as membership_role,
+                coalesce(om.joined_at, o.created_at) as joined_at
          from organizations o
-         left join organization_memberships om
+         join organization_memberships om
            on om.organization_id = o.id and om.user_id = $1
-         left join org_admins oa
-           on oa.organization_id = o.id and oa.user_id = $1
-         where om.user_id is not null or oa.user_id is not null
          order by o.name asc",
     )
     .bind(actor)
@@ -299,39 +299,36 @@ pub(super) async fn list_my_organizations(
         .map(|row| OrganizationMembership {
             organization_id: row.get("organization_id"),
             organization_name: row.get("organization_name"),
-            is_admin: row.get("is_admin"),
+            membership_role: row.get("membership_role"),
             joined_at: row.get("joined_at"),
         })
         .collect();
     Ok(Json(OrganizationMembershipListResponse { organizations }))
 }
 
-pub(super) async fn user_organization_ids(db: &PgPool, user_id: Uuid) -> Result<Vec<Uuid>, StatusCode> {
-    let rows = sqlx::query(
-        "select organization_id from organization_memberships where user_id = $1
-         union
-         select organization_id from org_admins where user_id = $1",
-    )
-    .bind(user_id)
-    .fetch_all(db)
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+pub(super) async fn user_organization_ids(
+    db: &PgPool,
+    user_id: Uuid,
+) -> Result<Vec<Uuid>, StatusCode> {
+    let rows =
+        sqlx::query("select organization_id from organization_memberships where user_id = $1")
+            .bind(user_id)
+            .fetch_all(db)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(rows
         .into_iter()
         .map(|row| row.get::<Uuid, _>("organization_id"))
         .collect())
 }
 
-pub(super) async fn user_is_org_member(db: &PgPool, user_id: Uuid, org_id: Uuid) -> Result<bool, StatusCode> {
+pub(super) async fn user_is_org_member(
+    db: &PgPool,
+    user_id: Uuid,
+    org_id: Uuid,
+) -> Result<bool, StatusCode> {
     let row = sqlx::query(
-        "select 1
-         from (
-           select organization_id from organization_memberships where user_id = $1
-           union
-           select organization_id from org_admins where user_id = $1
-         ) orgs
-         where organization_id = $2
-         limit 1",
+        "select 1 from organization_memberships where user_id = $1 and organization_id = $2 limit 1",
     )
     .bind(user_id)
     .bind(org_id)
@@ -341,12 +338,18 @@ pub(super) async fn user_is_org_member(db: &PgPool, user_id: Uuid, org_id: Uuid)
     Ok(row.is_some())
 }
 
-pub(super) async fn resolve_project_organization_id(db: &PgPool, user_id: Uuid) -> Result<Uuid, StatusCode> {
+pub(super) async fn resolve_project_organization_id(
+    db: &PgPool,
+    user_id: Uuid,
+) -> Result<Uuid, StatusCode> {
     if let Some(existing) = user_organization_ids(db, user_id).await?.into_iter().next() {
         return Ok(existing);
     }
 
-    let mut tx = db.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut tx = db
+        .begin()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let display_name = sqlx::query("select display_name from users where id = $1")
         .bind(user_id)
         .fetch_optional(&mut *tx)
@@ -366,8 +369,8 @@ pub(super) async fn resolve_project_organization_id(db: &PgPool, user_id: Uuid) 
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     sqlx::query(
-        "insert into organization_memberships (organization_id, user_id, joined_at)
-         values ($1, $2, $3)",
+        "insert into organization_memberships (organization_id, user_id, joined_at, role)
+         values ($1, $2, $3, 'owner')",
     )
     .bind(org_id)
     .bind(user_id)
@@ -523,8 +526,6 @@ pub(super) async fn has_template_organization_access(
          join project_template_organization_access ptoa on ptoa.project_id = p.id
          join (
            select organization_id from organization_memberships where user_id = $1
-           union
-           select organization_id from org_admins where user_id = $1
          ) my_orgs on my_orgs.organization_id = ptoa.organization_id
          where p.id = $2
            and p.is_template = true
@@ -575,13 +576,12 @@ pub(super) async fn copy_project(
             .fetch_all(&state.db)
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let source_dirs = sqlx::query(
-        "select path from project_directories where project_id = $1 order by path asc",
-    )
-    .bind(project_id)
-    .fetch_all(&state.db)
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let source_dirs =
+        sqlx::query("select path from project_directories where project_id = $1 order by path asc")
+            .bind(project_id)
+            .fetch_all(&state.db)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let source_assets = sqlx::query(
         "select path, object_key, content_type, size_bytes, inline_data
          from project_assets
@@ -592,15 +592,14 @@ pub(super) async fn copy_project(
     .fetch_all(&state.db)
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let source_entry_file = sqlx::query(
-        "select entry_file_path from project_settings where project_id = $1",
-    )
-    .bind(project_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-    .map(|row| row.get::<String, _>("entry_file_path"))
-    .unwrap_or_else(|| "main.typ".to_string());
+    let source_entry_file =
+        sqlx::query("select entry_file_path from project_settings where project_id = $1")
+            .bind(project_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .map(|row| row.get::<String, _>("entry_file_path"))
+            .unwrap_or_else(|| "main.typ".to_string());
     let source_thumbnail_row = sqlx::query(
         "select content_type, image_data from project_thumbnails where project_id = $1",
     )
@@ -853,12 +852,11 @@ pub(super) async fn update_project_template(
     };
     let is_template: bool = row.get("is_template");
     if !is_template {
-        let _ = sqlx::query(
-            "delete from project_template_organization_access where project_id = $1",
-        )
-        .bind(project_id)
-        .execute(&state.db)
-        .await;
+        let _ =
+            sqlx::query("delete from project_template_organization_access where project_id = $1")
+                .bind(project_id)
+                .execute(&state.db)
+                .await;
     }
     write_audit(
         &state.db,
@@ -1100,9 +1098,9 @@ pub(super) fn normalized_share_permission(raw: &str) -> Option<&'static str> {
 
 pub(super) fn grant_role_from_share_permission(permission: &str) -> &'static str {
     if permission == "write" {
-        "Student"
+        "ReadWrite"
     } else {
-        "Viewer"
+        "ReadOnly"
     }
 }
 
@@ -1690,7 +1688,8 @@ pub(super) async fn create_project_file(
     Path(project_id): Path<Uuid>,
     Json(input): Json<CreateProjectFileInput>,
 ) -> Result<StatusCode, StatusCode> {
-    let principal = ensure_project_access(&state.db, &headers, project_id, AccessNeed::Write).await?;
+    let principal =
+        ensure_project_access(&state.db, &headers, project_id, AccessNeed::Write).await?;
     let actor = principal.user_id;
     let path = sanitize_project_path(&input.path)?;
     let now = Utc::now();
@@ -1736,7 +1735,8 @@ pub(super) async fn create_project_file(
                 let object_key = format!("projects/{project_id}/assets/{asset_id}");
                 let empty_bytes: Vec<u8> = Vec::new();
                 let content_type = guess_content_type(&path);
-                let (stored_object_key, inline_data) = if let Some(storage) = state.storage.clone() {
+                let (stored_object_key, inline_data) = if let Some(storage) = state.storage.clone()
+                {
                     put_object(&storage, &object_key, &content_type, empty_bytes.clone())
                         .await
                         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -1799,7 +1799,8 @@ pub(super) async fn move_project_file(
     Path(project_id): Path<Uuid>,
     Json(input): Json<MoveProjectFileInput>,
 ) -> Result<StatusCode, StatusCode> {
-    let principal = ensure_project_access(&state.db, &headers, project_id, AccessNeed::Write).await?;
+    let principal =
+        ensure_project_access(&state.db, &headers, project_id, AccessNeed::Write).await?;
     let actor = principal.user_id;
     let from_path = sanitize_project_path(&input.from_path)?;
     let to_path = sanitize_project_path(&input.to_path)?;
@@ -1880,7 +1881,8 @@ pub(super) async fn delete_project_file(
     headers: HeaderMap,
     Path((project_id, path)): Path<(Uuid, String)>,
 ) -> Result<StatusCode, StatusCode> {
-    let principal = ensure_project_access(&state.db, &headers, project_id, AccessNeed::Write).await?;
+    let principal =
+        ensure_project_access(&state.db, &headers, project_id, AccessNeed::Write).await?;
     let actor = principal.user_id;
     let clean_path = sanitize_project_path(&path)?;
 
@@ -2152,11 +2154,7 @@ pub(super) async fn list_project_access_users(
                 poa.permission, o.name as organization_name
          from project_organization_access poa
          join organizations o on o.id = poa.organization_id
-         join (
-           select organization_id, user_id from organization_memberships
-           union
-           select organization_id, user_id from org_admins
-         ) members on members.organization_id = poa.organization_id
+         join organization_memberships members on members.organization_id = poa.organization_id
          join users u on u.id = members.user_id
          where poa.project_id = $1",
     )
@@ -2308,21 +2306,14 @@ pub(super) async fn delete_group_role(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub(super) async fn ensure_org_admin(
+pub(super) async fn ensure_site_admin(
     db: &PgPool,
     headers: &HeaderMap,
-    org_id: Uuid,
 ) -> Result<Uuid, StatusCode> {
     let Some(actor) = request_user_id(db, headers).await else {
         return Err(StatusCode::UNAUTHORIZED);
     };
-    let row = sqlx::query("select 1 from org_admins where organization_id = $1 and user_id = $2")
-        .bind(org_id)
-        .bind(actor)
-        .fetch_optional(db)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if row.is_none() {
+    if !is_site_admin(db, actor).await? {
         return Err(StatusCode::FORBIDDEN);
     }
     Ok(actor)
@@ -2333,7 +2324,7 @@ pub(super) async fn list_org_group_role_mappings(
     headers: HeaderMap,
     Path(org_id): Path<Uuid>,
 ) -> Result<Json<Vec<OrgGroupRoleMapping>>, StatusCode> {
-    ensure_org_admin(&state.db, &headers, org_id).await?;
+    ensure_site_admin(&state.db, &headers).await?;
     let rows = sqlx::query(
         "select organization_id, group_name, role, granted_at
          from org_oidc_group_role_mappings
@@ -2362,8 +2353,9 @@ pub(super) async fn upsert_org_group_role_mapping(
     Path(org_id): Path<Uuid>,
     Json(input): Json<UpsertOrgGroupRoleMappingInput>,
 ) -> Result<Json<OrgGroupRoleMapping>, StatusCode> {
-    let actor = ensure_org_admin(&state.db, &headers, org_id).await?;
-    if ProjectRole::from_db(&input.role).is_none() {
+    let actor = ensure_site_admin(&state.db, &headers).await?;
+    let role = input.role.trim().to_ascii_lowercase();
+    if role != "owner" && role != "member" {
         return Err(StatusCode::BAD_REQUEST);
     }
     let group_name = input.group_name.trim().to_string();
@@ -2379,7 +2371,7 @@ pub(super) async fn upsert_org_group_role_mapping(
     )
     .bind(org_id)
     .bind(&group_name)
-    .bind(&input.role)
+    .bind(&role)
     .bind(Utc::now())
     .fetch_one(&state.db)
     .await
@@ -2388,7 +2380,7 @@ pub(super) async fn upsert_org_group_role_mapping(
         &state.db,
         Some(actor),
         "admin.org_group_role.upsert",
-        serde_json::json!({"organization_id": org_id, "group_name": group_name, "role": input.role}),
+        serde_json::json!({"organization_id": org_id, "group_name": group_name, "role": role}),
     )
     .await;
     Ok(Json(OrgGroupRoleMapping {
@@ -2404,7 +2396,7 @@ pub(super) async fn delete_org_group_role_mapping(
     headers: HeaderMap,
     Path((org_id, group_name)): Path<(Uuid, String)>,
 ) -> Result<StatusCode, StatusCode> {
-    let actor = ensure_org_admin(&state.db, &headers, org_id).await?;
+    let actor = ensure_site_admin(&state.db, &headers).await?;
     let result = sqlx::query(
         "delete from org_oidc_group_role_mappings where organization_id = $1 and group_name = $2",
     )
@@ -2433,12 +2425,7 @@ pub(super) async fn get_admin_auth_settings(
     let Some(actor) = request_user_id(&state.db, &headers).await else {
         return Err(StatusCode::UNAUTHORIZED);
     };
-    let has_admin = sqlx::query("select 1 from org_admins where user_id = $1 limit 1")
-        .bind(actor)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if has_admin.is_none() {
+    if !is_site_admin(&state.db, actor).await? {
         return Err(StatusCode::FORBIDDEN);
     }
     let settings = load_auth_settings(&state.db, &state.oidc).await?;
@@ -2453,12 +2440,7 @@ pub(super) async fn upsert_admin_auth_settings(
     let Some(actor) = request_user_id(&state.db, &headers).await else {
         return Err(StatusCode::UNAUTHORIZED);
     };
-    let has_admin = sqlx::query("select 1 from org_admins where user_id = $1 limit 1")
-        .bind(actor)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if has_admin.is_none() {
+    if !is_site_admin(&state.db, actor).await? {
         return Err(StatusCode::FORBIDDEN);
     }
 

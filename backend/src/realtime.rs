@@ -76,8 +76,8 @@ async fn authorize_ws_user(
         auth_headers.insert("cookie", value);
     }
     if let Some(share_token) = &query.share_token {
-        let value =
-            HeaderValue::from_str(share_token.trim()).map_err(|_| "invalid share_token".to_string())?;
+        let value = HeaderValue::from_str(share_token.trim())
+            .map_err(|_| "invalid share_token".to_string())?;
         auth_headers.insert("x-share-token", value);
     }
     if let Some(guest_session) = &query.guest_session {

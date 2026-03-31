@@ -7,6 +7,8 @@ use sqlx::{PgPool, Row};
 use std::env;
 use uuid::Uuid;
 
+const SITE_ADMINS_ORG_ID: &str = "00000000-0000-0000-0000-000000000001";
+
 #[derive(Clone, Copy, Debug)]
 pub enum AccessNeed {
     Read,
@@ -211,10 +213,12 @@ pub async fn ensure_project_access(
 ) -> Result<ProjectAccessPrincipal, StatusCode> {
     if let Some(actor) = request_user_id(db, headers).await {
         ensure_project_role_for_user(db, actor, project_id, need).await?;
-        let can_write = matches!(need, AccessNeed::Write | AccessNeed::Manage | AccessNeed::GitSync)
-            || ensure_project_role_for_user(db, actor, project_id, AccessNeed::Write)
-                .await
-                .is_ok();
+        let can_write = matches!(
+            need,
+            AccessNeed::Write | AccessNeed::Manage | AccessNeed::GitSync
+        ) || ensure_project_role_for_user(db, actor, project_id, AccessNeed::Write)
+            .await
+            .is_ok();
         return Ok(ProjectAccessPrincipal {
             user_id: Some(actor),
             guest_session_id: None,
@@ -229,11 +233,15 @@ pub async fn ensure_project_access(
     }
 
     if let Some(guest_session_token) = header_value(headers, "x-guest-session") {
-        if let Some(principal) = project_access_via_guest_session(db, project_id, &guest_session_token).await? {
+        if let Some(principal) =
+            project_access_via_guest_session(db, project_id, &guest_session_token).await?
+        {
             if !mode_allows_read(&mode) {
                 return Err(StatusCode::UNAUTHORIZED);
             }
-            if matches!(need, AccessNeed::Write) && (!mode_allows_guest_write(&mode) || !principal.can_write) {
+            if matches!(need, AccessNeed::Write)
+                && (!mode_allows_guest_write(&mode) || !principal.can_write)
+            {
                 return Err(StatusCode::FORBIDDEN);
             }
             if matches!(need, AccessNeed::Manage | AccessNeed::GitSync) {
@@ -254,7 +262,10 @@ pub async fn ensure_project_access(
     if !mode_allows_read(&mode) {
         return Err(StatusCode::UNAUTHORIZED);
     }
-    if matches!(need, AccessNeed::Write | AccessNeed::Manage | AccessNeed::GitSync) {
+    if matches!(
+        need,
+        AccessNeed::Write | AccessNeed::Manage | AccessNeed::GitSync
+    ) {
         return Err(StatusCode::FORBIDDEN);
     }
     Ok(ProjectAccessPrincipal {
@@ -297,15 +308,9 @@ pub async fn ensure_project_role_for_user(
         };
         let allowed = match need {
             AccessNeed::Read => true,
-            AccessNeed::Write => matches!(
-                role,
-                ProjectRole::Owner | ProjectRole::Teacher | ProjectRole::TA | ProjectRole::Student
-            ),
-            AccessNeed::Manage => matches!(role, ProjectRole::Owner | ProjectRole::Teacher),
-            AccessNeed::GitSync => matches!(
-                role,
-                ProjectRole::Owner | ProjectRole::Teacher | ProjectRole::TA
-            ),
+            AccessNeed::Write => matches!(role, ProjectRole::Owner | ProjectRole::ReadWrite),
+            AccessNeed::Manage => matches!(role, ProjectRole::Owner),
+            AccessNeed::GitSync => matches!(role, ProjectRole::Owner),
         };
         return if allowed {
             Ok(())
@@ -319,8 +324,6 @@ pub async fn ensure_project_role_for_user(
          from project_organization_access poa
          join (
             select organization_id from organization_memberships where user_id = $1
-            union
-            select organization_id from org_admins where user_id = $1
          ) uo on uo.organization_id = poa.organization_id
          where poa.project_id = $2
          order by case poa.permission when 'write' then 2 when 'read' then 1 else 0 end desc
@@ -362,4 +365,21 @@ pub async fn authenticated_user_id(
         }
     }
     Err(StatusCode::UNAUTHORIZED)
+}
+
+pub async fn is_site_admin(db: &PgPool, user_id: Uuid) -> Result<bool, StatusCode> {
+    let site_org_id =
+        Uuid::parse_str(SITE_ADMINS_ORG_ID).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let row = sqlx::query(
+        "select 1
+         from organization_memberships
+         where organization_id = $1 and user_id = $2 and role = 'owner'
+         limit 1",
+    )
+    .bind(site_org_id)
+    .bind(user_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(row.is_some())
 }

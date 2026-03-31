@@ -44,11 +44,11 @@ use tower_http::trace::TraceLayer;
 use tracing::{error, info};
 use uuid::Uuid;
 
-mod routes;
 mod auth;
 mod documents;
 mod git;
 mod projects;
+mod routes;
 mod support;
 
 use auth::*;

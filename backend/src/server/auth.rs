@@ -9,6 +9,7 @@ pub(super) async fn run_migrations(pool: &PgPool) {
 
 pub(super) async fn seed_default_data(pool: &PgPool) {
     let admin_id = Uuid::parse_str("00000000-0000-0000-0000-000000000100").unwrap();
+    let site_admin_org_id = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
     let legacy_member_id = Uuid::parse_str("00000000-0000-0000-0000-000000000101").unwrap();
     let now = Utc::now();
 
@@ -23,7 +24,6 @@ pub(super) async fn seed_default_data(pool: &PgPool) {
     .bind(now)
     .execute(pool)
     .await;
-
 
     let admin_exists = sqlx::query("select 1 from local_accounts where user_id = $1")
         .bind(admin_id)
@@ -52,48 +52,18 @@ pub(super) async fn seed_default_data(pool: &PgPool) {
         }
     }
 
-    let admin_membership_org = sqlx::query(
-        "select organization_id
-         from organization_memberships
-         where user_id = $1
-         order by joined_at asc
-         limit 1",
-    )
-    .bind(admin_id)
-    .fetch_optional(pool)
-    .await
-    .ok()
-    .flatten()
-    .map(|row| row.get::<Uuid, _>("organization_id"));
-    let admin_org_id = if let Some(org_id) = admin_membership_org {
-        org_id
-    } else {
-        let org_id = Uuid::new_v4();
-        let org_name = "Administrator Organization";
-        let _ = sqlx::query("insert into organizations (id, name, created_at) values ($1, $2, $3)")
-            .bind(org_id)
-            .bind(org_name)
-            .bind(now)
-            .execute(pool)
-            .await;
-        let _ = sqlx::query(
-            "insert into organization_memberships (organization_id, user_id, joined_at)
-             values ($1, $2, $3)
-             on conflict (organization_id, user_id) do nothing",
-        )
-        .bind(org_id)
-        .bind(admin_id)
+    let _ = sqlx::query("insert into organizations (id, name, created_at) values ($1, $2, $3) on conflict (id) do nothing")
+        .bind(site_admin_org_id)
+        .bind("Site Admins")
         .bind(now)
         .execute(pool)
         .await;
-        org_id
-    };
     let _ = sqlx::query(
-        "insert into org_admins (organization_id, user_id, granted_at)
-         values ($1, $2, $3)
-         on conflict (organization_id, user_id) do nothing",
+        "insert into organization_memberships (organization_id, user_id, joined_at, role)
+         values ($1, $2, $3, 'owner')
+         on conflict (organization_id, user_id) do update set role = 'owner'",
     )
-    .bind(admin_org_id)
+    .bind(site_admin_org_id)
     .bind(admin_id)
     .bind(now)
     .execute(pool)
@@ -101,10 +71,6 @@ pub(super) async fn seed_default_data(pool: &PgPool) {
 
     // Clean up legacy seeded non-admin account from earlier builds.
     let _ = sqlx::query("delete from project_roles where user_id = $1")
-        .bind(legacy_member_id)
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("delete from org_admins where user_id = $1")
         .bind(legacy_member_id)
         .execute(pool)
         .await;
@@ -153,7 +119,12 @@ pub(super) async fn local_login(
 ) -> axum::response::Response {
     let settings = match load_auth_settings(&state.db, &state.oidc).await {
         Ok(s) => s,
-        Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Authentication settings are unavailable"),
+        Err(_) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Authentication settings are unavailable",
+            )
+        }
     };
     if !settings.allow_local_login {
         return error_response(
@@ -163,10 +134,7 @@ pub(super) async fn local_login(
     }
     let email = input.email.trim().to_lowercase();
     if email.is_empty() || input.password.is_empty() {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "Email and password are required",
-        );
+        return error_response(StatusCode::BAD_REQUEST, "Email and password are required");
     }
     let row = sqlx::query(
         "select u.id, la.password_hash
@@ -184,7 +152,12 @@ pub(super) async fn local_login(
     let password_hash: String = row.get("password_hash");
     let parsed = match PasswordHash::new(&password_hash) {
         Ok(p) => p,
-        Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Account password data is corrupted"),
+        Err(_) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Account password data is corrupted",
+            )
+        }
     };
     if Argon2::default()
         .verify_password(input.password.as_bytes(), &parsed)
@@ -202,7 +175,12 @@ pub(super) async fn local_register(
 ) -> axum::response::Response {
     let settings = match load_auth_settings(&state.db, &state.oidc).await {
         Ok(s) => s,
-        Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Authentication settings are unavailable"),
+        Err(_) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Authentication settings are unavailable",
+            )
+        }
     };
     if !settings.allow_local_registration {
         return error_response(
@@ -246,7 +224,9 @@ pub(super) async fn local_register(
     let now = Utc::now();
     let hash = match hash_password(&input.password) {
         Ok(v) => v,
-        Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Password hashing failed"),
+        Err(_) => {
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Password hashing failed")
+        }
     };
     let user_insert = sqlx::query(
         "insert into users (id, email, username, display_name, created_at)
@@ -308,7 +288,12 @@ pub(super) async fn oidc_login(State(state): State<AppState>) -> axum::response:
         .unwrap_or(false);
     let settings = match load_auth_settings(&state.db, &state.oidc).await {
         Ok(v) => v,
-        Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Authentication settings are unavailable"),
+        Err(_) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Authentication settings are unavailable",
+            )
+        }
     };
     if !settings.allow_oidc {
         return error_response(
@@ -332,7 +317,9 @@ pub(super) async fn oidc_login(State(state): State<AppState>) -> axum::response:
     };
     let http_client = match reqwest::Client::builder().redirect(Policy::none()).build() {
         Ok(c) => c,
-        Err(_) => return error_response(StatusCode::BAD_GATEWAY, "Failed to initialize OIDC client"),
+        Err(_) => {
+            return error_response(StatusCode::BAD_GATEWAY, "Failed to initialize OIDC client")
+        }
     };
     let provider_metadata = match CoreProviderMetadata::discover_async(issuer, &http_client).await {
         Ok(m) => m,
@@ -397,7 +384,12 @@ pub(super) async fn oidc_callback(
         .unwrap_or(false);
     let settings = match load_auth_settings(&state.db, &state.oidc).await {
         Ok(v) => v,
-        Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Authentication settings are unavailable"),
+        Err(_) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Authentication settings are unavailable",
+            )
+        }
     };
     if !settings.allow_oidc {
         return error_response(
@@ -421,7 +413,10 @@ pub(super) async fn oidc_callback(
         .map(|c| c.value().to_string())
         .unwrap_or_default();
     if callback_state.is_empty() || callback_state != cookie_state {
-        return error_response(StatusCode::UNAUTHORIZED, "OIDC login state is invalid or expired");
+        return error_response(
+            StatusCode::UNAUTHORIZED,
+            "OIDC login state is invalid or expired",
+        );
     }
 
     let row = sqlx::query("select nonce from oidc_states where state = $1")
@@ -439,7 +434,9 @@ pub(super) async fn oidc_callback(
     };
     let http_client = match reqwest::Client::builder().redirect(Policy::none()).build() {
         Ok(c) => c,
-        Err(_) => return error_response(StatusCode::BAD_GATEWAY, "Failed to initialize OIDC client"),
+        Err(_) => {
+            return error_response(StatusCode::BAD_GATEWAY, "Failed to initialize OIDC client")
+        }
     };
     let provider_metadata = match CoreProviderMetadata::discover_async(issuer, &http_client).await {
         Ok(m) => m,
@@ -460,7 +457,12 @@ pub(super) async fn oidc_callback(
     };
     let token_result = match client.exchange_code(AuthorizationCode::new(query.code.clone())) {
         Ok(token_request) => token_request.request_async(&http_client).await,
-        Err(_) => return error_response(StatusCode::UNAUTHORIZED, "OIDC authorization code is invalid"),
+        Err(_) => {
+            return error_response(
+                StatusCode::UNAUTHORIZED,
+                "OIDC authorization code is invalid",
+            )
+        }
     };
     let tokens = match token_result {
         Ok(t) => t,
@@ -473,7 +475,12 @@ pub(super) async fn oidc_callback(
     let id_token_verifier = client.id_token_verifier();
     let claims: CoreIdTokenClaims = match id_token.claims(&id_token_verifier, &Nonce::new(nonce)) {
         Ok(c) => c.clone(),
-        Err(_) => return error_response(StatusCode::UNAUTHORIZED, "OIDC ID token verification failed"),
+        Err(_) => {
+            return error_response(
+                StatusCode::UNAUTHORIZED,
+                "OIDC ID token verification failed",
+            )
+        }
     };
     let issuer = claims.issuer().url().to_string();
     let subject = claims.subject().as_str().to_string();
@@ -541,7 +548,7 @@ pub(super) async fn oidc_callback(
         );
     };
     let _ = sync_user_oidc_groups(&state.db, user_id, &oidc_groups).await;
-    let _ = apply_project_group_roles(&state.db, user_id, &oidc_groups).await;
+    let _ = apply_org_group_memberships(&state.db, user_id, &oidc_groups).await;
 
     let token = random_token(48);
     let issued_at = Utc::now();
@@ -635,7 +642,10 @@ pub(super) async fn auth_me(
     .into_response()
 }
 
-pub(super) async fn auth_logout(State(state): State<AppState>, jar: CookieJar) -> impl IntoResponse {
+pub(super) async fn auth_logout(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> impl IntoResponse {
     if let Some(token) = jar.get("typst_session").map(|c| c.value().to_string()) {
         let _ = sqlx::query("delete from auth_sessions where session_token = $1")
             .bind(token)
@@ -680,10 +690,7 @@ pub(super) async fn issue_session_response(
     .execute(db)
     .await;
     if insert.is_err() {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to issue session",
-        );
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to issue session");
     }
     let session_cookie = Cookie::build(("typst_session", token.clone()))
         .path("/")
@@ -833,8 +840,7 @@ pub(super) fn oidc_username_candidate(base: &str, attempt: usize) -> String {
 pub(super) fn is_unique_violation(err: &sqlx::Error, constraint: &str) -> bool {
     match err {
         sqlx::Error::Database(db_err) => {
-            db_err.code().as_deref() == Some("23505")
-                && db_err.constraint() == Some(constraint)
+            db_err.code().as_deref() == Some("23505") && db_err.constraint() == Some(constraint)
         }
         _ => false,
     }
@@ -987,7 +993,10 @@ pub(super) async fn create_personal_access_token(
             }
         };
         if parsed <= Utc::now() {
-            return error_response(StatusCode::BAD_REQUEST, "Token expiry must be in the future");
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "Token expiry must be in the future",
+            );
         }
         Some(parsed)
     } else {

@@ -9,10 +9,7 @@ pub(super) fn parse_co_authors(message: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for line in message.lines() {
         let trimmed = line.trim();
-        if !trimmed
-            .to_ascii_lowercase()
-            .starts_with("co-authored-by:")
-        {
+        if !trimmed.to_ascii_lowercase().starts_with("co-authored-by:") {
             continue;
         }
         let value = trimmed
@@ -168,7 +165,9 @@ pub(super) async fn list_revisions(
             return Ok(Json(RevisionsResponse { revisions: vec![] }));
         };
 
-        let mut revwalk = repo.revwalk().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let mut revwalk = repo
+            .revwalk()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         revwalk
             .set_sorting(Sort::TIME)
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -190,7 +189,9 @@ pub(super) async fn list_revisions(
             if rows.len() >= limit {
                 break;
             }
-            let commit = repo.find_commit(oid).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            let commit = repo
+                .find_commit(oid)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             let subject = commit
                 .summary()
                 .map(|s| s.to_string())
@@ -347,23 +348,14 @@ pub(super) async fn create_revision(
     } else {
         format!("{summary}\n\n{}", trailers.join("\n"))
     };
-    let commit_id = git_commit_staged_if_changed(
-        &config.local_path,
-        &message,
-        &actor_name,
-        &actor_email,
-    )
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-    .map(Ok)
-    .unwrap_or_else(|| {
-        git_commit_allow_empty(
-            &config.local_path,
-            &message,
-            &actor_name,
-            &actor_email,
-        )
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
-    })?;
+    let commit_id =
+        git_commit_staged_if_changed(&config.local_path, &message, &actor_name, &actor_email)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .map(Ok)
+            .unwrap_or_else(|| {
+                git_commit_allow_empty(&config.local_path, &message, &actor_name, &actor_email)
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+            })?;
 
     let _ = sqlx::query(
         "update git_repositories
@@ -575,7 +567,8 @@ pub(super) fn build_transfer_candidate(
                         document_paths.push(path);
                     }
                     CommitPathKind::Asset => {
-                        let approx_asset_bytes = estimate_asset_b64_bytes(meta.size_bytes).max(256 * 1024);
+                        let approx_asset_bytes =
+                            estimate_asset_b64_bytes(meta.size_bytes).max(256 * 1024);
                         estimated_bytes = estimated_bytes
                             .saturating_add(path.len())
                             .saturating_add(meta.content_type.len())
@@ -585,10 +578,14 @@ pub(super) fn build_transfer_candidate(
                     }
                 }
             } else if is_document_text_path(&path) {
-                estimated_bytes = estimated_bytes.saturating_add(path.len()).saturating_add(12);
+                estimated_bytes = estimated_bytes
+                    .saturating_add(path.len())
+                    .saturating_add(12);
                 deleted_documents.push(path);
             } else {
-                estimated_bytes = estimated_bytes.saturating_add(path.len()).saturating_add(12);
+                estimated_bytes = estimated_bytes
+                    .saturating_add(path.len())
+                    .saturating_add(12);
                 deleted_assets.push(path);
             }
         }
@@ -611,7 +608,8 @@ pub(super) fn build_transfer_candidate(
                     document_paths.push(path);
                 }
                 CommitPathKind::Asset => {
-                    let approx_asset_bytes = estimate_asset_b64_bytes(meta.size_bytes).max(256 * 1024);
+                    let approx_asset_bytes =
+                        estimate_asset_b64_bytes(meta.size_bytes).max(256 * 1024);
                     estimated_bytes = estimated_bytes
                         .saturating_add(path.len())
                         .saturating_add(meta.content_type.len())
@@ -840,14 +838,16 @@ pub(super) async fn get_revision_documents(
         let mut live_base_context: Option<(CommitManifest, HashSet<String>)> = None;
 
         let has_client_revision_anchor = query.current_revision_id.is_some();
-        if let Ok(head_ref) = repo.find_reference(&format!("refs/heads/{}", config.default_branch)) {
+        if let Ok(head_ref) = repo.find_reference(&format!("refs/heads/{}", config.default_branch))
+        {
             if let Ok(head_commit) = head_ref.peel_to_commit() {
                 let head_id = head_commit.id().to_string();
                 let head_manifest = load_commit_manifest(&repo, &head_commit)
                     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
                 let head_to_target = if head_id != revision_id {
-                    let changed_paths = diff_changed_paths_between(&repo, &head_commit, &target_commit)
-                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                    let changed_paths =
+                        diff_changed_paths_between(&repo, &head_commit, &target_commit)
+                            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
                     if has_client_revision_anchor {
                         candidates.push(build_transfer_candidate(
                             &target_manifest,
@@ -874,8 +874,9 @@ pub(super) async fn get_revision_documents(
                             )
                         });
                         if !duplicate {
-                            let changed_paths = diff_changed_paths_between(&repo, &base_commit, &target_commit)
-                                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                            let changed_paths =
+                                diff_changed_paths_between(&repo, &base_commit, &target_commit)
+                                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
                             candidates.push(build_transfer_candidate(
                                 &target_manifest,
                                 Some(&changed_paths),
@@ -891,7 +892,8 @@ pub(super) async fn get_revision_documents(
 
     if query.include_live_anchor.unwrap_or(false) && query.current_revision_id.is_none() {
         if let Some((head_manifest, head_to_target)) = live_base_context.as_ref() {
-            let live_to_head = live_vs_head_changed_paths(&state, project_id, head_manifest).await?;
+            let live_to_head =
+                live_vs_head_changed_paths(&state, project_id, head_manifest).await?;
             let mut live_union = head_to_target.clone();
             live_union.extend(live_to_head);
             candidates.push(build_transfer_candidate(
@@ -907,7 +909,11 @@ pub(super) async fn get_revision_documents(
         .min_by_key(|item| {
             (
                 item.estimated_bytes,
-                if item.transfer_mode == "full" { 1usize } else { 0usize },
+                if item.transfer_mode == "full" {
+                    1usize
+                } else {
+                    0usize
+                },
             )
         })
         .unwrap_or_else(|| {
@@ -930,7 +936,8 @@ pub(super) async fn get_revision_documents(
         .collect::<Result<Vec<_>, StatusCode>>()?;
     clean_document_paths.sort();
     clean_document_paths.dedup();
-    let repo = Repository::open(&config.local_path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let repo =
+        Repository::open(&config.local_path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let revision_oid = Oid::from_str(&revision_id).map_err(|_| StatusCode::NOT_FOUND)?;
     let target_commit = repo
         .find_commit(revision_oid)
@@ -1115,7 +1122,8 @@ pub(super) async fn upsert_document_by_path(
     Path((project_id, path)): Path<(Uuid, String)>,
     Json(input): Json<UpsertDocumentByPathInput>,
 ) -> Result<Json<Document>, StatusCode> {
-    let principal = ensure_project_access(&state.db, &headers, project_id, AccessNeed::Write).await?;
+    let principal =
+        ensure_project_access(&state.db, &headers, project_id, AccessNeed::Write).await?;
     let now = Utc::now();
     let doc_id = Uuid::new_v4();
     let row = sqlx::query(
@@ -1298,7 +1306,8 @@ pub(super) async fn upload_project_asset(
     Path(project_id): Path<Uuid>,
     Json(input): Json<UploadAssetInput>,
 ) -> Result<Json<ProjectAsset>, StatusCode> {
-    let principal = ensure_project_access(&state.db, &headers, project_id, AccessNeed::Write).await?;
+    let principal =
+        ensure_project_access(&state.db, &headers, project_id, AccessNeed::Write).await?;
     let actor = principal.user_id;
     let path = sanitize_project_path(&input.path)?;
     let bytes = base64::Engine::decode(
@@ -1414,7 +1423,8 @@ pub(super) async fn delete_project_asset(
     headers: HeaderMap,
     Path((project_id, asset_id)): Path<(Uuid, Uuid)>,
 ) -> Result<StatusCode, StatusCode> {
-    let principal = ensure_project_access(&state.db, &headers, project_id, AccessNeed::Write).await?;
+    let principal =
+        ensure_project_access(&state.db, &headers, project_id, AccessNeed::Write).await?;
     let actor = principal.user_id;
     let row =
         sqlx::query("select object_key from project_assets where project_id = $1 and id = $2")

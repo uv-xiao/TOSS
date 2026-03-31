@@ -61,20 +61,16 @@ pub struct CollabEvent {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ProjectRole {
     Owner,
-    Teacher,
-    Student,
-    TA,
-    Viewer,
+    ReadWrite,
+    ReadOnly,
 }
 
 impl ProjectRole {
     pub fn from_db(v: &str) -> Option<Self> {
         match v {
             "Owner" => Some(Self::Owner),
-            "Teacher" => Some(Self::Teacher),
-            "Student" => Some(Self::Student),
-            "TA" => Some(Self::TA),
-            "Viewer" => Some(Self::Viewer),
+            "ReadWrite" => Some(Self::ReadWrite),
+            "ReadOnly" => Some(Self::ReadOnly),
             _ => None,
         }
     }
@@ -111,7 +107,7 @@ pub struct ProjectListResponse {
 pub struct OrganizationMembership {
     pub organization_id: Uuid,
     pub organization_name: String,
-    pub is_admin: bool,
+    pub membership_role: String,
     pub joined_at: DateTime<Utc>,
 }
 

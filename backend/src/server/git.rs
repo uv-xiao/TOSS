@@ -42,7 +42,8 @@ pub(super) fn push_reject_hint_lines(reason: &str) -> Vec<String> {
     if reason.starts_with("fetch first:") {
         return vec![
             "error: push rejected because server has newer online updates\n".to_string(),
-            "hint: Pull latest changes, rebase/merge your local commit, then push again.\n".to_string(),
+            "hint: Pull latest changes, rebase/merge your local commit, then push again.\n"
+                .to_string(),
         ];
     }
     vec![format!("error: {reason}\n")]
@@ -60,7 +61,11 @@ pub(super) fn pkt_line_bytes(payload: &[u8]) -> Vec<u8> {
     out
 }
 
-pub(super) fn git_receive_pack_reject_body(ref_name: &str, reason: &str, hints: &[String]) -> Vec<u8> {
+pub(super) fn git_receive_pack_reject_body(
+    ref_name: &str,
+    reason: &str,
+    hints: &[String],
+) -> Vec<u8> {
     let mut report = Vec::new();
     report.extend(pkt_line("unpack ok\n"));
     report.extend(pkt_line(&format!("ng {ref_name} {reason}\n")));
@@ -430,16 +435,15 @@ pub(super) async fn git_http_backend(
             .into_response();
     }
     let head_before = git_head_oid(&config.local_path).ok().flatten();
-    let had_pending_sync = sqlx::query(
-        "select pending_sync from git_repositories where project_id = $1",
-    )
-    .bind(project_id)
-    .fetch_optional(&state.db)
-    .await
-    .ok()
-    .flatten()
-    .map(|row| row.get::<bool, _>("pending_sync"))
-    .unwrap_or(false);
+    let had_pending_sync =
+        sqlx::query("select pending_sync from git_repositories where project_id = $1")
+            .bind(project_id)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten()
+            .map(|row| row.get::<bool, _>("pending_sync"))
+            .unwrap_or(false);
     if is_pull_flow && had_pending_sync {
         if let Err(err) = flush_pending_server_commit(&state, project_id, Some(actor)).await {
             return (
@@ -589,14 +593,18 @@ pub(super) async fn git_http_backend(
                         .execute(&state.db)
                         .await;
                         if is_clean {
-                            let _ = sqlx::query("delete from git_pending_authors where project_id = $1")
-                                .bind(project_id)
-                                .execute(&state.db)
-                                .await;
-                            let _ = sqlx::query("delete from git_pending_guest_authors where project_id = $1")
-                                .bind(project_id)
-                                .execute(&state.db)
-                                .await;
+                            let _ = sqlx::query(
+                                "delete from git_pending_authors where project_id = $1",
+                            )
+                            .bind(project_id)
+                            .execute(&state.db)
+                            .await;
+                            let _ = sqlx::query(
+                                "delete from git_pending_guest_authors where project_id = $1",
+                            )
+                            .bind(project_id)
+                            .execute(&state.db)
+                            .await;
                         }
                         write_audit(
                             &state.db,
@@ -611,7 +619,8 @@ pub(super) async fn git_http_backend(
                     if let Some(old_head) = head_before {
                         let _ = git_hard_reset_to(&config.local_path, old_head);
                     }
-                    let _ = sync_project_documents_to_repo(&state, project_id, &config.local_path).await;
+                    let _ = sync_project_documents_to_repo(&state, project_id, &config.local_path)
+                        .await;
                     let trailers = pending_author_trailers(&state.db, project_id, Some(actor))
                         .await
                         .unwrap_or_default();
@@ -643,10 +652,11 @@ pub(super) async fn git_http_backend(
                         .bind(project_id)
                         .execute(&state.db)
                         .await;
-                    let _ = sqlx::query("delete from git_pending_guest_authors where project_id = $1")
-                        .bind(project_id)
-                        .execute(&state.db)
-                        .await;
+                    let _ =
+                        sqlx::query("delete from git_pending_guest_authors where project_id = $1")
+                            .bind(project_id)
+                            .execute(&state.db)
+                            .await;
                     post_sync_error = Some(PushReject {
                         reason: format!(
                             "fetch first: server has newer online updates ({conflict_reason})"
@@ -670,10 +680,11 @@ pub(super) async fn git_http_backend(
                         .bind(project_id)
                         .execute(&state.db)
                         .await;
-                    let _ = sqlx::query("delete from git_pending_guest_authors where project_id = $1")
-                        .bind(project_id)
-                        .execute(&state.db)
-                        .await;
+                    let _ =
+                        sqlx::query("delete from git_pending_guest_authors where project_id = $1")
+                            .bind(project_id)
+                            .execute(&state.db)
+                            .await;
                     write_audit(
                         &state.db,
                         Some(actor),
@@ -726,13 +737,15 @@ pub(super) async fn git_http_backend(
                 "application/x-git-receive-pack-result",
             );
             builder = builder.header("Cache-Control", "no-cache");
-            return builder
-                .body(Body::from(body))
-                .unwrap_or_else(|_| {
-                    axum::http::Response::new(Body::from("backend response error"))
-                });
+            return builder.body(Body::from(body)).unwrap_or_else(|_| {
+                axum::http::Response::new(Body::from("backend response error"))
+            });
         }
-        return (StatusCode::CONFLICT, format!("Push rejected: {}", reject.reason)).into_response();
+        return (
+            StatusCode::CONFLICT,
+            format!("Push rejected: {}", reject.reason),
+        )
+            .into_response();
     }
 
     let mut builder = axum::http::Response::builder().status(status);

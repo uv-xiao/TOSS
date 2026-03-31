@@ -74,13 +74,14 @@ async function parseJsonOrThrow<T>(res: Response, message: string): Promise<T> {
   return (await res.json()) as T;
 }
 
-export type ProjectRole = "Owner" | "Teacher" | "Student" | "TA" | "Viewer";
+export type ProjectRole = "Owner" | "ReadWrite" | "ReadOnly";
+export type OrganizationMembershipRole = "owner" | "member";
 export type SharePermission = "read" | "write";
 
 export type OrganizationMembership = {
   organization_id: string;
   organization_name: string;
-  is_admin: boolean;
+  membership_role: OrganizationMembershipRole | string;
   joined_at: string;
 };
 
@@ -89,7 +90,7 @@ export type Project = {
   name: string;
   owner_user_id: string | null;
   owner_display_name: string;
-  my_role: ProjectRole | "Viewer";
+  my_role: ProjectRole;
   can_read: boolean;
   is_template: boolean;
   has_thumbnail: boolean;
@@ -215,7 +216,7 @@ export type CreatePatResponse = {
 export type OrgGroupRoleMapping = {
   organization_id: string;
   group_name: string;
-  role: ProjectRole;
+  role: OrganizationMembershipRole | string;
   granted_at: string;
 };
 
@@ -278,7 +279,7 @@ export type CreateProjectShareLinkResponse = {
 
 export type JoinProjectShareLinkResponse = {
   project_id: string;
-  role: ProjectRole | "Viewer";
+  role: ProjectRole;
 };
 
 export type ResolveProjectShareLinkResponse = {
@@ -336,7 +337,7 @@ export type ProjectAccessUser = {
   user_id: string;
   email: string;
   display_name: string;
-  role: ProjectRole | "Viewer";
+  role: ProjectRole;
   access_type: "read" | "write" | "manage" | string;
   sources: string[];
 };
@@ -801,7 +802,7 @@ export async function listOrgGroupRoleMappings(orgId: string) {
 
 export async function upsertOrgGroupRoleMapping(
   orgId: string,
-  input: { group_name: string; role: ProjectRole }
+  input: { group_name: string; role: OrganizationMembershipRole | string }
 ) {
   const res = await fetch(apiUrl(`/v1/admin/orgs/${orgId}/oidc-group-role-mappings`), {
     method: "POST",
