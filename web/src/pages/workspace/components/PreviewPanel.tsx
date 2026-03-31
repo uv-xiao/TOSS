@@ -73,25 +73,27 @@ export function PreviewPanel({
   return (
     <aside className="panel panel-preview" style={{ flex: `${1 - editorRatio} 1 0`, minWidth: 280 }}>
       <div className="panel-header workspace-main-header">
-        <h2>{previewTitle}</h2>
-        {previewPageLabel && (
-          <button
-            type="button"
-            className="preview-page-indicator"
-            onClick={() => {
-              const raw = window.prompt(
-                t("preview.jumpPrompt").replace("{total}", String(previewPageTotal)),
-                String(previewPageCurrent)
-              );
-              if (!raw) return;
-              const parsed = Number.parseInt(raw, 10);
-              if (!Number.isFinite(parsed)) return;
-              onJumpToPage(Math.min(previewPageTotal, Math.max(1, parsed)));
-            }}
-          >
-            {previewPageLabel}
-          </button>
-        )}
+        <div className="preview-title-group">
+          <h2>{previewTitle}</h2>
+          {previewPageLabel && (
+            <button
+              type="button"
+              className="preview-page-indicator"
+              onClick={() => {
+                const raw = window.prompt(
+                  t("preview.jumpPrompt").replace("{total}", String(previewPageTotal)),
+                  String(previewPageCurrent)
+                );
+                if (!raw) return;
+                const parsed = Number.parseInt(raw, 10);
+                if (!Number.isFinite(parsed)) return;
+                onJumpToPage(Math.min(previewPageTotal, Math.max(1, parsed)));
+              }}
+            >
+              {previewPageLabel}
+            </button>
+          )}
+        </div>
         <div className="toolbar compact">
           <UiIconButton
             tooltip={t("preview.fitWhole")}

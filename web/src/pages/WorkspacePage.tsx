@@ -628,6 +628,34 @@ export function WorkspacePage({
   }, []);
 
   useEffect(() => {
+    if (!projectId) return;
+    const key = `workspace.preview.settings.${projectId}`;
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw) as { fitMode?: PreviewFitMode; zoom?: number };
+      if (parsed.fitMode === "manual" || parsed.fitMode === "page" || parsed.fitMode === "width") {
+        setPreviewFitMode(parsed.fitMode);
+      }
+      if (typeof parsed.zoom === "number" && Number.isFinite(parsed.zoom)) {
+        setPreviewZoom(clampNumber(parsed.zoom, PREVIEW_MIN_ZOOM, PREVIEW_MAX_ZOOM));
+      }
+    } catch {
+      // Ignore malformed local preference payload.
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    if (!projectId) return;
+    const key = `workspace.preview.settings.${projectId}`;
+    const payload = JSON.stringify({
+      fitMode: previewFitMode,
+      zoom: previewZoom
+    });
+    window.localStorage.setItem(key, payload);
+  }, [previewFitMode, previewZoom, projectId]);
+
+  useEffect(() => {
     const onResize = () => setViewportWidth(window.innerWidth);
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
