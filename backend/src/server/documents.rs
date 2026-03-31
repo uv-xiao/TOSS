@@ -151,7 +151,7 @@ pub(super) async fn list_revisions(
     Query(query): Query<ListRevisionsQuery>,
     Path(project_id): Path<Uuid>,
 ) -> Result<Json<RevisionsResponse>, StatusCode> {
-    ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
+    ensure_project_access(&state.db, &headers, project_id, AccessNeed::Read).await?;
     let limit = query.limit.unwrap_or(40).clamp(1, 100);
     let before_cursor = query.before.as_deref();
     let config = load_git_config(&state.db, project_id).await?;
@@ -324,6 +324,23 @@ pub(super) async fn create_revision(
         });
         trailers.push(format!("Co-authored-by: {actor_name} <{actor_email}>"));
     }
+    let guest_rows = sqlx::query(
+        "select display_name
+         from git_pending_guest_authors
+         where project_id = $1
+         order by touched_at asc",
+    )
+    .bind(project_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    for row in guest_rows {
+        let display_name: String = row.get("display_name");
+        let annotated_name = format!("{display_name} (Unverified)");
+        let hash = token_sha256(&display_name);
+        let email = format!("guest+{}@typst-server.local", &hash[..12]);
+        trailers.push(format!("Co-authored-by: {annotated_name} <{email}>"));
+    }
 
     let message = if trailers.is_empty() {
         summary.clone()
@@ -358,6 +375,10 @@ pub(super) async fn create_revision(
     .execute(&state.db)
     .await;
     let _ = sqlx::query("delete from git_pending_authors where project_id = $1")
+        .bind(project_id)
+        .execute(&state.db)
+        .await;
+    let _ = sqlx::query("delete from git_pending_guest_authors where project_id = $1")
         .bind(project_id)
         .execute(&state.db)
         .await;
@@ -793,7 +814,7 @@ pub(super) async fn get_revision_documents(
     Query(query): Query<RevisionDocumentsQuery>,
     Path((project_id, revision_id)): Path<(Uuid, String)>,
 ) -> Result<Json<RevisionDocumentsResponse>, StatusCode> {
-    ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
+    ensure_project_access(&state.db, &headers, project_id, AccessNeed::Read).await?;
     let _git_lock = acquire_git_project_lock(&state, project_id).await;
     let config = load_git_config(&state.db, project_id).await?;
     ensure_git_repo_initialized(&config.local_path, &config.default_branch)
@@ -985,7 +1006,7 @@ pub(super) async fn list_documents(
     Path(project_id): Path<Uuid>,
     Query(query): Query<ListDocumentsQuery>,
 ) -> Result<Json<DocumentsResponse>, StatusCode> {
-    ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
+    ensure_project_access(&state.db, &headers, project_id, AccessNeed::Read).await?;
     normalize_project_file_classification(&state, project_id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -1094,7 +1115,7 @@ pub(super) async fn upsert_document_by_path(
     Path((project_id, path)): Path<(Uuid, String)>,
     Json(input): Json<UpsertDocumentByPathInput>,
 ) -> Result<Json<Document>, StatusCode> {
-    let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Write).await?;
+    let principal = ensure_project_access(&state.db, &headers, project_id, AccessNeed::Write).await?;
     let now = Utc::now();
     let doc_id = Uuid::new_v4();
     let row = sqlx::query(
@@ -1114,12 +1135,18 @@ pub(super) async fn upsert_document_by_path(
 
     write_audit(
         &state.db,
-        Some(actor),
+        principal.user_id,
         "document.upsert_by_path",
         serde_json::json!({"project_id": project_id, "document_id": row.get::<Uuid, _>("id"), "path": row.get::<String, _>("path")}),
     )
     .await;
-    mark_project_dirty(&state.db, project_id, Some(actor)).await;
+    if let Some(user_id) = principal.user_id {
+        mark_project_dirty(&state.db, project_id, Some(user_id)).await;
+    } else if let Some(display_name) = principal.guest_display_name.as_deref() {
+        mark_project_dirty_guest(&state.db, project_id, display_name).await;
+    } else {
+        mark_project_dirty(&state.db, project_id, None).await;
+    }
 
     Ok(Json(Document {
         id: row.get("id"),
@@ -1234,7 +1261,7 @@ pub(super) async fn list_project_assets(
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
 ) -> Result<Json<ProjectAssetListResponse>, StatusCode> {
-    ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
+    ensure_project_access(&state.db, &headers, project_id, AccessNeed::Read).await?;
     normalize_project_file_classification(&state, project_id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -1271,7 +1298,8 @@ pub(super) async fn upload_project_asset(
     Path(project_id): Path<Uuid>,
     Json(input): Json<UploadAssetInput>,
 ) -> Result<Json<ProjectAsset>, StatusCode> {
-    let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Write).await?;
+    let principal = ensure_project_access(&state.db, &headers, project_id, AccessNeed::Write).await?;
+    let actor = principal.user_id;
     let path = sanitize_project_path(&input.path)?;
     let bytes = base64::Engine::decode(
         &base64::engine::general_purpose::STANDARD,
@@ -1310,10 +1338,16 @@ pub(super) async fn upload_project_asset(
     .fetch_one(&state.db)
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    mark_project_dirty(&state.db, project_id, Some(actor)).await;
+    if let Some(user_id) = actor {
+        mark_project_dirty(&state.db, project_id, Some(user_id)).await;
+    } else if let Some(display_name) = principal.guest_display_name.as_deref() {
+        mark_project_dirty_guest(&state.db, project_id, display_name).await;
+    } else {
+        mark_project_dirty(&state.db, project_id, None).await;
+    }
     write_audit(
         &state.db,
-        Some(actor),
+        actor,
         "project.asset.upload",
         serde_json::json!({"project_id": project_id, "asset_id": row.get::<Uuid, _>("id")}),
     )
@@ -1335,7 +1369,7 @@ pub(super) async fn get_project_asset(
     headers: HeaderMap,
     Path((project_id, asset_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<ProjectAssetContentResponse>, StatusCode> {
-    ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
+    ensure_project_access(&state.db, &headers, project_id, AccessNeed::Read).await?;
     let row = sqlx::query(
         "select id, project_id, path, object_key, content_type, size_bytes, uploaded_by, created_at, inline_data
          from project_assets
@@ -1380,7 +1414,8 @@ pub(super) async fn delete_project_asset(
     headers: HeaderMap,
     Path((project_id, asset_id)): Path<(Uuid, Uuid)>,
 ) -> Result<StatusCode, StatusCode> {
-    let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Write).await?;
+    let principal = ensure_project_access(&state.db, &headers, project_id, AccessNeed::Write).await?;
+    let actor = principal.user_id;
     let row =
         sqlx::query("select object_key from project_assets where project_id = $1 and id = $2")
             .bind(project_id)
@@ -1408,12 +1443,18 @@ pub(super) async fn delete_project_asset(
     }
     write_audit(
         &state.db,
-        Some(actor),
+        actor,
         "project.asset.delete",
         serde_json::json!({"project_id": project_id, "asset_id": asset_id}),
     )
     .await;
-    mark_project_dirty(&state.db, project_id, Some(actor)).await;
+    if let Some(user_id) = actor {
+        mark_project_dirty(&state.db, project_id, Some(user_id)).await;
+    } else if let Some(display_name) = principal.guest_display_name.as_deref() {
+        mark_project_dirty_guest(&state.db, project_id, display_name).await;
+    } else {
+        mark_project_dirty(&state.db, project_id, None).await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1422,7 +1463,7 @@ pub(super) async fn get_project_asset_raw(
     headers: HeaderMap,
     Path((project_id, asset_id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
+    ensure_project_access(&state.db, &headers, project_id, AccessNeed::Read).await?;
     let row = sqlx::query(
         "select object_key, content_type, inline_data from project_assets where project_id = $1 and id = $2",
     )
@@ -1460,7 +1501,7 @@ pub(super) async fn download_project_archive(
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
+    ensure_project_access(&state.db, &headers, project_id, AccessNeed::Read).await?;
     let rows =
         sqlx::query("select path, content from documents where project_id = $1 order by path asc")
             .bind(project_id)

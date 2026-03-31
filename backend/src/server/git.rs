@@ -268,6 +268,23 @@ pub(super) async fn pending_author_trailers(
             row.get::<String, _>("email")
         ));
     }
+    let guest_rows = sqlx::query(
+        "select display_name
+         from git_pending_guest_authors
+         where project_id = $1
+         order by touched_at asc",
+    )
+    .bind(project_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| e.to_string())?;
+    for row in guest_rows {
+        let name: String = row.get("display_name");
+        let guest_name = format!("{name} (Unverified)");
+        let hash = token_sha256(&name);
+        let guest_email = format!("guest+{}@typst-server.local", &hash[..12]);
+        trailers.push(format!("Co-authored-by: {} <{}>", guest_name, guest_email));
+    }
     if trailers.is_empty() {
         if let Some(user_id) = force_author {
             if let Some(row) = sqlx::query("select display_name, email from users where id = $1")
@@ -576,6 +593,10 @@ pub(super) async fn git_http_backend(
                                 .bind(project_id)
                                 .execute(&state.db)
                                 .await;
+                            let _ = sqlx::query("delete from git_pending_guest_authors where project_id = $1")
+                                .bind(project_id)
+                                .execute(&state.db)
+                                .await;
                         }
                         write_audit(
                             &state.db,
@@ -622,6 +643,10 @@ pub(super) async fn git_http_backend(
                         .bind(project_id)
                         .execute(&state.db)
                         .await;
+                    let _ = sqlx::query("delete from git_pending_guest_authors where project_id = $1")
+                        .bind(project_id)
+                        .execute(&state.db)
+                        .await;
                     post_sync_error = Some(PushReject {
                         reason: format!(
                             "fetch first: server has newer online updates ({conflict_reason})"
@@ -642,6 +667,10 @@ pub(super) async fn git_http_backend(
                     .execute(&state.db)
                     .await;
                     let _ = sqlx::query("delete from git_pending_authors where project_id = $1")
+                        .bind(project_id)
+                        .execute(&state.db)
+                        .await;
+                    let _ = sqlx::query("delete from git_pending_guest_authors where project_id = $1")
                         .bind(project_id)
                         .execute(&state.db)
                         .await;

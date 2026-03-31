@@ -92,6 +92,14 @@ export function AdminPage({ t }: { t: (key: string) => string }) {
                 />
                 Allow OIDC
               </label>
+              <UiSelect
+                value={settings.anonymous_mode || "off"}
+                onChange={(e) => setSettings({ ...settings, anonymous_mode: e.target.value })}
+              >
+                <option value="off">Off (everyone must log in)</option>
+                <option value="read_only">Guest read-only</option>
+                <option value="read_write_named">Guest read+write with self-identified name</option>
+              </UiSelect>
               <UiInput
                 value={discoveryUrl}
                 onChange={(e) => setDiscoveryUrl(e.target.value)}
@@ -124,6 +132,7 @@ export function AdminPage({ t }: { t: (key: string) => string }) {
                     allow_local_login: settings.allow_local_login,
                     allow_local_registration: settings.allow_local_registration,
                     allow_oidc: settings.allow_oidc,
+                    anonymous_mode: settings.anonymous_mode || "off",
                     site_name: settings.site_name || null,
                     oidc_discovery_url: discoveryUrl || null,
                     oidc_client_id: settings.oidc_client_id || null,
@@ -191,4 +200,3 @@ export function AdminPage({ t }: { t: (key: string) => string }) {
     </section>
   );
 }
-

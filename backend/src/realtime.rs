@@ -1,4 +1,4 @@
-use crate::authz::ensure_project_role;
+use crate::authz::ensure_project_access;
 use crate::authz::AccessNeed;
 use crate::types::{AppState, CollabEvent};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -21,12 +21,16 @@ pub struct WsQuery {
     pub user_id: Option<String>,
     pub user_name: Option<String>,
     pub session_token: Option<String>,
+    pub share_token: Option<String>,
+    pub guest_session: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct WsAuth {
     project_id: Uuid,
-    user_id: Uuid,
+    user_id: Option<Uuid>,
+    effective_id: Uuid,
+    can_write: bool,
 }
 
 #[derive(Debug)]
@@ -78,12 +82,28 @@ async fn authorize_ws_user(
             .map_err(|_| "invalid session_token".to_string())?;
         auth_headers.insert("cookie", value);
     }
-    let user_id = ensure_project_role(&state.db, &auth_headers, project_id, AccessNeed::Read)
+    if let Some(share_token) = &query.share_token {
+        let value =
+            HeaderValue::from_str(share_token.trim()).map_err(|_| "invalid share_token".to_string())?;
+        auth_headers.insert("x-share-token", value);
+    }
+    if let Some(guest_session) = &query.guest_session {
+        let value = HeaderValue::from_str(guest_session.trim())
+            .map_err(|_| "invalid guest_session".to_string())?;
+        auth_headers.insert("x-guest-session", value);
+    }
+    let principal = ensure_project_access(&state.db, &auth_headers, project_id, AccessNeed::Read)
         .await
         .map_err(|_| "forbidden".to_string())?;
+    let effective_id = principal
+        .user_id
+        .or(principal.guest_session_id)
+        .unwrap_or_else(Uuid::new_v4);
     Ok(WsAuth {
         project_id,
-        user_id,
+        user_id: principal.user_id,
+        effective_id,
+        can_write: principal.can_write,
     })
 }
 
@@ -139,7 +159,7 @@ async fn persist_collab_update(
     db: &PgPool,
     project_id: Uuid,
     doc_id: &str,
-    user_id: Uuid,
+    user_id: Option<Uuid>,
     kind: &str,
     payload: &[u8],
 ) -> Result<i64, sqlx::Error> {
@@ -360,7 +380,7 @@ async fn handle_socket(
     let sender = get_or_create_sender(&state, &channel_key).await;
     let mut rx = sender.subscribe();
     let (mut ws_tx, mut ws_rx) = socket.split();
-    let user_id = auth.user_id.to_string();
+    let user_id = auth.effective_id.to_string();
 
     if let Ok(bootstrap) = load_collab_bootstrap(&state.db, auth.project_id, &doc_id).await {
         send_bootstrap_state(&mut ws_tx, &doc_id, &user_id, bootstrap).await;
@@ -405,6 +425,9 @@ async fn handle_socket(
                     .cloned()
                     .unwrap_or_else(|| incoming.clone());
                 if kind == "yjs.update" || kind == "yjs.sync" {
+                    if !auth.can_write {
+                        continue;
+                    }
                     if let Some(payload_bytes) = json_payload_to_bytes(&payload) {
                         match persist_collab_update(
                             &state.db,

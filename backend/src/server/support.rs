@@ -911,6 +911,24 @@ pub(super) async fn mark_project_dirty(db: &PgPool, project_id: Uuid, actor_user
     }
 }
 
+pub(super) async fn mark_project_dirty_guest(db: &PgPool, project_id: Uuid, display_name: &str) {
+    mark_project_dirty(db, project_id, None).await;
+    let trimmed = display_name.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    let _ = sqlx::query(
+        "insert into git_pending_guest_authors (project_id, display_name, touched_at)
+         values ($1, $2, $3)
+         on conflict (project_id, display_name) do update set touched_at = excluded.touched_at",
+    )
+    .bind(project_id)
+    .bind(trimmed)
+    .bind(Utc::now())
+    .execute(db)
+    .await;
+}
+
 pub(super) async fn flush_pending_server_commit(
     state: &AppState,
     project_id: Uuid,
@@ -950,6 +968,10 @@ pub(super) async fn flush_pending_server_commit(
             .bind(project_id)
             .execute(&state.db)
             .await;
+        let _ = sqlx::query("delete from git_pending_guest_authors where project_id = $1")
+            .bind(project_id)
+            .execute(&state.db)
+            .await;
         clear_project_sync_queue_item(&state.db, project_id).await;
         return Ok(());
     }
@@ -971,6 +993,23 @@ pub(super) async fn flush_pending_server_commit(
         let name: String = row.get("display_name");
         let email: String = row.get("email");
         trailers.push(format!("Co-authored-by: {} <{}>", name, email));
+    }
+    let guest_rows = sqlx::query(
+        "select display_name
+         from git_pending_guest_authors
+         where project_id = $1
+         order by touched_at asc",
+    )
+    .bind(project_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| e.to_string())?;
+    for row in guest_rows {
+        let name: String = row.get("display_name");
+        let guest_name = format!("{name} (Unverified)");
+        let hash = token_sha256(&name);
+        let guest_email = format!("guest+{}@typst-server.local", &hash[..12]);
+        trailers.push(format!("Co-authored-by: {} <{}>", guest_name, guest_email));
     }
     if trailers.is_empty() {
         if let Some(user_id) = force_author {
@@ -1022,6 +1061,10 @@ pub(super) async fn flush_pending_server_commit(
     .execute(&state.db)
     .await;
     let _ = sqlx::query("delete from git_pending_authors where project_id = $1")
+        .bind(project_id)
+        .execute(&state.db)
+        .await;
+    let _ = sqlx::query("delete from git_pending_guest_authors where project_id = $1")
         .bind(project_id)
         .execute(&state.db)
         .await;

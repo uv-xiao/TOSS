@@ -1,4 +1,6 @@
 const API_BASE = (import.meta.env.VITE_CORE_API_URL as string | undefined)?.trim() ?? "";
+let shareAccessToken: string | null = null;
+let guestShareSession: string | null = null;
 
 function apiUrl(path: string) {
   if (!API_BASE) return path;
@@ -10,7 +12,10 @@ function authCredentials(): RequestCredentials {
 }
 
 function authHeaders(extra?: Record<string, string>) {
-  return { ...(extra ?? {}) };
+  const headers: Record<string, string> = { ...(extra ?? {}) };
+  if (shareAccessToken) headers["x-share-token"] = shareAccessToken;
+  if (guestShareSession) headers["x-guest-session"] = guestShareSession;
+  return headers;
 }
 
 function encodePathPreservingSlashes(path: string) {
@@ -224,6 +229,7 @@ export type AuthConfig = {
   allow_local_login: boolean;
   allow_local_registration: boolean;
   allow_oidc: boolean;
+  anonymous_mode: "off" | "read_only" | "read_write_named" | string;
   site_name: string;
   issuer: string | null;
   client_id: string | null;
@@ -243,6 +249,7 @@ export type AdminAuthSettings = {
   allow_local_login: boolean;
   allow_local_registration: boolean;
   allow_oidc: boolean;
+  anonymous_mode: "off" | "read_only" | "read_write_named" | string;
   site_name: string;
   oidc_issuer: string | null;
   oidc_client_id: string | null;
@@ -273,6 +280,34 @@ export type JoinProjectShareLinkResponse = {
   project_id: string;
   role: ProjectRole | "Viewer";
 };
+
+export type ResolveProjectShareLinkResponse = {
+  project_id: string;
+  project_name: string;
+  permission: SharePermission;
+  anonymous_mode: "off" | "read_only" | "read_write_named" | string;
+};
+
+export type TemporaryShareLoginResponse = {
+  project_id: string;
+  session_token: string;
+  session_id: string;
+  display_name: string;
+  permission: SharePermission;
+};
+
+export function setShareAccessContext(input: {
+  shareToken?: string | null;
+  guestSession?: string | null;
+}) {
+  shareAccessToken = input.shareToken?.trim() ? input.shareToken.trim() : null;
+  guestShareSession = input.guestSession?.trim() ? input.guestSession.trim() : null;
+}
+
+export function clearShareAccessContext() {
+  shareAccessToken = null;
+  guestShareSession = null;
+}
 
 export type ProjectOrganizationAccess = {
   project_id: string;
@@ -815,6 +850,7 @@ export async function upsertAdminAuthSettings(input: {
   allow_local_login: boolean;
   allow_local_registration: boolean;
   allow_oidc: boolean;
+  anonymous_mode?: "off" | "read_only" | "read_write_named" | string;
   site_name?: string | null;
   oidc_discovery_url?: string | null;
   oidc_client_id?: string | null;
@@ -979,4 +1015,29 @@ export async function joinProjectShareLink(token: string) {
     headers: authHeaders()
   });
   return parseJsonOrThrow<JoinProjectShareLinkResponse>(res, "Unable to join shared project");
+}
+
+export async function resolveProjectShareLink(token: string) {
+  const res = await fetch(apiUrl(`/v1/share/${encodeURIComponent(token)}/resolve`), {
+    credentials: authCredentials(),
+    headers: authHeaders(),
+    cache: "no-store"
+  });
+  return parseJsonOrThrow<ResolveProjectShareLinkResponse>(
+    res,
+    "Unable to resolve shared project"
+  );
+}
+
+export async function temporaryShareLogin(token: string, displayName: string) {
+  const res = await fetch(apiUrl(`/v1/share/${encodeURIComponent(token)}/temporary-login`), {
+    method: "POST",
+    credentials: authCredentials(),
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify({ display_name: displayName })
+  });
+  return parseJsonOrThrow<TemporaryShareLoginResponse>(
+    res,
+    "Unable to start temporary guest session"
+  );
 }

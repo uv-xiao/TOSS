@@ -137,6 +137,11 @@ pub(super) fn build_router() -> Router<AppState> {
         .route("/v1/git/status/{project_id}", get(git_status))
         .route("/v1/git/repo-link/{project_id}", get(git_repo_link))
         .route("/v1/git/repo/{project_id}/{*rest}", any(git_http_backend))
+        .route("/v1/share/{token}/resolve", get(resolve_project_share_link))
+        .route(
+            "/v1/share/{token}/temporary-login",
+            post(create_temporary_share_login),
+        )
         .route("/v1/share/{token}/join", post(join_project_share_link))
         .route(
             "/v1/admin/orgs/{org_id}/oidc-group-role-mappings",

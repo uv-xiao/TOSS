@@ -12,6 +12,8 @@ type UseRealtimeDocParams = {
   canWrite: boolean;
   effectiveUserId: string;
   effectiveUserName: string;
+  shareToken?: string | null;
+  guestSession?: string | null;
 };
 
 export function useRealtimeDoc({
@@ -22,7 +24,9 @@ export function useRealtimeDoc({
   isRevisionMode,
   canWrite,
   effectiveUserId,
-  effectiveUserName
+  effectiveUserName,
+  shareToken,
+  guestSession
 }: UseRealtimeDocParams) {
   const ydocRef = useRef<Y.Doc | null>(null);
   const ytextRef = useRef<Y.Text | null>(null);
@@ -122,6 +126,8 @@ export function useRealtimeDoc({
       ydoc,
       userId: effectiveUserId,
       userName: effectiveUserName,
+      shareToken: shareToken ?? undefined,
+      guestSession: guestSession ?? undefined,
       onPresenceChange: setPresence,
       onStatusChange: setRealtimeStatus,
       onReconnectChange: setReconnectState,
@@ -144,9 +150,11 @@ export function useRealtimeDoc({
     activePath,
     effectiveUserId,
     effectiveUserName,
+    guestSession,
     hasActiveLiveDoc,
     isRevisionMode,
     projectId,
+    shareToken,
     workspaceLoaded
   ]);
 

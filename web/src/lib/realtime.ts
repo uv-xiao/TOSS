@@ -43,6 +43,8 @@ export function bindRealtimeYDoc(params: {
   userId?: string;
   userName?: string;
   sessionToken?: string;
+  shareToken?: string;
+  guestSession?: string;
   onPresenceChange?: (users: PresencePeer[]) => void;
   onStatusChange?: (status: RealtimeStatus) => void;
   onReconnectChange?: (state: ReconnectState) => void;
@@ -59,6 +61,12 @@ export function bindRealtimeYDoc(params: {
   });
   if (params.sessionToken?.trim()) {
     query.set("session_token", params.sessionToken.trim());
+  }
+  if (params.shareToken?.trim()) {
+    query.set("share_token", params.shareToken.trim());
+  }
+  if (params.guestSession?.trim()) {
+    query.set("guest_session", params.guestSession.trim());
   }
   const safeDocId = encodeURIComponent(params.docId);
   const url = `${params.wsBaseUrl.replace(/^http/, "ws").replace(/\/$/, "")}/v1/realtime/ws/${safeDocId}?${query.toString()}`;

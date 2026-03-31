@@ -90,6 +90,7 @@ pub(super) async fn auth_config(State(state): State<AppState>) -> Json<AuthConfi
         allow_local_login: settings.allow_local_login,
         allow_local_registration: settings.allow_local_registration,
         allow_oidc: settings.allow_oidc,
+        anonymous_mode: settings.anonymous_mode,
         site_name: settings.site_name,
         issuer: settings.oidc_issuer,
         client_id: settings.oidc_client_id,
@@ -802,6 +803,7 @@ pub(super) fn defaults_from_env(oidc: &OidcSettings) -> AuthSettings {
         allow_local_login: true,
         allow_local_registration: true,
         allow_oidc: true,
+        anonymous_mode: "off".to_string(),
         site_name: env_site_name,
         oidc_issuer: if oidc.issuer.trim().is_empty() {
             None
@@ -848,7 +850,7 @@ pub(super) async fn load_auth_settings(
     defaults: &OidcSettings,
 ) -> Result<AuthSettings, StatusCode> {
     let row = sqlx::query(
-        "select allow_local_login, allow_local_registration, allow_oidc, site_name,
+        "select allow_local_login, allow_local_registration, allow_oidc, anonymous_mode, site_name,
                 oidc_issuer, oidc_client_id, oidc_client_secret, oidc_redirect_uri, oidc_groups_claim, updated_at
          from auth_settings where id = 1",
     )
@@ -860,6 +862,7 @@ pub(super) async fn load_auth_settings(
             allow_local_login: r.get("allow_local_login"),
             allow_local_registration: r.get("allow_local_registration"),
             allow_oidc: r.get("allow_oidc"),
+            anonymous_mode: r.get("anonymous_mode"),
             site_name: r.get("site_name"),
             oidc_issuer: r.get("oidc_issuer"),
             oidc_client_id: r.get("oidc_client_id"),

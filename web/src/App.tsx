@@ -3,6 +3,7 @@ import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-r
 import { UiButton } from "@/components/ui";
 import {
   canAccessAdminPanel,
+  clearShareAccessContext,
   getAuthConfig,
   getAuthMe,
   joinProjectShareLink,
@@ -18,8 +19,8 @@ import { readStoredLocale, translate, type UiLocale } from "@/lib/i18n";
 import { AdminPage } from "@/pages/AdminPage";
 import { ProfilePage } from "@/pages/ProfilePage";
 import { ProjectsPage } from "@/pages/ProjectsPage";
-import { ShareJoinPage } from "@/pages/ShareJoinPage";
 import { SignInPage } from "@/pages/SignInPage";
+import { ShareWorkspacePage } from "@/pages/ShareWorkspacePage";
 import { WorkspacePage } from "@/pages/WorkspacePage";
 
 export function App() {
@@ -35,7 +36,9 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [workspaceTopbar, setWorkspaceTopbar] = useState<ReactNode | null>(null);
 
-  const onWorkspaceRoute = location.pathname.startsWith("/project/");
+  const onWorkspaceRoute =
+    location.pathname.startsWith("/project/") || location.pathname.startsWith("/share/");
+  const onShareRoute = location.pathname.startsWith("/share/");
   const onProjectsRoute = location.pathname === "/projects" || location.pathname === "/";
   const onProfileRoute = location.pathname.startsWith("/profile");
   const onAdminRoute = location.pathname.startsWith("/admin");
@@ -48,6 +51,12 @@ export function App() {
     if (!shareTokenFromPath) return;
     window.sessionStorage.setItem("share.token.pending", shareTokenFromPath);
   }, [shareTokenFromPath]);
+
+  useEffect(() => {
+    if (!onShareRoute) {
+      clearShareAccessContext();
+    }
+  }, [onShareRoute]);
 
   useEffect(() => {
     Promise.all([getAuthConfig(), getAuthMe()])
@@ -118,27 +127,29 @@ export function App() {
 
   if (authLoading) return <main className="loading">Loading...</main>;
 
-  if (!authUser) {
+  const completeSignIn = async () => {
+    const me = await getAuthMe();
+    setAuthUser(me);
+    await refreshProjects();
+    const pendingShare = shareTokenFromPath || window.sessionStorage.getItem("share.token.pending");
+    if (pendingShare) {
+      window.sessionStorage.removeItem("share.token.pending");
+      try {
+        const joined = await joinProjectShareLink(pendingShare);
+        await refreshProjects();
+        navigate(`/project/${joined.project_id}`, { replace: true });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : t("share.joinFailed"));
+      }
+    }
+  };
+
+  if (!authUser && !onShareRoute) {
     return (
       <SignInPage
         config={authConfig}
         t={t}
-        onSignedIn={async () => {
-          const me = await getAuthMe();
-          setAuthUser(me);
-          await refreshProjects();
-          const pendingShare = shareTokenFromPath || window.sessionStorage.getItem("share.token.pending");
-          if (pendingShare) {
-            window.sessionStorage.removeItem("share.token.pending");
-            try {
-              const joined = await joinProjectShareLink(pendingShare);
-              await refreshProjects();
-              navigate(`/project/${joined.project_id}`, { replace: true });
-            } catch (err) {
-              setError(err instanceof Error ? err.message : t("share.joinFailed"));
-            }
-          }
-        }}
+        onSignedIn={completeSignIn}
       />
     );
   }
@@ -154,7 +165,7 @@ export function App() {
         )}
         <div className="topbar-workspace-slot">{onWorkspaceRoute ? workspaceTopbar : null}</div>
         <div className="meta">
-          {!onWorkspaceRoute && (
+          {!onWorkspaceRoute && !!authUser && (
             <>
               <Link className={`ui-button ui-secondary ui-md tab ${onProjectsRoute ? "active" : ""}`} to="/projects">
                 {t("nav.projects")}
@@ -169,8 +180,12 @@ export function App() {
               )}
             </>
           )}
-          <span>{authUser.display_name}</span>
-          <UiButton onClick={handleLogout}>{t("nav.logout")}</UiButton>
+          {authUser ? (
+            <>
+              <span>{authUser.display_name}</span>
+              <UiButton onClick={handleLogout}>{t("nav.logout")}</UiButton>
+            </>
+          ) : null}
         </div>
       </header>
       {error && <div className="error-banner">{error}</div>}
@@ -195,13 +210,28 @@ export function App() {
                 projects={projects}
                 organizations={organizations}
                 authUser={authUser}
+                authConfig={authConfig}
                 refreshProjects={refreshProjects}
                 t={t}
                 onTopbarChange={setWorkspaceTopbar}
+                onSignInFromWorkspace={completeSignIn}
               />
             }
           />
-          <Route path="/share/:token" element={<ShareJoinPage t={t} onJoin={async (token) => joinProjectShareLink(token)} />} />
+          <Route
+            path="/share/:token"
+            element={
+              <ShareWorkspacePage
+                authUser={authUser}
+                authConfig={authConfig}
+                organizations={organizations}
+                refreshProjects={refreshProjects}
+                t={t}
+                onTopbarChange={setWorkspaceTopbar}
+                onSignedIn={completeSignIn}
+              />
+            }
+          />
           <Route path="/admin" element={<AdminPage t={t} />} />
           <Route path="/profile" element={<ProfilePage t={t} />} />
         </Routes>

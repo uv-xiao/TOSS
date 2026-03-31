@@ -32,6 +32,7 @@ pub struct AuthSettings {
     pub allow_local_login: bool,
     pub allow_local_registration: bool,
     pub allow_oidc: bool,
+    pub anonymous_mode: String,
     pub site_name: String,
     pub oidc_issuer: Option<String>,
     pub oidc_client_id: Option<String>,
@@ -222,6 +223,7 @@ pub struct UpsertAdminAuthSettingsInput {
     pub allow_local_login: bool,
     pub allow_local_registration: bool,
     pub allow_oidc: bool,
+    pub anonymous_mode: Option<String>,
     pub site_name: Option<String>,
     pub oidc_discovery_url: Option<String>,
     pub oidc_client_id: Option<String>,
@@ -251,6 +253,7 @@ pub struct AuthConfigResponse {
     pub allow_local_login: bool,
     pub allow_local_registration: bool,
     pub allow_oidc: bool,
+    pub anonymous_mode: String,
     pub site_name: String,
     pub issuer: Option<String>,
     pub client_id: Option<String>,
@@ -550,6 +553,28 @@ pub struct CreateProjectShareLinkResponse {
 pub struct JoinProjectShareLinkResponse {
     pub project_id: Uuid,
     pub role: String,
+}
+
+#[derive(Serialize)]
+pub struct ResolveProjectShareLinkResponse {
+    pub project_id: Uuid,
+    pub project_name: String,
+    pub permission: String,
+    pub anonymous_mode: String,
+}
+
+#[derive(Deserialize)]
+pub struct TemporaryShareLoginInput {
+    pub display_name: String,
+}
+
+#[derive(Serialize)]
+pub struct TemporaryShareLoginResponse {
+    pub project_id: Uuid,
+    pub session_token: String,
+    pub session_id: Uuid,
+    pub display_name: String,
+    pub permission: String,
 }
 
 #[derive(Serialize)]

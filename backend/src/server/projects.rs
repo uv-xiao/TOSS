@@ -1410,6 +1410,104 @@ pub(super) async fn join_project_share_link(
     }))
 }
 
+pub(super) async fn resolve_project_share_link(
+    State(state): State<AppState>,
+    Path(token): Path<String>,
+) -> Result<Json<ResolveProjectShareLinkResponse>, StatusCode> {
+    let token = token.trim();
+    if token.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let row = sqlx::query(
+        "select l.project_id, l.permission, p.name as project_name
+         from project_share_links l
+         join projects p on p.id = l.project_id
+         where (l.token_value = $1 or l.token_hash = $2)
+           and l.revoked_at is null
+           and (l.expires_at is null or l.expires_at > now())",
+    )
+    .bind(token)
+    .bind(token_sha256(token))
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let Some(row) = row else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    let settings = load_auth_settings(&state.db, &state.oidc).await?;
+    Ok(Json(ResolveProjectShareLinkResponse {
+        project_id: row.get("project_id"),
+        project_name: row.get("project_name"),
+        permission: row.get("permission"),
+        anonymous_mode: settings.anonymous_mode,
+    }))
+}
+
+pub(super) async fn create_temporary_share_login(
+    State(state): State<AppState>,
+    Path(token): Path<String>,
+    Json(input): Json<TemporaryShareLoginInput>,
+) -> Result<Json<TemporaryShareLoginResponse>, StatusCode> {
+    let token = token.trim();
+    if token.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let display_name = input.display_name.trim();
+    if display_name.is_empty() || display_name.len() > 64 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let settings = load_auth_settings(&state.db, &state.oidc).await?;
+    if settings.anonymous_mode.trim().to_ascii_lowercase() != "read_write_named" {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let row = sqlx::query(
+        "select id, project_id, permission
+         from project_share_links
+         where (token_value = $1 or token_hash = $2)
+           and revoked_at is null
+           and (expires_at is null or expires_at > now())",
+    )
+    .bind(token)
+    .bind(token_sha256(token))
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let Some(row) = row else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    let permission: String = row.get("permission");
+    if permission != "write" {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let session_token = format!("gsh_{}", random_token(44));
+    let session_id = Uuid::new_v4();
+    let now = Utc::now();
+    let expires_at = now + chrono::Duration::days(30);
+    sqlx::query(
+        "insert into anonymous_share_sessions
+         (id, project_id, share_link_id, session_token_hash, display_name, permission, created_at, expires_at, last_used_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $7)",
+    )
+    .bind(session_id)
+    .bind(row.get::<Uuid, _>("project_id"))
+    .bind(row.get::<Uuid, _>("id"))
+    .bind(token_sha256(&session_token))
+    .bind(display_name)
+    .bind("write")
+    .bind(now)
+    .bind(expires_at)
+    .execute(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(TemporaryShareLoginResponse {
+        project_id: row.get("project_id"),
+        session_token,
+        session_id,
+        display_name: display_name.to_string(),
+        permission,
+    }))
+}
+
 pub(super) async fn list_roles(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1504,7 +1602,7 @@ pub(super) async fn get_project_tree(
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
 ) -> Result<Json<ProjectTreeResponse>, StatusCode> {
-    ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
+    ensure_project_access(&state.db, &headers, project_id, AccessNeed::Read).await?;
     normalize_project_file_classification(&state, project_id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -1603,7 +1701,8 @@ pub(super) async fn create_project_file(
     Path(project_id): Path<Uuid>,
     Json(input): Json<CreateProjectFileInput>,
 ) -> Result<StatusCode, StatusCode> {
-    let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Write).await?;
+    let principal = ensure_project_access(&state.db, &headers, project_id, AccessNeed::Write).await?;
+    let actor = principal.user_id;
     let path = sanitize_project_path(&input.path)?;
     let now = Utc::now();
     match input.kind.as_str() {
@@ -1619,7 +1718,13 @@ pub(super) async fn create_project_file(
             .execute(&state.db)
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            mark_project_dirty(&state.db, project_id, Some(actor)).await;
+            if let Some(user_id) = actor {
+                mark_project_dirty(&state.db, project_id, Some(user_id)).await;
+            } else if let Some(display_name) = principal.guest_display_name.as_deref() {
+                mark_project_dirty_guest(&state.db, project_id, display_name).await;
+            } else {
+                mark_project_dirty(&state.db, project_id, None).await;
+            }
         }
         _ => {
             if is_document_text_path(&path) {
@@ -1668,7 +1773,7 @@ pub(super) async fn create_project_file(
                 .bind(&path)
                 .bind(stored_object_key)
                 .bind(content_type)
-                .bind(Some(actor))
+                .bind(actor)
                 .bind(now)
                 .bind(inline_data)
                 .execute(&state.db)
@@ -1680,12 +1785,18 @@ pub(super) async fn create_project_file(
                     .execute(&state.db)
                     .await;
             }
-            mark_project_dirty(&state.db, project_id, Some(actor)).await;
+            if let Some(user_id) = actor {
+                mark_project_dirty(&state.db, project_id, Some(user_id)).await;
+            } else if let Some(display_name) = principal.guest_display_name.as_deref() {
+                mark_project_dirty_guest(&state.db, project_id, display_name).await;
+            } else {
+                mark_project_dirty(&state.db, project_id, None).await;
+            }
         }
     }
     write_audit(
         &state.db,
-        Some(actor),
+        actor,
         "project.file.create",
         serde_json::json!({ "project_id": project_id, "path": path, "kind": input.kind }),
     )
@@ -1699,7 +1810,8 @@ pub(super) async fn move_project_file(
     Path(project_id): Path<Uuid>,
     Json(input): Json<MoveProjectFileInput>,
 ) -> Result<StatusCode, StatusCode> {
-    let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Write).await?;
+    let principal = ensure_project_access(&state.db, &headers, project_id, AccessNeed::Write).await?;
+    let actor = principal.user_id;
     let from_path = sanitize_project_path(&input.from_path)?;
     let to_path = sanitize_project_path(&input.to_path)?;
     let now = Utc::now();
@@ -1755,12 +1867,18 @@ pub(super) async fn move_project_file(
         || doc_move.rows_affected() > 0
         || asset_move.rows_affected() > 0
     {
-        mark_project_dirty(&state.db, project_id, Some(actor)).await;
+        if let Some(user_id) = actor {
+            mark_project_dirty(&state.db, project_id, Some(user_id)).await;
+        } else if let Some(display_name) = principal.guest_display_name.as_deref() {
+            mark_project_dirty_guest(&state.db, project_id, display_name).await;
+        } else {
+            mark_project_dirty(&state.db, project_id, None).await;
+        }
     }
 
     write_audit(
         &state.db,
-        Some(actor),
+        actor,
         "project.file.move",
         serde_json::json!({ "project_id": project_id, "from_path": from_path, "to_path": to_path }),
     )
@@ -1773,7 +1891,8 @@ pub(super) async fn delete_project_file(
     headers: HeaderMap,
     Path((project_id, path)): Path<(Uuid, String)>,
 ) -> Result<StatusCode, StatusCode> {
-    let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Write).await?;
+    let principal = ensure_project_access(&state.db, &headers, project_id, AccessNeed::Write).await?;
+    let actor = principal.user_id;
     let clean_path = sanitize_project_path(&path)?;
 
     let deleted_dirs = sqlx::query(
@@ -1815,11 +1934,17 @@ pub(super) async fn delete_project_file(
             .map(|r| r.rows_affected() > 0)
             .unwrap_or(false)
     {
-        mark_project_dirty(&state.db, project_id, Some(actor)).await;
+        if let Some(user_id) = actor {
+            mark_project_dirty(&state.db, project_id, Some(user_id)).await;
+        } else if let Some(display_name) = principal.guest_display_name.as_deref() {
+            mark_project_dirty_guest(&state.db, project_id, display_name).await;
+        } else {
+            mark_project_dirty(&state.db, project_id, None).await;
+        }
     }
     write_audit(
         &state.db,
-        Some(actor),
+        actor,
         "project.file.delete",
         serde_json::json!({ "project_id": project_id, "path": clean_path }),
     )
@@ -1832,7 +1957,7 @@ pub(super) async fn get_project_settings(
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
 ) -> Result<Json<ProjectSettingsResponse>, StatusCode> {
-    ensure_project_role(&state.db, &headers, project_id, AccessNeed::Read).await?;
+    ensure_project_access(&state.db, &headers, project_id, AccessNeed::Read).await?;
     let row = sqlx::query(
         "insert into project_settings (project_id, entry_file_path, updated_at)
          values ($1, 'main.typ', $2)
@@ -2384,15 +2509,29 @@ pub(super) async fn upsert_admin_auth_settings(
         .filter(|v| !v.is_empty())
         .unwrap_or("Typst Collaboration")
         .to_string();
+    let anonymous_mode = input
+        .anonymous_mode
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or("off")
+        .to_ascii_lowercase();
+    if !matches!(
+        anonymous_mode.as_str(),
+        "off" | "read_only" | "read_write_named"
+    ) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     sqlx::query(
         "insert into auth_settings
-         (id, allow_local_login, allow_local_registration, allow_oidc, site_name,
+         (id, allow_local_login, allow_local_registration, allow_oidc, anonymous_mode, site_name,
           oidc_issuer, oidc_client_id, oidc_client_secret, oidc_redirect_uri, oidc_groups_claim, updated_at)
-         values (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         values (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
          on conflict (id) do update
          set allow_local_login = excluded.allow_local_login,
              allow_local_registration = excluded.allow_local_registration,
              allow_oidc = excluded.allow_oidc,
+             anonymous_mode = excluded.anonymous_mode,
              site_name = excluded.site_name,
              oidc_issuer = excluded.oidc_issuer,
              oidc_client_id = excluded.oidc_client_id,
@@ -2404,6 +2543,7 @@ pub(super) async fn upsert_admin_auth_settings(
     .bind(input.allow_local_login)
     .bind(input.allow_local_registration)
     .bind(input.allow_oidc)
+    .bind(anonymous_mode)
     .bind(site_name)
     .bind(discovery_url)
     .bind(input.oidc_client_id.map(|v| v.trim().to_string()).filter(|v| !v.is_empty()))
@@ -2428,6 +2568,7 @@ pub(super) async fn upsert_admin_auth_settings(
             "allow_local_login": input.allow_local_login,
             "allow_local_registration": input.allow_local_registration,
             "allow_oidc": input.allow_oidc,
+            "anonymous_mode": input.anonymous_mode,
             "site_name": input.site_name
         }),
     )

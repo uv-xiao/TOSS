@@ -12,6 +12,7 @@ import { Navigate, useNavigate, useParams } from "react-router-dom";
 import { EditorPane } from "@/components/EditorPane";
 import { UiButton, UiDialog, UiInput } from "@/components/ui";
 import {
+  getAuthMe,
   copyProject,
   createProjectFile,
   createProjectShareLink,
@@ -24,6 +25,8 @@ import {
   getProjectSettings,
   getProjectTree,
   getRevisionDocuments,
+  joinProjectShareLink,
+  temporaryShareLogin,
   listDocuments,
   listProjectAccessUsers,
   listProjectAssets,
@@ -48,8 +51,11 @@ import {
   upsertProjectSettings,
   upsertProjectTemplateOrganizationAccess,
   uploadProjectAsset,
-  uploadProjectThumbnail
+  uploadProjectThumbnail,
+  setShareAccessContext,
+  type AuthConfig
 } from "@/lib/api";
+import { AuthForm } from "@/components/AuthForm";
 import { loadProjectSnapshotFromCache, saveProjectSnapshotToCache } from "@/lib/projectCache";
 import {
   compileTypstClientSide,
@@ -105,24 +111,51 @@ const REVISION_PAGE_SIZE = 40;
 type WorkspacePageProps = {
   projects: Project[];
   organizations: OrganizationMembership[];
-  authUser: AuthUser;
+  authUser: AuthUser | null;
+  authConfig?: AuthConfig | null;
   refreshProjects: () => Promise<void>;
   t: (key: string) => string;
   onTopbarChange: (content: ReactNode | null) => void;
+  projectIdOverride?: string;
+  shareToken?: string | null;
+  sharePermission?: "read" | "write" | null;
+  anonymousMode?: string | null;
+  onSignInFromWorkspace?: () => Promise<void>;
 };
 
 export function WorkspacePage({
   projects,
   organizations,
   authUser,
+  authConfig,
   refreshProjects,
   t,
-  onTopbarChange
+  onTopbarChange,
+  projectIdOverride,
+  shareToken,
+  sharePermission,
+  anonymousMode,
+  onSignInFromWorkspace
 }: WorkspacePageProps) {
-  const { projectId = "" } = useParams();
+  const { projectId: routeProjectId = "" } = useParams();
+  const projectId = projectIdOverride || routeProjectId;
   const navigate = useNavigate();
-  const effectiveUserId = authUser.user_id;
-  const effectiveUserName = authUser.display_name || "User";
+  const guestSessionStorageKey = projectId ? `guest.share.${projectId}.session` : "guest.share.session";
+  const [guestSessionToken, setGuestSessionToken] = useState<string | null>(
+    () => (projectId ? window.localStorage.getItem(guestSessionStorageKey) : null)
+  );
+  const [guestDisplayName, setGuestDisplayName] = useState<string>(
+    () => window.localStorage.getItem("guest.display_name") || ""
+  );
+  const [guestSessionId, setGuestSessionId] = useState<string | null>(
+    () => (projectId ? window.localStorage.getItem(`${guestSessionStorageKey}.id`) : null)
+  );
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [guestNameInput, setGuestNameInput] = useState("");
+  const [guestAuthError, setGuestAuthError] = useState<string | null>(null);
+  const isAnonymousShare = !!shareToken && !authUser;
+  const effectiveUserId = authUser?.user_id || guestSessionId || `guest-${projectId || "workspace"}`;
+  const effectiveUserName = authUser?.display_name || guestDisplayName || "Guest";
   const centerSplitRef = useRef<HTMLDivElement | null>(null);
   const copyNoticeTimerRef = useRef<number | null>(null);
   const thumbnailUploadTimerRef = useRef<number | null>(null);
@@ -223,8 +256,17 @@ export function WorkspacePage({
     setEditorRatio
   } = useWorkspaceLayout();
   const project = projects.find((p) => p.id === projectId);
-  const canWrite = project?.my_role !== "Viewer";
-  const canManageProject = project?.my_role === "Owner" || project?.my_role === "Teacher";
+  const canRequestGuestWrite =
+    isAnonymousShare &&
+    sharePermission === "write" &&
+    anonymousMode === "read_write_named" &&
+    !guestSessionToken;
+  const canWrite = authUser
+    ? project?.my_role !== "Viewer"
+    : sharePermission === "write" && anonymousMode === "read_write_named" && !!guestSessionToken;
+  const canManageProject = authUser
+    ? project?.my_role === "Owner" || project?.my_role === "Teacher"
+    : false;
 
   const isRevisionMode = !!activeRevisionId;
   const currentNodes = isRevisionMode ? revisionNodes : nodes;
@@ -232,6 +274,25 @@ export function WorkspacePage({
   const sourceAssetMeta = isRevisionMode ? revisionAssetMeta : assetMeta;
   const sourceEntryFilePath = isRevisionMode ? revisionEntryFilePath : entryFilePath;
   const sourceDocs = isRevisionMode ? revisionDocs : docs;
+
+  useEffect(() => {
+    if (!projectId) return;
+    const session = window.localStorage.getItem(`guest.share.${projectId}.session`);
+    const sessionId = window.localStorage.getItem(`guest.share.${projectId}.session.id`);
+    setGuestSessionToken(session);
+    setGuestSessionId(sessionId);
+  }, [projectId]);
+
+  useEffect(() => {
+    if (isAnonymousShare) {
+      setShareAccessContext({
+        shareToken: shareToken ?? null,
+        guestSession: guestSessionToken
+      });
+      return;
+    }
+    setShareAccessContext({ shareToken: null, guestSession: null });
+  }, [guestSessionToken, isAnonymousShare, shareToken]);
 
   function toProjectAssetMeta(path: string, meta: AssetMeta): ProjectAsset | null {
     if (
@@ -365,7 +426,9 @@ export function WorkspacePage({
     isRevisionMode,
     canWrite: !!canWrite,
     effectiveUserId,
-    effectiveUserName
+    effectiveUserName,
+    shareToken: isAnonymousShare ? shareToken : null,
+    guestSession: isAnonymousShare ? guestSessionToken : null
   });
   const docTextRef = useRef(docText);
   const hasActiveLiveDocRef = useRef(hasActiveLiveDoc);
@@ -852,6 +915,7 @@ export function WorkspacePage({
 
   useEffect(() => {
     if (!projectId || !workspaceLoaded || isRevisionMode || !showPreviewPanel) return;
+    if (!authUser) return;
     if (!vectorData || compileDiagnostics.length > 0 || compileErrors.length > 0) return;
     const frame = canvasPreviewRef.current;
     if (!frame) return;
@@ -893,7 +957,8 @@ export function WorkspacePage({
     projectId,
     showPreviewPanel,
     vectorData,
-    workspaceLoaded
+    workspaceLoaded,
+    authUser
   ]);
 
   useEffect(() => {
@@ -1853,14 +1918,66 @@ export function WorkspacePage({
     return () => onTopbarChange(null);
   }, [onTopbarChange, workspaceTopbarControls]);
 
+  function handleEditorDelta(changes: Array<{ from: number; to: number; insert: string }>) {
+    if (canRequestGuestWrite && !guestSessionToken) {
+      setAuthModalOpen(true);
+      return;
+    }
+    applyDocumentDeltas(changes);
+  }
+
+  async function beginTemporaryGuestEditing() {
+    if (!shareToken || !projectId) return;
+    const chosenName = guestNameInput.trim();
+    if (!chosenName) {
+      setGuestAuthError(t("auth.username"));
+      return;
+    }
+    try {
+      setGuestAuthError(null);
+      const session = await temporaryShareLogin(shareToken, chosenName);
+      window.localStorage.setItem("guest.display_name", session.display_name);
+      window.localStorage.setItem(`guest.share.${projectId}.session`, session.session_token);
+      window.localStorage.setItem(`guest.share.${projectId}.session.id`, session.session_id);
+      setGuestDisplayName(session.display_name);
+      setGuestSessionToken(session.session_token);
+      setGuestSessionId(session.session_id);
+      setAuthModalOpen(false);
+      realtimeRef.current?.reconnectNow();
+    } catch (err) {
+      setGuestAuthError(err instanceof Error ? err.message : "Unable to start guest session");
+    }
+  }
+
   if (!projectId) return <Navigate to="/projects" replace />;
-  if (!project && projects.length > 0) {
+  if (!project && projects.length > 0 && !projectIdOverride) {
     return <Navigate to={`/project/${projects[0].id}`} replace />;
+  }
+  if (!project) {
+    return (
+      <section className="workspace-shell">
+        <div className="workspace-access-banner">{t("common.loading")}</div>
+      </section>
+    );
   }
 
   return (
     <section className="workspace-shell">
-      {!canWrite && (
+      {isAnonymousShare && (
+        <div className="workspace-access-banner" role="status">
+          <span>{t("share.savePrompt")}</span>
+          <UiButton
+            size="sm"
+            onClick={() => {
+              setGuestAuthError(null);
+              setAuthModalOpen(true);
+            }}
+          >
+            {t("share.logIn")}
+          </UiButton>
+        </div>
+      )}
+      {!canWrite && !canRequestGuestWrite && (
         <div className="workspace-access-banner" role="status">
           {t("workspace.readOnlyProject")}
         </div>
@@ -1947,9 +2064,13 @@ export function WorkspacePage({
                   <EditorPane
                     editorInstanceKey={`${activePath}:${activeRevisionId ?? "live"}:${currentEditorLanguage}`}
                     value={docText}
-                    onDelta={applyDocumentDeltas}
+                    onDelta={handleEditorDelta}
                     onCursorChange={(cursor) => realtimeRef.current?.sendCursor(cursor)}
-                    readOnly={isRevisionMode || !canWrite || (!isRevisionMode && !realtimeDocReady)}
+                    readOnly={
+                      isRevisionMode ||
+                      (!canWrite && !canRequestGuestWrite) ||
+                      (!isRevisionMode && !realtimeDocReady)
+                    }
                     lineWrap={lineWrapEnabled}
                     language={currentEditorLanguage}
                     remoteCursors={remoteCursors}
@@ -2039,38 +2160,59 @@ export function WorkspacePage({
               aria-orientation="vertical"
               aria-label="Resize project settings panel"
             />
-            <SettingsPanel
-              width={settingsPanelWidth}
-              projectId={projectId}
-              entryFilePath={entryFilePath}
-              typEntryOptions={typEntryOptions}
-              canManageProject={!!canManageProject}
-              gitRepoUrl={gitRepoUrl}
-              copiedControl={copiedControl}
-              templateEnabled={templateEnabled}
-              myOrganizations={myOrganizations}
-              projectOrgAccess={projectOrgAccess}
-              projectTemplateOrgAccess={projectTemplateOrgAccess}
-              projectAccessUsers={projectAccessUsers}
-              onEntryFileChange={async (path) => {
-                const updated = await upsertProjectSettings(projectId, path);
-                setEntryFilePath(updated.entry_file_path);
-              }}
-              onCopyToClipboard={copyToClipboard}
-              onToggleTemplate={async () => setTemplateState(!templateEnabled)}
-              onRevokeTemplateOrgAccess={removeTemplateOrgAccessGrant}
-              onGrantTemplateOrgAccess={upsertTemplateOrgAccessGrant}
-              activeReadShare={activeReadShare}
-              activeWriteShare={activeWriteShare}
-              onCreateShare={createShare}
-              onRevokeShare={revokeShare}
-              onGrantOrgAccess={upsertOrgAccessGrant}
-              onRevokeOrgAccess={removeOrgAccessGrant}
-              formatAccessType={formatAccessType}
-              formatRoleLabel={formatRoleLabel}
-              formatAccessSource={formatAccessSource}
-              t={t}
-            />
+            {isAnonymousShare ? (
+              <aside className="panel panel-right settings-panel" style={{ width: settingsPanelWidth }}>
+                <div className="panel-header">
+                  <h2>{t("workspace.settings")}</h2>
+                </div>
+                <div className="panel-content settings-body">
+                  <div className="settings-card">
+                    <p>{t("share.settingsLoginRequired")}</p>
+                    <UiButton
+                      onClick={() => {
+                        setGuestAuthError(null);
+                        setAuthModalOpen(true);
+                      }}
+                    >
+                      {t("share.logIn")}
+                    </UiButton>
+                  </div>
+                </div>
+              </aside>
+            ) : (
+              <SettingsPanel
+                width={settingsPanelWidth}
+                projectId={projectId}
+                entryFilePath={entryFilePath}
+                typEntryOptions={typEntryOptions}
+                canManageProject={!!canManageProject}
+                gitRepoUrl={gitRepoUrl}
+                copiedControl={copiedControl}
+                templateEnabled={templateEnabled}
+                myOrganizations={myOrganizations}
+                projectOrgAccess={projectOrgAccess}
+                projectTemplateOrgAccess={projectTemplateOrgAccess}
+                projectAccessUsers={projectAccessUsers}
+                onEntryFileChange={async (path) => {
+                  const updated = await upsertProjectSettings(projectId, path);
+                  setEntryFilePath(updated.entry_file_path);
+                }}
+                onCopyToClipboard={copyToClipboard}
+                onToggleTemplate={async () => setTemplateState(!templateEnabled)}
+                onRevokeTemplateOrgAccess={removeTemplateOrgAccessGrant}
+                onGrantTemplateOrgAccess={upsertTemplateOrgAccessGrant}
+                activeReadShare={activeReadShare}
+                activeWriteShare={activeWriteShare}
+                onCreateShare={createShare}
+                onRevokeShare={revokeShare}
+                onGrantOrgAccess={upsertOrgAccessGrant}
+                onRevokeOrgAccess={removeOrgAccessGrant}
+                formatAccessType={formatAccessType}
+                formatRoleLabel={formatRoleLabel}
+                formatAccessSource={formatAccessSource}
+                t={t}
+              />
+            )}
           </>
         )}
 
@@ -2202,6 +2344,51 @@ export function WorkspacePage({
             placeholder={t("workspace.pathPlaceholder")}
           />
         )}
+      </UiDialog>
+      <UiDialog
+        open={authModalOpen}
+        title={canRequestGuestWrite ? t("share.guestEditTitle") : t("auth.signIn")}
+        description={
+          canRequestGuestWrite
+            ? `${t("share.guestEditDescription")} ${project?.name || ""}.`
+            : t("share.savePrompt")
+        }
+        onClose={() => setAuthModalOpen(false)}
+      >
+        {canRequestGuestWrite && (
+          <div className="auth-fields">
+            <UiInput
+              value={guestNameInput}
+              onChange={(event) => setGuestNameInput(event.target.value)}
+              placeholder={t("share.yourName")}
+            />
+            <UiButton variant="primary" onClick={beginTemporaryGuestEditing}>
+              {t("share.startGuestEdit")}
+            </UiButton>
+            <div className="auth-divider">
+              <span>{t("share.orLogin")}</span>
+            </div>
+          </div>
+        )}
+        <AuthForm
+          config={authConfig ?? null}
+          t={t}
+          compact
+          onSignedIn={async () => {
+            if (shareToken) {
+              await joinProjectShareLink(shareToken).catch(() => undefined);
+            }
+            if (onSignInFromWorkspace) {
+              await onSignInFromWorkspace();
+            } else {
+              await getAuthMe();
+            }
+            await refreshProjects();
+            setAuthModalOpen(false);
+            navigate(`/project/${projectId}`, { replace: true });
+          }}
+        />
+        {guestAuthError && <div className="error">{guestAuthError}</div>}
       </UiDialog>
     </section>
   );
