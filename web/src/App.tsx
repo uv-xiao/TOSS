@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { ArrowLeft } from "lucide-react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { UiButton } from "@/components/ui";
 import {
@@ -160,9 +161,7 @@ export function App() {
         <strong className="topbar-brand">{siteName}</strong>
         {onWorkspaceRoute && (
           <UiButton className="tab topbar-back-btn" onClick={() => navigate("/projects")} aria-label={t("nav.backToProjects")}>
-            <span className="topbar-back-icon" aria-hidden>
-              ←
-            </span>
+            <ArrowLeft className="topbar-back-icon" size={14} aria-hidden />
             <span className="topbar-back-label">{t("nav.backToProjects")}</span>
           </UiButton>
         )}

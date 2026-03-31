@@ -1,4 +1,4 @@
-import { Download, ZoomIn, ZoomOut } from "lucide-react";
+import { ArrowLeftRight, Download, Maximize2, ZoomIn, ZoomOut } from "lucide-react";
 import { UiIconButton } from "@/components/ui";
 import type { CompileDiagnostic, TypstRuntimeStatus } from "@/lib/typst";
 
@@ -68,7 +68,7 @@ export function PreviewPanel({
             className={previewFitMode === "page" ? "active" : ""}
             onClick={onSetFitWholePage}
           >
-            ⤢
+            <Maximize2 size={16} />
           </UiIconButton>
           <UiIconButton
             tooltip={t("preview.fitWidth")}
@@ -76,7 +76,7 @@ export function PreviewPanel({
             className={previewFitMode === "width" ? "active" : ""}
             onClick={onSetFitPageWidth}
           >
-            ↔
+            <ArrowLeftRight size={16} />
           </UiIconButton>
           <UiIconButton tooltip={t("preview.zoomOut")} label={t("preview.zoomOut")} onClick={onDecreaseZoom}>
             <ZoomOut size={16} />

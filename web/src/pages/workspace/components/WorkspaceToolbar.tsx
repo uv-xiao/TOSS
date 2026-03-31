@@ -1,4 +1,5 @@
 import { UiButton } from "@/components/ui";
+import { ChevronDown, Eye, FileText, FolderOpen, History, LayoutGrid, Settings } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 type ToolbarProject = {
@@ -86,9 +87,7 @@ export function WorkspaceToolbar({
           aria-expanded={menuOpen}
         >
           <span className="workspace-project-title">{currentProject?.name ?? t("common.loading")}</span>
-          <span className="workspace-project-chevron" aria-hidden>
-            v
-          </span>
+          <ChevronDown className="workspace-project-chevron" size={14} aria-hidden />
         </button>
         {menuOpen && (
           <div className="workspace-project-menu" role="menu">
@@ -129,7 +128,7 @@ export function WorkspaceToolbar({
               aria-expanded={viewMenuOpen}
               onClick={() => setViewMenuOpen((open) => !open)}
             >
-              <span aria-hidden>▤</span>
+              <LayoutGrid size={14} aria-hidden />
               <span>{t("workspace.view")}</span>
             </UiButton>
             {viewMenuOpen && (
@@ -144,7 +143,9 @@ export function WorkspaceToolbar({
                       onSelectPanel("editor");
                     }}
                   >
-                    <span aria-hidden>{activePanel === "editor" ? "✓" : ""}</span>
+                    <span className="view-item-icon" aria-hidden>
+                      <FileText size={14} />
+                    </span>
                     <span>{t("workspace.editor")}</span>
                   </button>
                 )}
@@ -157,7 +158,9 @@ export function WorkspaceToolbar({
                     singlePanelMode ? onSelectPanel("files") : onToggleFiles();
                   }}
                 >
-                  <span aria-hidden>{showFilesPanel ? "✓" : ""}</span>
+                  <span className="view-item-icon" aria-hidden>
+                    <FolderOpen size={14} />
+                  </span>
                   <span>{t("workspace.files")}</span>
                 </button>
                 <button
@@ -169,7 +172,9 @@ export function WorkspaceToolbar({
                     singlePanelMode ? onSelectPanel("preview") : onTogglePreview();
                   }}
                 >
-                  <span aria-hidden>{showPreviewPanel ? "✓" : ""}</span>
+                  <span className="view-item-icon" aria-hidden>
+                    <Eye size={14} />
+                  </span>
                   <span>{t("workspace.preview")}</span>
                 </button>
                 <button
@@ -181,7 +186,9 @@ export function WorkspaceToolbar({
                     singlePanelMode ? onSelectPanel("settings") : onToggleSettings();
                   }}
                 >
-                  <span aria-hidden>{showProjectSettingsPanel ? "✓" : ""}</span>
+                  <span className="view-item-icon" aria-hidden>
+                    <Settings size={14} />
+                  </span>
                   <span>{t("workspace.settings")}</span>
                 </button>
                 <button
@@ -193,7 +200,9 @@ export function WorkspaceToolbar({
                     singlePanelMode ? onSelectPanel("revisions") : onToggleRevisions();
                   }}
                 >
-                  <span aria-hidden>{showRevisionPanel ? "✓" : ""}</span>
+                  <span className="view-item-icon" aria-hidden>
+                    <History size={14} />
+                  </span>
                   <span>{t("workspace.revisions")}</span>
                 </button>
               </div>
@@ -207,7 +216,7 @@ export function WorkspaceToolbar({
               title={t("workspace.files")}
               onClick={onToggleFiles}
             >
-              <span aria-hidden>☰</span>
+              <FolderOpen size={14} aria-hidden />
               <span>{t("workspace.files")}</span>
             </UiButton>
             <UiButton
@@ -216,7 +225,7 @@ export function WorkspaceToolbar({
               title={t("workspace.preview")}
               onClick={onTogglePreview}
             >
-              <span aria-hidden>▭</span>
+              <Eye size={14} aria-hidden />
               <span>{t("workspace.preview")}</span>
             </UiButton>
             <UiButton
@@ -225,7 +234,7 @@ export function WorkspaceToolbar({
               title={t("workspace.settings")}
               onClick={onToggleSettings}
             >
-              <span aria-hidden>⚙</span>
+              <Settings size={14} aria-hidden />
               <span>{t("workspace.settings")}</span>
             </UiButton>
             <UiButton
@@ -234,7 +243,7 @@ export function WorkspaceToolbar({
               title={t("workspace.revisions")}
               onClick={onToggleRevisions}
             >
-              <span aria-hidden>↺</span>
+              <History size={14} aria-hidden />
               <span>{t("workspace.revisions")}</span>
             </UiButton>
           </>
