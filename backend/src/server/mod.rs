@@ -1,4 +1,3 @@
-use crate::authz::*;
 use crate::git_utils::*;
 use crate::object_storage::*;
 use crate::realtime::ws_handler as realtime_ws_handler;
@@ -45,6 +44,7 @@ use tracing::{error, info};
 use uuid::Uuid;
 
 mod auth;
+pub(crate) mod authz;
 mod documents;
 mod git;
 mod projects;
@@ -52,6 +52,7 @@ mod routes;
 mod support;
 
 use auth::*;
+use authz::*;
 use documents::*;
 use git::*;
 use projects::*;

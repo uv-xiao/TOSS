@@ -1,5 +1,5 @@
-use crate::authz::ensure_project_access;
-use crate::authz::AccessNeed;
+use crate::server::authz::ensure_project_access;
+use crate::server::authz::AccessNeed;
 use crate::types::{AppState, CollabEvent};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
