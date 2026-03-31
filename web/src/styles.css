@@ -55,6 +55,9 @@ a {
   grid-template-columns: auto 1fr auto;
   align-items: center;
   gap: 12px;
+  position: relative;
+  overflow: visible;
+  z-index: 20;
 }
 
 .topbar.workspace {
@@ -549,7 +552,7 @@ a {
   padding: 6px;
   display: grid;
   gap: 3px;
-  z-index: 30;
+  z-index: 80;
 }
 
 .workspace-project-menu-item {
@@ -571,8 +574,8 @@ a {
 .workspace-icon-toggles {
   display: flex;
   align-items: center;
-  gap: 6px;
-  overflow-x: auto;
+  gap: 8px;
+  overflow: visible;
   padding-bottom: 1px;
   flex: 0 0 auto;
 }
@@ -593,7 +596,7 @@ a {
   padding: 6px;
   display: grid;
   gap: 4px;
-  z-index: 50;
+  z-index: 80;
 }
 
 .workspace-view-menu-item {
@@ -1556,14 +1559,42 @@ label {
 
   .topbar.workspace {
     grid-template-columns: auto minmax(260px, 1fr);
+    grid-template-areas: none;
+    row-gap: 0;
   }
 
   .topbar.workspace .topbar-back-btn {
+    grid-area: auto;
     grid-column: 1;
   }
 
   .topbar.workspace .topbar-workspace-slot {
+    grid-area: auto;
     grid-column: 2;
+  }
+
+  .topbar.workspace .topbar-brand {
+    grid-area: auto;
+  }
+
+  .topbar.workspace .workspace-slot-layout {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0;
+  }
+
+  .topbar.workspace .workspace-topbar-controls {
+    display: flex;
+  }
+
+  .topbar.workspace .workspace-project-menu-wrap {
+    margin-inline: auto;
+    justify-self: auto;
+    max-width: min(58vw, 680px);
+  }
+
+  .topbar.workspace .workspace-icon-toggles {
+    justify-content: flex-end;
+    justify-self: auto;
   }
 }
 
