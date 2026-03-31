@@ -919,6 +919,10 @@ export function WorkspacePage({
 
   useEffect(() => {
     if (!projectId || !workspaceLoaded) return;
+    if (!effectiveShowPreviewPanel) {
+      setCompileActive(false);
+      return;
+    }
     if (!isRevisionMode && workspaceSyncPending) return;
     const applyCompileOutput = (output: CompileOutput) => {
       setVectorData(output.vectorData);
@@ -978,6 +982,7 @@ export function WorkspacePage({
     compileAssets,
     compileDocuments,
     compileInputKey,
+    effectiveShowPreviewPanel,
     fontData,
     isRevisionMode,
     projectId,
