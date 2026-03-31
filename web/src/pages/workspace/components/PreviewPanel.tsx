@@ -149,7 +149,7 @@ export function PreviewPanel({
           </div>
         )}
         {(typstRuntimeStatus.stage === "downloading-compiler" ||
-          (typstRuntimeStatus.stage === "compiling" && !vectorData)) && (
+          typstRuntimeStatus.stage === "compiling") && (
           <div className="preview-runtime-status">
             <strong>
               {typstRuntimeStatus.stage === "downloading-compiler"
