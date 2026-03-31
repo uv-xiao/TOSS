@@ -12,6 +12,7 @@ export function PreviewPanel({
   pdfData,
   typstRuntimeStatus,
   workspaceSyncPending,
+  compileActive,
   previewRendering,
   assetHydrationProgress,
   vectorData,
@@ -38,6 +39,7 @@ export function PreviewPanel({
   pdfData: Uint8Array | null;
   typstRuntimeStatus: TypstRuntimeStatus;
   workspaceSyncPending: boolean;
+  compileActive: boolean;
   previewRendering: boolean;
   assetHydrationProgress: {
     active: boolean;
@@ -191,6 +193,7 @@ export function PreviewPanel({
           </div>
         )}
         {(typstRuntimeStatus.stage === "downloading-compiler" ||
+          compileActive ||
           typstRuntimeStatus.stage === "compiling" ||
           previewRendering) && (
           <div className="preview-runtime-status">

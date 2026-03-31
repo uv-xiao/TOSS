@@ -257,6 +257,7 @@ export function WorkspacePage({
   const [copyBusy, setCopyBusy] = useState(false);
   const [renameBusy, setRenameBusy] = useState(false);
   const [typstRuntimeStatus, setTypstRuntimeStatus] = useState<TypstRuntimeStatus>({ stage: "idle" });
+  const [compileActive, setCompileActive] = useState(false);
   const [apiReachable, setApiReachable] = useState(true);
   const [copiedControl, setCopiedControl] = useState<string | null>(null);
   const assetMetaRef = useRef<Record<string, AssetMeta>>({});
@@ -929,6 +930,7 @@ export function WorkspacePage({
     if (compileDocuments.length === 0) {
       lastCompileInputKeyRef.current = "";
       lastCompileOutputRef.current = null;
+      setCompileActive(false);
       setVectorData(null);
       setPdfData(null);
       setCompileErrors(["Project has no source documents"]);
@@ -939,12 +941,17 @@ export function WorkspacePage({
       const hasPendingAssets = requiredAssetPaths.some(
         (path) => !assetBase64[path] && !assetLoadFailedRef.current.has(path)
       );
-      if (hasPendingAssets) return;
+      if (hasPendingAssets) {
+        setCompileActive(false);
+        return;
+      }
     }
     if (compileInputKey === lastCompileInputKeyRef.current && lastCompileOutputRef.current) {
+      setCompileActive(false);
       applyCompileOutput(lastCompileOutputRef.current);
       return;
     }
+    setCompileActive(true);
     startTransition(() => {
       compileTypstClientSide({
         entryFilePath: sourceEntryFilePath,
@@ -958,10 +965,12 @@ export function WorkspacePage({
         lastCompileInputKeyRef.current = compileInputKey;
         lastCompileOutputRef.current = output;
         applyCompileOutput(output);
+        setCompileActive(false);
       });
     });
     return () => {
       cancelled = true;
+      setCompileActive(false);
     };
   }, [
     assetBase64,
@@ -2263,6 +2272,7 @@ export function WorkspacePage({
               pdfData={pdfData}
               typstRuntimeStatus={typstRuntimeStatus}
               workspaceSyncPending={workspaceSyncPending}
+              compileActive={compileActive}
               previewRendering={previewRendering}
               assetHydrationProgress={assetHydrationProgress}
               vectorData={vectorData}
