@@ -287,7 +287,7 @@ export async function renderTypstVectorToCanvas(
   options?: { pixelPerPt?: number }
 ) {
   const version = ++renderVersion;
-  const pixelPerPt = Math.max(1, Math.min(8, options?.pixelPerPt ?? 2));
+  const pixelPerPt = Math.max(1, Math.min(12, options?.pixelPerPt ?? 3));
   renderQueue = renderQueue.catch(() => undefined).then(async () => {
     if (version !== renderVersion) return;
     const renderer = await getRenderer();
