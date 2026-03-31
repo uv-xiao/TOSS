@@ -52,6 +52,53 @@ pub(super) async fn seed_default_data(pool: &PgPool) {
         }
     }
 
+    let admin_membership_org = sqlx::query(
+        "select organization_id
+         from organization_memberships
+         where user_id = $1
+         order by joined_at asc
+         limit 1",
+    )
+    .bind(admin_id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()
+    .map(|row| row.get::<Uuid, _>("organization_id"));
+    let admin_org_id = if let Some(org_id) = admin_membership_org {
+        org_id
+    } else {
+        let org_id = Uuid::new_v4();
+        let org_name = "Administrator Organization";
+        let _ = sqlx::query("insert into organizations (id, name, created_at) values ($1, $2, $3)")
+            .bind(org_id)
+            .bind(org_name)
+            .bind(now)
+            .execute(pool)
+            .await;
+        let _ = sqlx::query(
+            "insert into organization_memberships (organization_id, user_id, joined_at)
+             values ($1, $2, $3)
+             on conflict (organization_id, user_id) do nothing",
+        )
+        .bind(org_id)
+        .bind(admin_id)
+        .bind(now)
+        .execute(pool)
+        .await;
+        org_id
+    };
+    let _ = sqlx::query(
+        "insert into org_admins (organization_id, user_id, granted_at)
+         values ($1, $2, $3)
+         on conflict (organization_id, user_id) do nothing",
+    )
+    .bind(admin_org_id)
+    .bind(admin_id)
+    .bind(now)
+    .execute(pool)
+    .await;
+
     // Clean up legacy seeded non-admin account from earlier builds.
     let _ = sqlx::query("delete from project_roles where user_id = $1")
         .bind(legacy_member_id)

@@ -36,6 +36,7 @@ import {
   listRevisions,
   moveProjectFile,
   revokeProjectShareLink,
+  renameProject,
   type AuthUser,
   type OrganizationMembership,
   type Project,
@@ -104,6 +105,12 @@ import type { ProjectCopyDialogState } from "@/types/project-ui";
 type UploadCandidate = {
   relativePath: string;
   file: File;
+};
+
+type ProjectRenameDialogState = {
+  projectId: string;
+  sourceName: string;
+  nextName: string;
 };
 
 const REVISION_PAGE_SIZE = 40;
@@ -240,7 +247,9 @@ export function WorkspacePage({
   const [templateEnabled, setTemplateEnabled] = useState(false);
   const [pathDialog, setPathDialog] = useState<PathDialogState | null>(null);
   const [copyDialog, setCopyDialog] = useState<ProjectCopyDialogState | null>(null);
+  const [renameDialog, setRenameDialog] = useState<ProjectRenameDialogState | null>(null);
   const [copyBusy, setCopyBusy] = useState(false);
+  const [renameBusy, setRenameBusy] = useState(false);
   const [typstRuntimeStatus, setTypstRuntimeStatus] = useState<TypstRuntimeStatus>({ stage: "idle" });
   const [apiReachable, setApiReachable] = useState(true);
   const [copiedControl, setCopiedControl] = useState<string | null>(null);
@@ -1530,6 +1539,20 @@ export function WorkspacePage({
     }
   }
 
+  async function submitProjectRename() {
+    if (!renameDialog || !renameDialog.nextName.trim()) return;
+    try {
+      setRenameBusy(true);
+      await renameProject(renameDialog.projectId, renameDialog.nextName.trim());
+      await refreshProjects();
+      setRenameDialog(null);
+    } catch (err) {
+      setWorkspaceError(err instanceof Error ? err.message : t("projects.renameFailed"));
+    } finally {
+      setRenameBusy(false);
+    }
+  }
+
   async function upsertOrgAccessGrant(organizationId: string, permission: "read" | "write") {
     if (!projectId) return;
     try {
@@ -1898,6 +1921,14 @@ export function WorkspacePage({
         showProjectSettingsPanel={showProjectSettingsPanel}
         showRevisionPanel={showRevisionPanel}
         onProjectChange={(nextProjectId) => navigate(`/project/${nextProjectId}`)}
+        onRenameProject={() => {
+          if (!project) return;
+          setRenameDialog({
+            projectId: project.id,
+            sourceName: project.name,
+            nextName: project.name
+          });
+        }}
         onToggleFiles={() => setShowFilesPanel((v) => !v)}
         onTogglePreview={() => setShowPreviewPanel((v) => !v)}
         onToggleSettings={() => setShowProjectSettingsPanel((v) => !v)}
@@ -2303,6 +2334,32 @@ export function WorkspacePage({
                   }
                 : current
             )
+          }
+          placeholder={t("projects.namePlaceholder")}
+        />
+      </UiDialog>
+      <UiDialog
+        open={!!renameDialog}
+        title={t("projects.renameDialogTitle")}
+        description={renameDialog ? `${t("projects.renameDialogHint")} ${renameDialog.sourceName}` : undefined}
+        onClose={() => setRenameDialog(null)}
+        actions={
+          <>
+            <UiButton onClick={() => setRenameDialog(null)}>{t("common.cancel")}</UiButton>
+            <UiButton
+              variant="primary"
+              onClick={submitProjectRename}
+              disabled={renameBusy || !renameDialog?.nextName.trim()}
+            >
+              {renameBusy ? t("common.loading") : t("projects.renameAction")}
+            </UiButton>
+          </>
+        }
+      >
+        <UiInput
+          value={renameDialog?.nextName ?? ""}
+          onChange={(event) =>
+            setRenameDialog((current) => (current ? { ...current, nextName: event.target.value } : current))
           }
           placeholder={t("projects.namePlaceholder")}
         />

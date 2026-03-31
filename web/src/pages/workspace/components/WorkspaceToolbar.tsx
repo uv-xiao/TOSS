@@ -1,4 +1,5 @@
-import { UiButton, UiSelect } from "@/components/ui";
+import { UiButton } from "@/components/ui";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type ToolbarProject = {
   id: string;
@@ -13,6 +14,7 @@ export function WorkspaceToolbar({
   showProjectSettingsPanel,
   showRevisionPanel,
   onProjectChange,
+  onRenameProject,
   onToggleFiles,
   onTogglePreview,
   onToggleSettings,
@@ -26,23 +28,77 @@ export function WorkspaceToolbar({
   showProjectSettingsPanel: boolean;
   showRevisionPanel: boolean;
   onProjectChange: (projectId: string) => void;
+  onRenameProject: () => void;
   onToggleFiles: () => void;
   onTogglePreview: () => void;
   onToggleSettings: () => void;
   onToggleRevisions: () => void;
   t: (key: string) => string;
 }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const currentProject = useMemo(() => projects.find((item) => item.id === projectId) ?? null, [projectId, projects]);
+  const otherProjects = useMemo(() => projects.filter((item) => item.id !== projectId), [projectId, projects]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!menuRef.current) return;
+      if (!menuRef.current.contains(event.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
+  }, [menuOpen]);
+
   return (
     <div className="workspace-topbar-controls">
-      <label className="workspace-project-picker workspace-topbar-project" aria-label={t("nav.projects")}>
-        <UiSelect value={projectId} onChange={(e) => onProjectChange(e.target.value)}>
-          {projects.map((item) => (
-            <option value={item.id} key={item.id}>
-              {item.name}
-            </option>
-          ))}
-        </UiSelect>
-      </label>
+      <div />
+      <div className="workspace-project-menu-wrap" ref={menuRef}>
+        <button
+          type="button"
+          className="workspace-project-title-button"
+          onClick={() => setMenuOpen((open) => !open)}
+          aria-label={t("nav.projects")}
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+        >
+          <span className="workspace-project-title">{currentProject?.name ?? t("common.loading")}</span>
+          <span className="workspace-project-chevron" aria-hidden>
+            v
+          </span>
+        </button>
+        {menuOpen && (
+          <div className="workspace-project-menu" role="menu">
+            <button
+              type="button"
+              className="workspace-project-menu-item"
+              role="menuitem"
+              onClick={() => {
+                setMenuOpen(false);
+                onRenameProject();
+              }}
+            >
+              {t("common.rename")}
+            </button>
+            {otherProjects.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className="workspace-project-menu-item"
+                role="menuitem"
+                onClick={() => {
+                  setMenuOpen(false);
+                  onProjectChange(item.id);
+                }}
+              >
+                {item.name}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
       <div className="workspace-icon-toggles">
         <UiButton
           className={`icon-toggle ${showFilesPanel ? "active" : ""}`}
@@ -84,4 +140,3 @@ export function WorkspaceToolbar({
     </div>
   );
 }
-

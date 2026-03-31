@@ -375,17 +375,6 @@ pub(super) async fn resolve_project_organization_id(db: &PgPool, user_id: Uuid) 
     .execute(&mut *tx)
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    sqlx::query(
-        "insert into org_admins (organization_id, user_id, granted_at)
-         values ($1, $2, $3)",
-    )
-    .bind(org_id)
-    .bind(user_id)
-    .bind(now)
-    .execute(&mut *tx)
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
     tx.commit()
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
