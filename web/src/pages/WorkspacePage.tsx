@@ -503,6 +503,7 @@ export function WorkspacePage({
     canvasPreviewRef,
     previewRenderTick,
     previewIsPanning,
+    previewRendering,
     hasPreviewPage,
     previewPageCurrent,
     previewPageTotal,
@@ -2262,6 +2263,7 @@ export function WorkspacePage({
               pdfData={pdfData}
               typstRuntimeStatus={typstRuntimeStatus}
               workspaceSyncPending={workspaceSyncPending}
+              previewRendering={previewRendering}
               assetHydrationProgress={assetHydrationProgress}
               vectorData={vectorData}
               previewIsPanning={previewIsPanning}

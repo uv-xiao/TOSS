@@ -74,6 +74,7 @@ export function usePreviewCanvas({
   const lastRenderSignatureRef = useRef<string>("");
   const [previewRenderTick, setPreviewRenderTick] = useState(0);
   const [previewIsPanning, setPreviewIsPanning] = useState(false);
+  const [previewRendering, setPreviewRendering] = useState(false);
   const [hasPreviewPage, setHasPreviewPage] = useState(false);
   const [previewPageCurrent, setPreviewPageCurrent] = useState(0);
   const [previewPageTotal, setPreviewPageTotal] = useState(0);
@@ -137,6 +138,7 @@ export function usePreviewCanvas({
     const preRenderAnchor = captureViewportAnchor(frame);
     if (!vectorData) {
       lastRenderSignatureRef.current = "";
+      setPreviewRendering(false);
       setHasPreviewPage(!!frame.querySelector(".pdf-pages .typst-page, .pdf-pages canvas"));
       refreshPageIndicator(frame);
       setPreviewRenderTick((value) => value + 1);
@@ -148,12 +150,14 @@ export function usePreviewCanvas({
     const alreadyRendered =
       lastRenderSignatureRef.current === renderSignature && !!frame.querySelector(".pdf-pages .typst-page, .pdf-pages canvas");
     if (alreadyRendered) {
+      setPreviewRendering(false);
       setHasPreviewPage(true);
       refreshPageIndicator(frame);
       setPreviewRenderTick((value) => value + 1);
       return;
     }
     let cancelled = false;
+    setPreviewRendering(true);
     renderTypstVectorToCanvas(frame, vectorData, { pixelPerPt: previewPixelPerPt })
       .then(() => {
         if (cancelled) return;
@@ -173,15 +177,18 @@ export function usePreviewCanvas({
         setHasPreviewPage(!!frame.querySelector(".pdf-pages .typst-page, .pdf-pages canvas"));
         refreshPageIndicator(frame);
         setPreviewRenderTick((value) => value + 1);
+        setPreviewRendering(false);
       })
       .catch((err) => {
         setHasPreviewPage(!!frame.querySelector(".pdf-pages .typst-page, .pdf-pages canvas"));
         refreshPageIndicator(frame);
+        setPreviewRendering(false);
         const message = err instanceof Error ? err.message : "Preview render failed";
         onRenderErrorRef.current(message);
       });
     return () => {
       cancelled = true;
+      setPreviewRendering(false);
     };
   }, [
     previewPixelPerPt,
@@ -305,6 +312,7 @@ export function usePreviewCanvas({
     canvasPreviewRef,
     previewRenderTick,
     previewIsPanning,
+    previewRendering,
     hasPreviewPage,
     previewPageCurrent,
     previewPageTotal,
