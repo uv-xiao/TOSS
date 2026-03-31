@@ -233,6 +233,12 @@ export function WorkspacePage({
   const [showRevisionPanel, setShowRevisionPanel] = useState(false);
   const [showProjectSettingsPanel, setShowProjectSettingsPanel] = useState(false);
   const [showPreviewPanel, setShowPreviewPanel] = useState(true);
+  const [viewportWidth, setViewportWidth] = useState(
+    () => (typeof window === "undefined" ? 1440 : window.innerWidth)
+  );
+  const [compactPanelView, setCompactPanelView] = useState<"editor" | "files" | "preview" | "settings" | "revisions">(
+    "editor"
+  );
   const [previewZoom, setPreviewZoom] = useState(1);
   const [previewFitMode, setPreviewFitMode] = useState<PreviewFitMode>("page");
   const [lineWrapEnabled, setLineWrapEnabled] = useState(true);
@@ -280,6 +286,13 @@ export function WorkspacePage({
   const canManageProject = authUser
     ? project?.my_role === "Owner"
     : false;
+  const collapsePanelToggles = viewportWidth <= 1320;
+  const singlePanelMode = viewportWidth <= 980;
+  const effectiveShowFilesPanel = singlePanelMode ? compactPanelView === "files" : showFilesPanel;
+  const effectiveShowPreviewPanel = singlePanelMode ? compactPanelView === "preview" : showPreviewPanel;
+  const effectiveShowSettingsPanel = singlePanelMode ? compactPanelView === "settings" : showProjectSettingsPanel;
+  const effectiveShowRevisionPanel = singlePanelMode ? compactPanelView === "revisions" : showRevisionPanel;
+  const effectiveShowEditorPanel = !singlePanelMode || compactPanelView === "editor";
 
   const isRevisionMode = !!activeRevisionId;
   const currentNodes = isRevisionMode ? revisionNodes : nodes;
@@ -493,13 +506,13 @@ export function WorkspacePage({
     hasPreviewPage,
     beginPreviewPan
   } = usePreviewCanvas({
-    showPreviewPanel,
+    showPreviewPanel: effectiveShowPreviewPanel,
     vectorData,
     previewPixelPerPt,
     previewFitMode,
     previewZoom,
     setPreviewZoom,
-    reflowDeps: [editorRatio, showFilesPanel, showPreviewPanel, showProjectSettingsPanel, showRevisionPanel],
+    reflowDeps: [editorRatio, effectiveShowFilesPanel, effectiveShowPreviewPanel, effectiveShowSettingsPanel, effectiveShowRevisionPanel],
     onRenderError: (message) => {
       setCompileErrors([message]);
       setCompileDiagnostics([]);
@@ -607,6 +620,12 @@ export function WorkspacePage({
   useEffect(() => {
     const unsub = subscribeTypstRuntimeStatus((status) => setTypstRuntimeStatus(status));
     return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    const onResize = () => setViewportWidth(window.innerWidth);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
   }, []);
 
   useEffect(() => {
@@ -720,7 +739,7 @@ export function WorkspacePage({
   }, []);
 
   useEffect(() => {
-    if (showRevisionPanel) return;
+    if (effectiveShowRevisionPanel) return;
     if (!activeRevisionId) return;
     setActiveRevisionId(null);
     setRevisionDocs({});
@@ -734,7 +753,7 @@ export function WorkspacePage({
       loadedBytes: 0,
       totalBytes: null
     });
-  }, [activeRevisionId, showRevisionPanel]);
+  }, [activeRevisionId, effectiveShowRevisionPanel]);
 
   useEffect(() => {
     if (!queuedJump) return;
@@ -926,7 +945,7 @@ export function WorkspacePage({
   ]);
 
   useEffect(() => {
-    if (!projectId || !workspaceLoaded || isRevisionMode || !showPreviewPanel) return;
+    if (!projectId || !workspaceLoaded || isRevisionMode || !effectiveShowPreviewPanel) return;
     if (!authUser) return;
     if (!vectorData || compileDiagnostics.length > 0 || compileErrors.length > 0) return;
     const frame = canvasPreviewRef.current;
@@ -967,7 +986,7 @@ export function WorkspacePage({
     isRevisionMode,
     previewRenderTick,
     projectId,
-    showPreviewPanel,
+    effectiveShowPreviewPanel,
     vectorData,
     workspaceLoaded,
     authUser
@@ -1882,6 +1901,10 @@ export function WorkspacePage({
   }
 
   function toggleRevisionPanel() {
+    if (singlePanelMode) {
+      setCompactPanelView("revisions");
+      return;
+    }
     setShowRevisionPanel((shown) => {
       if (shown) {
         revisionLoadSeqRef.current += 1;
@@ -1910,15 +1933,25 @@ export function WorkspacePage({
     setPreviewFitMode("width");
   }
 
+  function openTreePathAndFocusEditor(path: string) {
+    openTreePath(path);
+    if (singlePanelMode) {
+      setCompactPanelView("editor");
+    }
+  }
+
   const workspaceTopbarControls = useMemo(
     () => (
       <WorkspaceToolbar
         projectId={projectId}
         projects={projects}
-        showFilesPanel={showFilesPanel}
-        showPreviewPanel={showPreviewPanel}
-        showProjectSettingsPanel={showProjectSettingsPanel}
-        showRevisionPanel={showRevisionPanel}
+        showFilesPanel={effectiveShowFilesPanel}
+        showPreviewPanel={effectiveShowPreviewPanel}
+        showProjectSettingsPanel={effectiveShowSettingsPanel}
+        showRevisionPanel={effectiveShowRevisionPanel}
+        collapsePanelsIntoMenu={collapsePanelToggles}
+        singlePanelMode={singlePanelMode}
+        activePanel={compactPanelView}
         onProjectChange={(nextProjectId) => navigate(`/project/${nextProjectId}`)}
         onRenameProject={() => {
           if (!project) return;
@@ -1928,21 +1961,43 @@ export function WorkspacePage({
             nextName: project.name
           });
         }}
-        onToggleFiles={() => setShowFilesPanel((v) => !v)}
-        onTogglePreview={() => setShowPreviewPanel((v) => !v)}
-        onToggleSettings={() => setShowProjectSettingsPanel((v) => !v)}
+        onToggleFiles={() => {
+          if (singlePanelMode) {
+            setCompactPanelView("files");
+            return;
+          }
+          setShowFilesPanel((v) => !v);
+        }}
+        onTogglePreview={() => {
+          if (singlePanelMode) {
+            setCompactPanelView("preview");
+            return;
+          }
+          setShowPreviewPanel((v) => !v);
+        }}
+        onToggleSettings={() => {
+          if (singlePanelMode) {
+            setCompactPanelView("settings");
+            return;
+          }
+          setShowProjectSettingsPanel((v) => !v);
+        }}
         onToggleRevisions={toggleRevisionPanel}
+        onSelectPanel={setCompactPanelView}
         t={t}
       />
     ),
     [
+      collapsePanelToggles,
+      compactPanelView,
+      effectiveShowPreviewPanel,
+      effectiveShowSettingsPanel,
+      effectiveShowRevisionPanel,
       navigate,
       projectId,
       projects,
       showFilesPanel,
-      showPreviewPanel,
-      showProjectSettingsPanel,
-      showRevisionPanel,
+      singlePanelMode,
       t
     ]
   );
@@ -2034,7 +2089,7 @@ export function WorkspacePage({
         </div>
       )}
       <section className="workspace-stage">
-        {showFilesPanel && (
+        {effectiveShowFilesPanel && (
           <>
             <FileTreePanel
               width={filesPanelWidth}
@@ -2061,25 +2116,32 @@ export function WorkspacePage({
               activePath={activePath}
               expandedDirs={expandedDirs}
               setExpandedDirs={setExpandedDirs}
-              onOpenTreePath={openTreePath}
+              onOpenTreePath={openTreePathAndFocusEditor}
               onRequestContextMenu={requestContextMenu}
               t={t}
             />
-            <div
-              className="panel-resizer"
-              onMouseDown={beginHorizontalResize((dx) => setFilesPanelWidth((v) => clampNumber(v + dx, 220, 520)))}
-              role="separator"
-              aria-orientation="vertical"
-              aria-label="Resize files panel"
-            />
+            {!singlePanelMode && (
+              <div
+                className="panel-resizer"
+                onMouseDown={beginHorizontalResize((dx) => setFilesPanelWidth((v) => clampNumber(v + dx, 220, 520)))}
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="Resize files panel"
+              />
+            )}
           </>
         )}
 
         <div className="center-split" ref={centerSplitRef}>
-          <article
-            className="panel panel-editor"
-            style={showPreviewPanel ? { flex: `${editorRatio} 1 0`, minWidth: 320 } : { flex: "1 1 auto", minWidth: 320 }}
-          >
+          {effectiveShowEditorPanel && (
+            <article
+              className="panel panel-editor"
+              style={
+                effectiveShowPreviewPanel
+                  ? { flex: `${editorRatio} 1 0`, minWidth: 320 }
+                  : { flex: "1 1 auto", minWidth: 320 }
+              }
+            >
             <div className="panel-header workspace-main-header">
               <h2 title={activePath}>{activeFileName}</h2>
               <div className="panel-status compact">
@@ -2139,9 +2201,10 @@ export function WorkspacePage({
               )}
               {workspaceError && <div className="error panel-inline-error">{workspaceError}</div>}
             </div>
-          </article>
+            </article>
+          )}
 
-          {showPreviewPanel && (
+          {!singlePanelMode && effectiveShowEditorPanel && effectiveShowPreviewPanel && (
             <div
               className="panel-resizer"
               onMouseDown={beginHorizontalResize((dx) => {
@@ -2156,7 +2219,7 @@ export function WorkspacePage({
             />
           )}
 
-          {showPreviewPanel && (
+          {effectiveShowPreviewPanel && (
             <PreviewPanel
               editorRatio={editorRatio}
               previewFitMode={previewFitMode}
@@ -2183,17 +2246,19 @@ export function WorkspacePage({
           )}
         </div>
 
-        {showProjectSettingsPanel && (
+        {effectiveShowSettingsPanel && (
           <>
-            <div
-              className="panel-resizer"
-              onMouseDown={beginHorizontalResize((dx) =>
-                setSettingsPanelWidth((value) => clampNumber(value - dx, 220, 520))
-              )}
-              role="separator"
-              aria-orientation="vertical"
-              aria-label="Resize project settings panel"
-            />
+            {!singlePanelMode && (
+              <div
+                className="panel-resizer"
+                onMouseDown={beginHorizontalResize((dx) =>
+                  setSettingsPanelWidth((value) => clampNumber(value - dx, 220, 520))
+                )}
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="Resize project settings panel"
+              />
+            )}
             {isAnonymousShare ? (
               <aside className="panel panel-right settings-panel" style={{ width: settingsPanelWidth }}>
                 <div className="panel-header">
@@ -2250,17 +2315,19 @@ export function WorkspacePage({
           </>
         )}
 
-        {showRevisionPanel && (
+        {effectiveShowRevisionPanel && (
           <>
-            <div
-              className="panel-resizer"
-              onMouseDown={beginHorizontalResize((dx) =>
-                setRevisionsPanelWidth((value) => clampNumber(value - dx, 220, 520))
-              )}
-              role="separator"
-              aria-orientation="vertical"
-              aria-label="Resize revisions panel"
-            />
+            {!singlePanelMode && (
+              <div
+                className="panel-resizer"
+                onMouseDown={beginHorizontalResize((dx) =>
+                  setRevisionsPanelWidth((value) => clampNumber(value - dx, 220, 520))
+                )}
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="Resize revisions panel"
+              />
+            )}
             <RevisionsPanel
               width={revisionsPanelWidth}
               revisions={revisions}

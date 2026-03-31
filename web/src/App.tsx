@@ -159,8 +159,11 @@ export function App() {
       <header className={`topbar ${onWorkspaceRoute ? "workspace" : ""}`}>
         <strong className="topbar-brand">{siteName}</strong>
         {onWorkspaceRoute && (
-          <UiButton className="tab" onClick={() => navigate("/projects")}>
-            {t("nav.backToProjects")}
+          <UiButton className="tab topbar-back-btn" onClick={() => navigate("/projects")} aria-label={t("nav.backToProjects")}>
+            <span className="topbar-back-icon" aria-hidden>
+              ←
+            </span>
+            <span className="topbar-back-label">{t("nav.backToProjects")}</span>
           </UiButton>
         )}
         {onWorkspaceRoute ? (

@@ -65,6 +65,17 @@ a {
   white-space: nowrap;
 }
 
+.topbar-back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.topbar-back-icon {
+  font-weight: 700;
+  line-height: 1;
+}
+
 .topbar-workspace-slot {
   min-width: 0;
   display: flex;
@@ -564,6 +575,46 @@ a {
   overflow-x: auto;
   padding-bottom: 1px;
   flex: 0 0 auto;
+}
+
+.workspace-view-menu-wrap {
+  position: relative;
+}
+
+.workspace-view-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  min-width: 220px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: var(--shadow-md);
+  padding: 6px;
+  display: grid;
+  gap: 4px;
+  z-index: 50;
+}
+
+.workspace-view-menu-item {
+  border: 0;
+  width: 100%;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  padding: 8px 10px;
+  display: grid;
+  grid-template-columns: 14px 1fr;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.workspace-view-menu-item.active,
+.workspace-view-menu-item:hover {
+  background: #eef4fb;
 }
 
 .icon-toggle {
@@ -1495,6 +1546,58 @@ label {
 
   .workspace-meta {
     justify-content: flex-start;
+  }
+}
+
+@media (max-width: 1320px) {
+  .topbar.workspace .topbar-brand {
+    display: none;
+  }
+
+  .topbar.workspace {
+    grid-template-columns: auto minmax(260px, 1fr);
+  }
+
+  .topbar.workspace .topbar-back-btn {
+    grid-column: 1;
+  }
+
+  .topbar.workspace .topbar-workspace-slot {
+    grid-column: 2;
+  }
+}
+
+@media (max-width: 980px) {
+  .topbar.workspace .topbar-back-label {
+    display: none;
+  }
+
+  .topbar.workspace .topbar-back-btn {
+    min-width: 38px;
+    padding-inline: 10px;
+  }
+
+  .topbar.workspace .workspace-meta {
+    display: none;
+  }
+
+  .workspace-stage {
+    overflow-x: hidden;
+  }
+
+  .workspace-stage .panel-right,
+  .workspace-stage .panel-files,
+  .workspace-stage .panel-revisions,
+  .workspace-stage .panel-editor,
+  .workspace-stage .panel-preview {
+    width: 100% !important;
+    min-width: 0 !important;
+    flex: 1 1 auto !important;
+  }
+
+  .workspace-stage .center-split {
+    min-width: 0;
+    width: 100%;
   }
 }
 
