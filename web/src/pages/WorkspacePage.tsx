@@ -291,7 +291,7 @@ export function WorkspacePage({
   const canViewWriteShareLink = authUser
     ? project?.my_role === "Owner" || project?.my_role === "ReadWrite"
     : false;
-  const canViewShareLinks = !!authUser && !!project?.can_read;
+  const canViewShareLinks = !!authUser && !isAnonymousShare;
   const collapsePanelToggles = viewportWidth <= 1320;
   const singlePanelMode = viewportWidth <= 980;
   const effectiveShowFilesPanel = singlePanelMode ? compactPanelView === "files" : showFilesPanel;
