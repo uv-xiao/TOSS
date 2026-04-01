@@ -600,6 +600,12 @@ a {
   background: #eef4fb;
 }
 
+.workspace-project-menu-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 2px;
+}
+
 .workspace-icon-toggles {
   display: flex;
   align-items: center;

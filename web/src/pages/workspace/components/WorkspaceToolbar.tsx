@@ -19,6 +19,7 @@ export function WorkspaceToolbar({
   activePanel,
   onProjectChange,
   onRenameProject,
+  canRenameProject,
   onToggleFiles,
   onTogglePreview,
   onToggleSettings,
@@ -38,6 +39,7 @@ export function WorkspaceToolbar({
   activePanel: "editor" | "files" | "preview" | "settings" | "revisions";
   onProjectChange: (projectId: string) => void;
   onRenameProject: () => void;
+  canRenameProject: boolean;
   onToggleFiles: () => void;
   onTogglePreview: () => void;
   onToggleSettings: () => void;
@@ -94,17 +96,20 @@ export function WorkspaceToolbar({
         </button>
         {menuOpen && (
           <div className="workspace-project-menu" role="menu">
-            <button
-              type="button"
-              className="workspace-project-menu-item"
-              role="menuitem"
-              onClick={() => {
-                setMenuOpen(false);
-                onRenameProject();
-              }}
-            >
-              {t("common.rename")}
-            </button>
+            {canRenameProject && (
+              <button
+                type="button"
+                className="workspace-project-menu-item"
+                role="menuitem"
+                onClick={() => {
+                  setMenuOpen(false);
+                  onRenameProject();
+                }}
+              >
+                {t("common.rename")}
+              </button>
+            )}
+            {canRenameProject && otherProjects.length > 0 && <div className="workspace-project-menu-divider" aria-hidden />}
             {otherProjects.map((item) => (
               <button
                 key={item.id}

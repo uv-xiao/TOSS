@@ -288,6 +288,10 @@ export function WorkspacePage({
   const canManageProject = authUser
     ? project?.my_role === "Owner"
     : false;
+  const canViewWriteShareLink = authUser
+    ? project?.my_role === "Owner" || project?.my_role === "ReadWrite"
+    : false;
+  const canViewShareLinks = !!authUser && !!project?.can_read;
   const collapsePanelToggles = viewportWidth <= 1320;
   const singlePanelMode = viewportWidth <= 980;
   const effectiveShowFilesPanel = singlePanelMode ? compactPanelView === "files" : showFilesPanel;
@@ -1107,7 +1111,7 @@ export function WorkspacePage({
       setExpandedDirs((prev) => expandAncestors(fallbackPath, prev));
       setWorkspaceLoaded(true);
     }
-    const sharePromise = canManageProject ? listProjectShareLinks(projectId).catch(() => []) : Promise.resolve([]);
+    const sharePromise = canViewShareLinks ? listProjectShareLinks(projectId).catch(() => []) : Promise.resolve([]);
     const orgAccessPromise = canManageProject ? listProjectOrganizationAccess(projectId).catch(() => []) : Promise.resolve([]);
     const accessUsersPromise = canManageProject
       ? listProjectAccessUsers(projectId).then((res) => res.users).catch(() => [])
@@ -1993,6 +1997,7 @@ export function WorkspacePage({
             nextName: project.name
           });
         }}
+        canRenameProject={!!canManageProject}
         onToggleFiles={() => {
           if (singlePanelMode) {
             setCompactPanelView("files");
@@ -2028,6 +2033,7 @@ export function WorkspacePage({
       effectiveShowSettingsPanel,
       effectiveShowRevisionPanel,
       navigate,
+      canManageProject,
       project,
       projectId,
       projectReadOnly,
@@ -2325,6 +2331,7 @@ export function WorkspacePage({
                 entryFilePath={entryFilePath}
                 typEntryOptions={typEntryOptions}
                 canManageProject={!!canManageProject}
+                canViewWriteShareLink={!!canViewWriteShareLink}
                 gitRepoUrl={gitRepoUrl}
                 copiedControl={copiedControl}
                 templateEnabled={templateEnabled}

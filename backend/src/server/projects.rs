@@ -1118,17 +1118,30 @@ pub(super) async fn list_project_share_links(
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
 ) -> Result<Json<Vec<ProjectShareLink>>, StatusCode> {
-    ensure_project_role(&state.db, &headers, project_id, AccessNeed::Manage).await?;
-    let rows = sqlx::query(
-        "select id, project_id, token_prefix, token_value, permission, created_by, created_at, expires_at, revoked_at
-         from project_share_links
-         where project_id = $1 and revoked_at is null
-         order by permission asc",
-    )
-    .bind(project_id)
-    .fetch_all(&state.db)
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let principal = ensure_project_access(&state.db, &headers, project_id, AccessNeed::Read).await?;
+    let rows = if principal.can_write {
+        sqlx::query(
+            "select id, project_id, token_prefix, token_value, permission, created_by, created_at, expires_at, revoked_at
+             from project_share_links
+             where project_id = $1 and revoked_at is null
+             order by permission asc",
+        )
+        .bind(project_id)
+        .fetch_all(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    } else {
+        sqlx::query(
+            "select id, project_id, token_prefix, token_value, permission, created_by, created_at, expires_at, revoked_at
+             from project_share_links
+             where project_id = $1 and permission = 'read' and revoked_at is null
+             order by permission asc",
+        )
+        .bind(project_id)
+        .fetch_all(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    };
     let items = rows
         .into_iter()
         .map(|row| ProjectShareLink {
