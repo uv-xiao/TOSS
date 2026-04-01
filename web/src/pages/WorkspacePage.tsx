@@ -666,7 +666,12 @@ export function WorkspacePage({
   }, []);
 
   useEffect(() => {
-    if (!project?.is_template) return;
+    if (!project?.is_template || !authUser) {
+      setCopyDialog((current) =>
+        current && current.projectId === project?.id ? null : current
+      );
+      return;
+    }
     setCopyDialog((current) => {
       if (current && current.projectId === project.id) return current;
       return {
@@ -675,7 +680,7 @@ export function WorkspacePage({
         suggestedName: `${project.name} ${t("projects.copySuffix")}`
       };
     });
-  }, [project?.id, project?.is_template, project?.name, t]);
+  }, [authUser, project?.id, project?.is_template, project?.name, t]);
 
   useEffect(() => {
     setTemplateEnabled(!!project?.is_template);
