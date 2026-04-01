@@ -85,6 +85,12 @@ export type OrganizationMembership = {
   joined_at: string;
 };
 
+export type Organization = {
+  id: string;
+  name: string;
+  created_at: string;
+};
+
 export type Project = {
   id: string;
   name: string;
@@ -464,6 +470,28 @@ export async function listMyOrganizations() {
     res,
     "Unable to list organizations"
   );
+}
+
+export async function listOrganizations() {
+  const res = await fetch(apiUrl("/v1/organizations"), {
+    cache: "no-store",
+    credentials: authCredentials(),
+    headers: authHeaders()
+  });
+  return parseJsonOrThrow<{ organizations: Organization[] }>(
+    res,
+    "Unable to list organizations"
+  );
+}
+
+export async function createOrganization(input: { name: string }) {
+  const res = await fetch(apiUrl("/v1/organizations"), {
+    method: "POST",
+    credentials: authCredentials(),
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify(input)
+  });
+  return parseJsonOrThrow<Organization>(res, "Unable to create organization");
 }
 
 export async function getProjectTree(projectId: string) {

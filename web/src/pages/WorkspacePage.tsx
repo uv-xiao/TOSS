@@ -28,6 +28,7 @@ import {
   joinProjectShareLink,
   temporaryShareLogin,
   listDocuments,
+  listOrganizations,
   listProjectAccessUsers,
   listProjectAssets,
   listProjectOrganizationAccess,
@@ -38,6 +39,7 @@ import {
   revokeProjectShareLink,
   renameProject,
   type AuthUser,
+  type Organization,
   type OrganizationMembership,
   type Project,
   type ProjectAsset,
@@ -253,6 +255,7 @@ export function WorkspacePage({
   const [projectTemplateOrgAccess, setProjectTemplateOrgAccess] = useState<ProjectTemplateOrganizationAccess[]>([]);
   const [projectAccessUsers, setProjectAccessUsers] = useState<ProjectAccessUser[]>([]);
   const [templateEnabled, setTemplateEnabled] = useState(false);
+  const [allOrganizations, setAllOrganizations] = useState<Organization[]>([]);
   const [pathDialog, setPathDialog] = useState<PathDialogState | null>(null);
   const [copyDialog, setCopyDialog] = useState<ProjectCopyDialogState | null>(null);
   const [renameDialog, setRenameDialog] = useState<ProjectRenameDialogState | null>(null);
@@ -550,7 +553,14 @@ export function WorkspacePage({
   const assetDataUrl = activeAssetBase64 ? `data:${activeAssetType};base64,${activeAssetBase64}` : "";
   const activeReadShare = shareLinks.find((link) => link.permission === "read" && !link.revoked_at) ?? null;
   const activeWriteShare = shareLinks.find((link) => link.permission === "write" && !link.revoked_at) ?? null;
-  const myOrganizations = organizations;
+  const myOrganizations = allOrganizations.length
+    ? allOrganizations.map((org) => ({
+        organization_id: org.id,
+        organization_name: org.name,
+        membership_role: "member",
+        joined_at: org.created_at
+      }))
+    : organizations;
   const typEntryOptions = useMemo(() => {
     const values = new Set<string>();
     for (const path of Object.keys(docs)) {
@@ -1111,6 +1121,9 @@ export function WorkspacePage({
     const accessUsersPromise = canManageProject
       ? listProjectAccessUsers(projectId).then((res) => res.users).catch(() => [])
       : Promise.resolve([]);
+    const organizationsPromise = canManageProject
+      ? listOrganizations().then((res) => res.organizations).catch(() => [])
+      : Promise.resolve([] as Organization[]);
     const responseTuple = await Promise.all([
       getProjectTree(projectId),
       getProjectSettings(projectId).catch(() => ({ entry_file_path: "main.typ" })),
@@ -1121,7 +1134,8 @@ export function WorkspacePage({
       sharePromise,
       orgAccessPromise,
       templateOrgAccessPromise,
-      accessUsersPromise
+      accessUsersPromise,
+      organizationsPromise
     ]).catch((err) => {
       if (anyCached) {
         if (!freshCached) {
@@ -1155,7 +1169,8 @@ export function WorkspacePage({
       shareRes,
       orgAccessRes,
       templateOrgAccessRes,
-      accessUsersRes
+      accessUsersRes,
+      organizationsRes
     ] = responseTuple;
     if (!treeRes.nodes.some((node) => node.kind === "file")) {
       await createProjectFile(projectId, {
@@ -1178,6 +1193,7 @@ export function WorkspacePage({
     setProjectOrgAccess(orgAccessRes);
     setProjectTemplateOrgAccess(templateOrgAccessRes);
     setProjectAccessUsers(accessUsersRes);
+    setAllOrganizations(organizationsRes);
 
     const nextDocs: Record<string, string> = {};
     for (const doc of docsRes.documents) nextDocs[doc.path] = doc.content;

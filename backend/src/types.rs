@@ -112,8 +112,25 @@ pub struct OrganizationMembership {
 }
 
 #[derive(Serialize)]
+pub struct Organization {
+    pub id: Uuid,
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+pub struct OrganizationListResponse {
+    pub organizations: Vec<Organization>,
+}
+
+#[derive(Serialize)]
 pub struct OrganizationMembershipListResponse {
     pub organizations: Vec<OrganizationMembership>,
+}
+
+#[derive(Deserialize)]
+pub struct CreateOrganizationInput {
+    pub name: String,
 }
 
 #[derive(Deserialize)]

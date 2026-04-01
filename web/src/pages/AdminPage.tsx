@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { UiButton, UiCard, UiInput, UiSelect } from "@/components/ui";
 import {
+  createOrganization,
+  listOrganizations,
   deleteOrgGroupRoleMapping,
   getAdminAuthSettings,
   listOrgGroupRoleMappings,
@@ -8,16 +10,18 @@ import {
   upsertOrgGroupRoleMapping,
   type AdminAuthSettings,
   type OrgGroupRoleMapping,
+  type Organization,
   type OrganizationMembershipRole
 } from "@/lib/api";
 
 export function AdminPage({ t }: { t: (key: string) => string }) {
-  const defaultOrgId = "00000000-0000-0000-0000-000000000001";
   const roleOptions: Array<{ value: OrganizationMembershipRole; label: string }> = [
     { value: "owner", label: "Owner" },
     { value: "member", label: "Member" }
   ];
-  const [orgId, setOrgId] = useState(defaultOrgId);
+  const [orgId, setOrgId] = useState("");
+  const [organizations, setOrganizations] = useState<Organization[]>([]);
+  const [newOrganizationName, setNewOrganizationName] = useState("");
   const [mappings, setMappings] = useState<OrgGroupRoleMapping[]>([]);
   const [groupName, setGroupName] = useState("");
   const [role, setRole] = useState<OrganizationMembershipRole>("member");
@@ -27,10 +31,11 @@ export function AdminPage({ t }: { t: (key: string) => string }) {
 
   async function refresh() {
     try {
-      const [groupMappings, authSettings] = await Promise.all([
-        listOrgGroupRoleMappings(orgId),
-        getAdminAuthSettings()
-      ]);
+      const [orgs, authSettings] = await Promise.all([listOrganizations(), getAdminAuthSettings()]);
+      const resolvedOrgId = orgId || orgs.organizations[0]?.id || "";
+      const groupMappings = resolvedOrgId ? await listOrgGroupRoleMappings(resolvedOrgId) : [];
+      setOrganizations(orgs.organizations);
+      setOrgId(resolvedOrgId);
       setMappings(groupMappings);
       setSettings(authSettings);
       setDiscoveryUrl(authSettings.oidc_issuer || "");
@@ -48,6 +53,17 @@ export function AdminPage({ t }: { t: (key: string) => string }) {
 
   useEffect(() => {
     refresh().catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    if (!orgId) return;
+    listOrgGroupRoleMappings(orgId)
+      .then((groupMappings) => {
+        setMappings(groupMappings);
+      })
+      .catch(() => {
+        setMappings([]);
+      });
   }, [orgId]);
 
   return (
@@ -149,9 +165,41 @@ export function AdminPage({ t }: { t: (key: string) => string }) {
         </UiCard>
 
         <UiCard className="card">
+          <strong>Organizations</strong>
+          <div className="toolbar">
+            <UiInput
+              value={newOrganizationName}
+              onChange={(e) => setNewOrganizationName(e.target.value)}
+              placeholder="Organization name"
+            />
+            <UiButton
+              onClick={async () => {
+                const name = newOrganizationName.trim();
+                if (!name) return;
+                await createOrganization({ name });
+                setNewOrganizationName("");
+                await refresh();
+              }}
+            >
+              Create
+            </UiButton>
+          </div>
+          <UiSelect value={orgId} onChange={(e) => setOrgId(e.target.value)} disabled={organizations.length === 0}>
+            {organizations.length === 0 ? (
+              <option value="">No organizations</option>
+            ) : (
+              organizations.map((org) => (
+                <option key={org.id} value={org.id}>
+                  {org.name}
+                </option>
+              ))
+            )}
+          </UiSelect>
+        </UiCard>
+
+        <UiCard className="card">
           <strong>OIDC Group to Organization Membership Mapping</strong>
           <div className="toolbar">
-            <UiInput value={orgId} onChange={(e) => setOrgId(e.target.value)} placeholder="Organization ID" />
             <UiInput
               value={groupName}
               onChange={(e) => setGroupName(e.target.value)}
@@ -166,11 +214,13 @@ export function AdminPage({ t }: { t: (key: string) => string }) {
             </UiSelect>
             <UiButton
               onClick={async () => {
+                if (!orgId) return;
                 if (!groupName.trim()) return;
                 await upsertOrgGroupRoleMapping(orgId, { group_name: groupName.trim(), role });
                 setGroupName("");
                 await refresh();
               }}
+              disabled={!orgId}
             >
               Save
             </UiButton>

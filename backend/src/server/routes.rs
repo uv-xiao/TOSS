@@ -20,6 +20,10 @@ pub(super) fn build_router() -> Router<AppState> {
             "/v1/profile/security/tokens/{token_id}",
             delete(revoke_personal_access_token),
         )
+        .route(
+            "/v1/organizations",
+            get(list_organizations).post(create_organization),
+        )
         .route("/v1/organizations/mine", get(list_my_organizations))
         .route("/v1/projects", get(list_projects).post(create_project))
         .route("/v1/projects/{project_id}", patch(update_project_name))

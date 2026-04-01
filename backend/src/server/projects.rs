@@ -306,6 +306,63 @@ pub(super) async fn list_my_organizations(
     Ok(Json(OrganizationMembershipListResponse { organizations }))
 }
 
+pub(super) async fn list_organizations(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<OrganizationListResponse>, StatusCode> {
+    let Some(_actor) = request_user_id(&state.db, &headers).await else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+    let rows = sqlx::query("select id, name, created_at from organizations order by name asc")
+        .fetch_all(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let organizations = rows
+        .into_iter()
+        .map(|row| Organization {
+            id: row.get("id"),
+            name: row.get("name"),
+            created_at: row.get("created_at"),
+        })
+        .collect();
+    Ok(Json(OrganizationListResponse { organizations }))
+}
+
+pub(super) async fn create_organization(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<CreateOrganizationInput>,
+) -> Result<Json<Organization>, StatusCode> {
+    let actor = ensure_site_admin(&state.db, &headers).await?;
+    let name = input.name.trim();
+    if name.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let row = sqlx::query(
+        "insert into organizations (id, name, created_at)
+         values ($1, $2, $3)
+         returning id, name, created_at",
+    )
+    .bind(Uuid::new_v4())
+    .bind(name)
+    .bind(Utc::now())
+    .fetch_one(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    write_audit(
+        &state.db,
+        Some(actor),
+        "organization.create",
+        serde_json::json!({"organization_id": row.get::<Uuid, _>("id"), "name": name}),
+    )
+    .await;
+    Ok(Json(Organization {
+        id: row.get("id"),
+        name: row.get("name"),
+        created_at: row.get("created_at"),
+    }))
+}
+
 pub(super) async fn user_organization_ids(
     db: &PgPool,
     user_id: Uuid,
@@ -338,52 +395,6 @@ pub(super) async fn user_is_org_member(
     Ok(row.is_some())
 }
 
-pub(super) async fn resolve_project_organization_id(
-    db: &PgPool,
-    user_id: Uuid,
-) -> Result<Uuid, StatusCode> {
-    if let Some(existing) = user_organization_ids(db, user_id).await?.into_iter().next() {
-        return Ok(existing);
-    }
-
-    let mut tx = db
-        .begin()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let display_name = sqlx::query("select display_name from users where id = $1")
-        .bind(user_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .map(|r| r.get::<String, _>("display_name"))
-        .unwrap_or_else(|| "User".to_string());
-
-    let now = Utc::now();
-    let org_id = Uuid::new_v4();
-    let org_name = format!("{display_name}'s Organization");
-    sqlx::query("insert into organizations (id, name, created_at) values ($1, $2, $3)")
-        .bind(org_id)
-        .bind(org_name)
-        .bind(now)
-        .execute(&mut *tx)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    sqlx::query(
-        "insert into organization_memberships (organization_id, user_id, joined_at, role)
-         values ($1, $2, $3, 'owner')",
-    )
-    .bind(org_id)
-    .bind(user_id)
-    .bind(now)
-    .execute(&mut *tx)
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    tx.commit()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(org_id)
-}
-
 pub(super) async fn create_project(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -394,14 +405,12 @@ pub(super) async fn create_project(
     };
     let id = Uuid::new_v4();
     let created_at = Utc::now();
-    let org_id = resolve_project_organization_id(&state.db, actor).await?;
     let row = sqlx::query(
-        "insert into projects (id, organization_id, owner_user_id, name, description, created_at)
-         values ($1, $2, $3, $4, $5, $6)
+        "insert into projects (id, owner_user_id, name, description, created_at)
+         values ($1, $2, $3, $4, $5)
          returning id, name, created_at, owner_user_id",
     )
     .bind(id)
-    .bind(org_id)
     .bind(actor)
     .bind(input.name)
     .bind(Option::<String>::None)
@@ -632,7 +641,6 @@ pub(super) async fn copy_project(
 
     let now = Utc::now();
     let new_project_id = Uuid::new_v4();
-    let org_id = resolve_project_organization_id(&state.db, actor).await?;
 
     struct CopiedAsset {
         id: Uuid,
@@ -693,11 +701,10 @@ pub(super) async fn copy_project(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     sqlx::query(
-        "insert into projects (id, organization_id, owner_user_id, name, description, created_at, is_template)
-         values ($1, $2, $3, $4, $5, $6, false)",
+        "insert into projects (id, owner_user_id, name, description, created_at, is_template)
+         values ($1, $2, $3, $4, $5, false)",
     )
     .bind(new_project_id)
-    .bind(org_id)
     .bind(actor)
     .bind(&name)
     .bind(Option::<String>::None)
