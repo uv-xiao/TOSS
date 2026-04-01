@@ -2467,6 +2467,12 @@ pub(super) async fn upsert_admin_auth_settings(
         .filter(|v| !v.is_empty())
         .unwrap_or("Typst Collaboration")
         .to_string();
+    let announcement = input
+        .announcement
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("")
+        .to_string();
     let anonymous_mode = input
         .anonymous_mode
         .as_deref()
@@ -2482,15 +2488,16 @@ pub(super) async fn upsert_admin_auth_settings(
     }
     sqlx::query(
         "insert into auth_settings
-         (id, allow_local_login, allow_local_registration, allow_oidc, anonymous_mode, site_name,
+         (id, allow_local_login, allow_local_registration, allow_oidc, anonymous_mode, site_name, announcement,
           oidc_issuer, oidc_client_id, oidc_client_secret, oidc_redirect_uri, oidc_groups_claim, updated_at)
-         values (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         values (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
          on conflict (id) do update
          set allow_local_login = excluded.allow_local_login,
              allow_local_registration = excluded.allow_local_registration,
              allow_oidc = excluded.allow_oidc,
              anonymous_mode = excluded.anonymous_mode,
              site_name = excluded.site_name,
+             announcement = excluded.announcement,
              oidc_issuer = excluded.oidc_issuer,
              oidc_client_id = excluded.oidc_client_id,
              oidc_client_secret = excluded.oidc_client_secret,
@@ -2503,6 +2510,7 @@ pub(super) async fn upsert_admin_auth_settings(
     .bind(input.allow_oidc)
     .bind(anonymous_mode)
     .bind(site_name)
+    .bind(announcement)
     .bind(discovery_url)
     .bind(input.oidc_client_id.map(|v| v.trim().to_string()).filter(|v| !v.is_empty()))
     .bind(
@@ -2527,7 +2535,8 @@ pub(super) async fn upsert_admin_auth_settings(
             "allow_local_registration": input.allow_local_registration,
             "allow_oidc": input.allow_oidc,
             "anonymous_mode": input.anonymous_mode,
-            "site_name": input.site_name
+            "site_name": input.site_name,
+            "announcement": input.announcement
         }),
     )
     .await;

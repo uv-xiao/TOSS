@@ -238,6 +238,7 @@ export type AuthConfig = {
   allow_oidc: boolean;
   anonymous_mode: "off" | "read_only" | "read_write_named" | string;
   site_name: string;
+  announcement: string;
   issuer: string | null;
   client_id: string | null;
   redirect_uri: string | null;
@@ -258,6 +259,7 @@ export type AdminAuthSettings = {
   allow_oidc: boolean;
   anonymous_mode: "off" | "read_only" | "read_write_named" | string;
   site_name: string;
+  announcement: string;
   oidc_issuer: string | null;
   oidc_client_id: string | null;
   oidc_client_secret: string | null;
@@ -882,6 +884,7 @@ export async function upsertAdminAuthSettings(input: {
   allow_oidc: boolean;
   anonymous_mode?: "off" | "read_only" | "read_write_named" | string;
   site_name?: string | null;
+  announcement?: string | null;
   oidc_discovery_url?: string | null;
   oidc_client_id?: string | null;
   oidc_client_secret?: string | null;

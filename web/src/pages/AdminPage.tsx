@@ -79,6 +79,11 @@ export function AdminPage({ t }: { t: (key: string) => string }) {
                 onChange={(e) => setSettings({ ...settings, site_name: e.target.value })}
                 placeholder={t("admin.siteName")}
               />
+              <UiInput
+                value={settings.announcement || ""}
+                onChange={(e) => setSettings({ ...settings, announcement: e.target.value })}
+                placeholder="Login announcement banner message (optional)"
+              />
               <label>
                 <input
                   type="checkbox"
@@ -147,6 +152,7 @@ export function AdminPage({ t }: { t: (key: string) => string }) {
                     allow_oidc: settings.allow_oidc,
                     anonymous_mode: settings.anonymous_mode || "off",
                     site_name: settings.site_name || null,
+                    announcement: settings.announcement || null,
                     oidc_discovery_url: discoveryUrl || null,
                     oidc_client_id: settings.oidc_client_id || null,
                     oidc_client_secret: settings.oidc_client_secret || null,

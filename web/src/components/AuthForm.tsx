@@ -42,6 +42,11 @@ export function AuthForm({ config, t, onSignedIn, compact = false }: AuthFormPro
 
   return (
     <div className={`auth-form ${compact ? "compact" : ""}`}>
+      {config?.announcement?.trim() && (
+        <div className="auth-announcement-banner" role="status">
+          {config.announcement.trim()}
+        </div>
+      )}
       <div className="toolbar">
         <UiButton variant={mode === "login" ? "primary" : "secondary"} onClick={() => setMode("login")}>
           {t("auth.localLogin")}
