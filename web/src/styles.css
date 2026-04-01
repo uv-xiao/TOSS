@@ -463,6 +463,11 @@ a {
   gap: 14px;
 }
 
+.auth-form {
+  display: grid;
+  gap: 12px;
+}
+
 .auth-fields {
   display: grid;
   gap: 10px;
@@ -476,10 +481,6 @@ a {
   padding: 8px 10px;
   font-size: 12px;
   font-weight: 600;
-}
-
-.auth-form .toolbar + .auth-fields {
-  margin-top: 10px;
 }
 
 .workspace-shell {
@@ -502,20 +503,11 @@ a {
 }
 
 .workspace-access-banner.with-action {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  justify-content: space-between;
+  padding-block: 9px;
 }
 
 .workspace-access-banner.with-action > span {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.workspace-access-banner.with-action .ui-button {
-  flex: 0 0 auto;
-  margin-left: 12px;
+  margin: 0;
 }
 
 .workspace-topbar-controls {
@@ -1491,21 +1483,25 @@ a {
 }
 
 .connection-warning-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
+  margin: 0;
 }
 
-.connection-warning-row > span {
-  flex: 1 1 auto;
+.ui-message-with-action {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 12px;
+  row-gap: 8px;
+}
+
+.ui-message-with-action > .message-text {
   min-width: 0;
 }
 
-.connection-warning-row .ui-button {
-  flex: 0 0 auto;
-  margin-left: 12px;
+@media (max-width: 640px) {
+  .ui-message-with-action {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .preview-runtime-status {

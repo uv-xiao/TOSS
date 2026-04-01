@@ -2084,8 +2084,8 @@ export function WorkspacePage({
   return (
     <section className="workspace-shell">
       {isAnonymousShare && (
-        <div className="workspace-access-banner with-action" role="status">
-          <span>
+        <div className="workspace-access-banner with-action ui-message-with-action" role="status">
+          <span className="message-text">
             {project?.is_template
               ? t("share.templateSavePrompt").replace("{name}", project.name)
               : t("share.savePrompt")}
@@ -2102,8 +2102,8 @@ export function WorkspacePage({
         </div>
       )}
       {project?.is_template && !isAnonymousShare && (
-        <div className="workspace-access-banner with-action template-banner" role="status">
-          <span>{`${t("settings.templateEnabled")} · ${t("projects.copyDialogHint")} ${project.name}`}</span>
+        <div className="workspace-access-banner with-action template-banner ui-message-with-action" role="status">
+          <span className="message-text">{`${t("settings.templateEnabled")} · ${t("projects.copyDialogHint")} ${project.name}`}</span>
           <UiButton
             size="sm"
             onClick={() =>
@@ -2219,8 +2219,8 @@ export function WorkspacePage({
                 <div className="error panel-inline-error">This file did not exist in this revision snapshot.</div>
               )}
               {showConnectionWarning && realtimeStatus === "disconnected" && (
-                <div className="error panel-inline-error connection-warning connection-warning-row">
-                  <span>{reconnectState.active ? reconnectCountdownText : t("workspace.connectionLost")}</span>
+                <div className="error panel-inline-error connection-warning connection-warning-row ui-message-with-action">
+                  <span className="message-text">{reconnectState.active ? reconnectCountdownText : t("workspace.connectionLost")}</span>
                   <UiButton size="sm" onClick={() => realtimeRef.current?.reconnectNow()}>
                     {t("workspace.reconnectNow")}
                   </UiButton>
