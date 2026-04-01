@@ -474,6 +474,7 @@ pub(super) async fn create_project(
         serde_json::json!({"project_id": id, "name": row.get::<String, _>("name")}),
     )
     .await;
+    mark_project_dirty(&state.db, id, Some(actor)).await;
 
     Ok(Json(Project {
         id: row.get("id"),
@@ -818,6 +819,7 @@ pub(super) async fn copy_project(
         }),
     )
     .await;
+    mark_project_dirty(&state.db, new_project_id, Some(actor)).await;
 
     Ok(Json(Project {
         id: new_project_id,
