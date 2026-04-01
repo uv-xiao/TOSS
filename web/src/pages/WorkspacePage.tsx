@@ -18,7 +18,6 @@ import {
   createProjectShareLink,
   deleteProjectFile,
   deleteProjectOrganizationAccess,
-  deleteProjectTemplateOrganizationAccess,
   downloadProjectArchive,
   getGitRepoLink,
   getProjectAssetContentCached,
@@ -33,7 +32,6 @@ import {
   listProjectAssets,
   listProjectOrganizationAccess,
   listProjectShareLinks,
-  listProjectTemplateOrganizationAccess,
   listRevisions,
   moveProjectFile,
   revokeProjectShareLink,
@@ -46,13 +44,11 @@ import {
   type ProjectAccessUser,
   type ProjectOrganizationAccess,
   type ProjectShareLink,
-  type ProjectTemplateOrganizationAccess,
   type Revision,
   updateProjectTemplate,
   upsertDocumentByPath,
   upsertProjectOrganizationAccess,
   upsertProjectSettings,
-  upsertProjectTemplateOrganizationAccess,
   uploadProjectAsset,
   uploadProjectThumbnail,
   setShareAccessContext,
@@ -252,7 +248,6 @@ export function WorkspacePage({
   const [filesDropActive, setFilesDropActive] = useState(false);
   const [shareLinks, setShareLinks] = useState<ProjectShareLink[]>([]);
   const [projectOrgAccess, setProjectOrgAccess] = useState<ProjectOrganizationAccess[]>([]);
-  const [projectTemplateOrgAccess, setProjectTemplateOrgAccess] = useState<ProjectTemplateOrganizationAccess[]>([]);
   const [projectAccessUsers, setProjectAccessUsers] = useState<ProjectAccessUser[]>([]);
   const [templateEnabled, setTemplateEnabled] = useState(false);
   const [allOrganizations, setAllOrganizations] = useState<Organization[]>([]);
@@ -283,12 +278,16 @@ export function WorkspacePage({
   const project = projects.find((p) => p.id === projectId);
   const canRequestGuestWrite =
     isAnonymousShare &&
+    !project?.is_template &&
     sharePermission === "write" &&
     anonymousMode === "read_write_named" &&
     !guestSessionToken;
   const canWrite = authUser
     ? project?.my_role !== "ReadOnly"
-    : sharePermission === "write" && anonymousMode === "read_write_named" && !!guestSessionToken;
+    : !project?.is_template &&
+      sharePermission === "write" &&
+      anonymousMode === "read_write_named" &&
+      !!guestSessionToken;
   const canManageProject = authUser
     ? project?.my_role === "Owner"
     : false;
@@ -587,6 +586,7 @@ export function WorkspacePage({
   const connectionOnline =
     apiReachable && (!realtimeRequired || realtimeStatus === "connected" || !reconnectNoticeActive);
   const showConnectionWarning = realtimeRequired && reconnectNoticeActive && !connectionOnline;
+  const projectReadOnly = !canWrite;
   const reconnectCountdownText = t("workspace.connectionLostReconnecting").replace(
     "{seconds}",
     String(Math.max(0, reconnectState.secondsRemaining))
@@ -737,7 +737,6 @@ export function WorkspacePage({
     setPdfData(null);
     setDocText("");
     setContextMenu(null);
-    setProjectTemplateOrgAccess([]);
     lastDocsSyncAtRef.current = null;
     refreshProjectData().catch((err) => {
       const message = err instanceof Error ? err.message : "Unable to load workspace";
@@ -1115,9 +1114,6 @@ export function WorkspacePage({
     }
     const sharePromise = canManageProject ? listProjectShareLinks(projectId).catch(() => []) : Promise.resolve([]);
     const orgAccessPromise = canManageProject ? listProjectOrganizationAccess(projectId).catch(() => []) : Promise.resolve([]);
-    const templateOrgAccessPromise = canManageProject
-      ? listProjectTemplateOrganizationAccess(projectId).catch(() => [])
-      : Promise.resolve([]);
     const accessUsersPromise = canManageProject
       ? listProjectAccessUsers(projectId).then((res) => res.users).catch(() => [])
       : Promise.resolve([]);
@@ -1133,7 +1129,6 @@ export function WorkspacePage({
       listProjectAssets(projectId).catch(() => ({ assets: [] })),
       sharePromise,
       orgAccessPromise,
-      templateOrgAccessPromise,
       accessUsersPromise,
       organizationsPromise
     ]).catch((err) => {
@@ -1168,7 +1163,6 @@ export function WorkspacePage({
       assetsRes,
       shareRes,
       orgAccessRes,
-      templateOrgAccessRes,
       accessUsersRes,
       organizationsRes
     ] = responseTuple;
@@ -1191,7 +1185,6 @@ export function WorkspacePage({
     setRevisionsLoadingMore(false);
     setShareLinks(shareRes);
     setProjectOrgAccess(orgAccessRes);
-    setProjectTemplateOrgAccess(templateOrgAccessRes);
     setProjectAccessUsers(accessUsersRes);
     setAllOrganizations(organizationsRes);
 
@@ -1676,12 +1669,6 @@ export function WorkspacePage({
       await updateProjectTemplate(projectId, next);
       setTemplateEnabled(next);
       await refreshProjects().catch(() => undefined);
-      if (next) {
-        const grants = await listProjectTemplateOrganizationAccess(projectId).catch(() => []);
-        setProjectTemplateOrgAccess(grants);
-      } else {
-        setProjectTemplateOrgAccess([]);
-      }
       setWorkspaceError(null);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unable to update template settings";
@@ -1702,32 +1689,6 @@ export function WorkspacePage({
       setWorkspaceError(null);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unable to remove organization access";
-      setWorkspaceError(message);
-    }
-  }
-
-  async function upsertTemplateOrgAccessGrant(organizationId: string) {
-    if (!projectId) return;
-    try {
-      await upsertProjectTemplateOrganizationAccess(projectId, organizationId);
-      const grants = await listProjectTemplateOrganizationAccess(projectId).catch(() => []);
-      setProjectTemplateOrgAccess(grants);
-      setWorkspaceError(null);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to update template access";
-      setWorkspaceError(message);
-    }
-  }
-
-  async function removeTemplateOrgAccessGrant(organizationId: string) {
-    if (!projectId) return;
-    try {
-      await deleteProjectTemplateOrganizationAccess(projectId, organizationId);
-      const grants = await listProjectTemplateOrganizationAccess(projectId).catch(() => []);
-      setProjectTemplateOrgAccess(grants);
-      setWorkspaceError(null);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to update template access";
       setWorkspaceError(message);
     }
   }
@@ -2066,19 +2027,22 @@ export function WorkspacePage({
         }}
         onToggleRevisions={toggleRevisionPanel}
         onSelectPanel={setCompactPanelView}
+        readOnly={projectReadOnly}
         t={t}
       />
     ),
     [
       collapsePanelToggles,
       compactPanelView,
+      effectiveShowFilesPanel,
       effectiveShowPreviewPanel,
       effectiveShowSettingsPanel,
       effectiveShowRevisionPanel,
       navigate,
+      project,
       projectId,
+      projectReadOnly,
       projects,
-      showFilesPanel,
       singlePanelMode,
       t
     ]
@@ -2092,9 +2056,10 @@ export function WorkspacePage({
   function handleEditorDelta(changes: Array<{ from: number; to: number; insert: string }>) {
     if (canRequestGuestWrite && !guestSessionToken) {
       setAuthModalOpen(true);
-      return;
+      return false;
     }
     applyDocumentDeltas(changes);
+    return true;
   }
 
   async function beginTemporaryGuestEditing() {
@@ -2135,8 +2100,12 @@ export function WorkspacePage({
   return (
     <section className="workspace-shell">
       {isAnonymousShare && (
-        <div className="workspace-access-banner" role="status">
-          <span>{t("share.savePrompt")}</span>
+        <div className="workspace-access-banner with-action" role="status">
+          <span>
+            {project?.is_template
+              ? t("share.templateSavePrompt").replace("{name}", project.name)
+              : t("share.savePrompt")}
+          </span>
           <UiButton
             size="sm"
             onClick={() => {
@@ -2148,12 +2117,7 @@ export function WorkspacePage({
           </UiButton>
         </div>
       )}
-      {!canWrite && !canRequestGuestWrite && (
-        <div className="workspace-access-banner" role="status">
-          {t("workspace.readOnlyProject")}
-        </div>
-      )}
-      {project?.is_template && (
+      {project?.is_template && !isAnonymousShare && (
         <div className="workspace-access-banner template-banner" role="status">
           <span>{`${t("settings.templateEnabled")} · ${t("projects.copyDialogHint")} ${project.name}`}</span>
           <UiButton
@@ -2377,7 +2341,6 @@ export function WorkspacePage({
                 templateEnabled={templateEnabled}
                 myOrganizations={myOrganizations}
                 projectOrgAccess={projectOrgAccess}
-                projectTemplateOrgAccess={projectTemplateOrgAccess}
                 projectAccessUsers={projectAccessUsers}
                 onEntryFileChange={async (path) => {
                   const updated = await upsertProjectSettings(projectId, path);
@@ -2385,8 +2348,6 @@ export function WorkspacePage({
                 }}
                 onCopyToClipboard={copyToClipboard}
                 onToggleTemplate={async () => setTemplateState(!templateEnabled)}
-                onRevokeTemplateOrgAccess={removeTemplateOrgAccessGrant}
-                onGrantTemplateOrgAccess={upsertTemplateOrgAccessGrant}
                 activeReadShare={activeReadShare}
                 activeWriteShare={activeWriteShare}
                 onCreateShare={createShare}
@@ -2565,7 +2526,9 @@ export function WorkspacePage({
         description={
           canRequestGuestWrite
             ? `${t("share.guestEditDescription")} ${project?.name || ""}.`
-            : t("share.savePrompt")
+            : isAnonymousShare && project?.is_template
+              ? t("share.templateSavePrompt").replace("{name}", project.name)
+              : t("share.savePrompt")
         }
         onClose={() => setAuthModalOpen(false)}
       >

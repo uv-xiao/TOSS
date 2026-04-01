@@ -33,6 +33,8 @@ export type EditorChange = {
   insert: string;
 };
 
+export type EditorDeltaHandlerResult = boolean | void;
+
 type RemoteCursor = {
   id: string;
   name: string;
@@ -183,7 +185,7 @@ function buildTypstLanguageSupport() {
 type Props = {
   value: string;
   onChange?: (value: string) => void;
-  onDelta?: (changes: EditorChange[]) => void;
+  onDelta?: (changes: EditorChange[]) => EditorDeltaHandlerResult;
   onCursorChange?: (cursor: { line: number; column: number }) => void;
   readOnly?: boolean;
   lineWrap?: boolean;
@@ -256,7 +258,14 @@ export function EditorPane({
               insert: inserted.toString()
             });
           });
-          if (changes.length > 0) onDeltaRef.current(changes);
+          if (changes.length > 0) {
+            const accepted = onDeltaRef.current(changes);
+            if (accepted === false) {
+              update.view.dispatch({
+                changes: update.changes.invert(update.startState.doc)
+              });
+            }
+          }
         } else if (onChangeRef.current) {
           onChangeRef.current(update.state.doc.toString());
         }

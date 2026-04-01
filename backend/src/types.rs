@@ -573,6 +573,7 @@ pub struct ResolveProjectShareLinkResponse {
     pub project_id: Uuid,
     pub project_name: String,
     pub permission: String,
+    pub is_template: bool,
     pub anonymous_mode: String,
 }
 

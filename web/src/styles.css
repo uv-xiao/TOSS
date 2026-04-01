@@ -491,6 +491,17 @@ a {
   font-weight: 600;
 }
 
+.workspace-access-banner.with-action {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.workspace-access-banner.with-action > span {
+  flex: 1;
+  min-width: 0;
+}
+
 .workspace-topbar-controls {
   display: flex;
   align-items: center;
@@ -531,6 +542,13 @@ a {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.workspace-project-readonly {
+  font-size: 12px;
+  line-height: 1;
+  color: var(--muted);
+  font-weight: 500;
 }
 
 .workspace-project-chevron {

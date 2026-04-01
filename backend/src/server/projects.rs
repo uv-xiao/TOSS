@@ -1413,7 +1413,7 @@ pub(super) async fn resolve_project_share_link(
         return Err(StatusCode::BAD_REQUEST);
     }
     let row = sqlx::query(
-        "select l.project_id, l.permission, p.name as project_name
+        "select l.project_id, l.permission, p.name as project_name, p.is_template
          from project_share_links l
          join projects p on p.id = l.project_id
          where (l.token_value = $1 or l.token_hash = $2)
@@ -1433,6 +1433,7 @@ pub(super) async fn resolve_project_share_link(
         project_id: row.get("project_id"),
         project_name: row.get("project_name"),
         permission: row.get("permission"),
+        is_template: row.get("is_template"),
         anonymous_mode: settings.anonymous_mode,
     }))
 }
@@ -1455,11 +1456,12 @@ pub(super) async fn create_temporary_share_login(
         return Err(StatusCode::FORBIDDEN);
     }
     let row = sqlx::query(
-        "select id, project_id, permission
-         from project_share_links
-         where (token_value = $1 or token_hash = $2)
-           and revoked_at is null
-           and (expires_at is null or expires_at > now())",
+        "select l.id, l.project_id, l.permission, p.is_template
+         from project_share_links l
+         join projects p on p.id = l.project_id
+         where (l.token_value = $1 or l.token_hash = $2)
+           and l.revoked_at is null
+           and (l.expires_at is null or l.expires_at > now())",
     )
     .bind(token)
     .bind(token_sha256(token))
@@ -1469,6 +1471,10 @@ pub(super) async fn create_temporary_share_login(
     let Some(row) = row else {
         return Err(StatusCode::NOT_FOUND);
     };
+    let is_template: bool = row.get("is_template");
+    if is_template {
+        return Err(StatusCode::FORBIDDEN);
+    }
     let permission: String = row.get("permission");
     if permission != "write" {
         return Err(StatusCode::FORBIDDEN);

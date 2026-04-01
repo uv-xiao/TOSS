@@ -76,6 +76,7 @@ const messages: Record<UiLocale, Record<string, string>> = {
       "This browser is set to download PDF files instead of previewing them. Use download.",
     "workspace.notEditable":
       "This file is not editable in web editor. Edit offline and sync with Git.",
+    "workspace.readOnlyTag": "(Read only)",
     "workspace.readOnlyProject":
       "You have read-only access to this project. Editing and file management are disabled.",
     "workspace.connectionLost":
@@ -113,6 +114,7 @@ const messages: Record<UiLocale, Record<string, string>> = {
     "share.joining": "Joining shared project...",
     "share.joinFailed": "Unable to join shared project.",
     "share.savePrompt": "Log in to save the project to your project list.",
+    "share.templateSavePrompt": "Log in to create your own project with {name}.",
     "share.logIn": "Log in",
     "share.guestEditTitle": "Start collaborative editing",
     "share.guestEditDescription":
@@ -261,6 +263,7 @@ const messages: Record<UiLocale, Record<string, string>> = {
     "workspace.fileLoading": "文件内容加载中。",
     "workspace.pdfPreviewUnavailable": "当前浏览器设置为下载 PDF，无法内嵌预览。请使用下载。",
     "workspace.notEditable": "该文件暂不支持网页编辑。请离线编辑后通过 Git 同步。",
+    "workspace.readOnlyTag": "（只读）",
     "workspace.readOnlyProject": "你对此项目只有只读权限。编辑和文件管理功能已禁用。",
     "workspace.connectionLost": "与服务器连接中断。恢复连接前编辑可能无法同步。",
     "workspace.connectionReconnecting": "正在重新连接协作服务器…",
@@ -296,6 +299,7 @@ const messages: Record<UiLocale, Record<string, string>> = {
     "share.joining": "正在加入共享项目…",
     "share.joinFailed": "加入共享项目失败。",
     "share.savePrompt": "登录后可将项目保存到你的项目列表。",
+    "share.templateSavePrompt": "登录后可基于 {name} 创建你自己的项目。",
     "share.logIn": "登录",
     "share.guestEditTitle": "开始协作编辑",
     "share.guestEditDescription": "请输入你的姓名以开始协作编辑",

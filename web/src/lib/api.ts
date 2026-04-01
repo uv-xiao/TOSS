@@ -292,6 +292,7 @@ export type ResolveProjectShareLinkResponse = {
   project_id: string;
   project_name: string;
   permission: SharePermission;
+  is_template: boolean;
   anonymous_mode: "off" | "read_only" | "read_write_named" | string;
 };
 

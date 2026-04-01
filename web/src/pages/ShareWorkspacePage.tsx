@@ -28,6 +28,7 @@ export function ShareWorkspacePage({
     projectId: string;
     projectName: string;
     permission: "read" | "write";
+    isTemplate: boolean;
     anonymousMode: string;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -41,6 +42,7 @@ export function ShareWorkspacePage({
           projectId: value.project_id,
           projectName: value.project_name,
           permission: value.permission,
+          isTemplate: value.is_template,
           anonymousMode: value.anonymous_mode
         });
         setError(null);
@@ -65,7 +67,7 @@ export function ShareWorkspacePage({
               owner_display_name: "",
               my_role: resolved.permission === "write" ? "ReadWrite" : "ReadOnly",
               can_read: true,
-              is_template: false,
+              is_template: resolved.isTemplate,
               has_thumbnail: false,
               created_at: new Date(0).toISOString(),
               last_edited_at: new Date().toISOString(),

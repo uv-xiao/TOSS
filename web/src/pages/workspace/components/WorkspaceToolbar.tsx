@@ -24,6 +24,7 @@ export function WorkspaceToolbar({
   onToggleSettings,
   onToggleRevisions,
   onSelectPanel,
+  readOnly,
   t
 }: {
   projectId: string;
@@ -42,6 +43,7 @@ export function WorkspaceToolbar({
   onToggleSettings: () => void;
   onToggleRevisions: () => void;
   onSelectPanel: (panel: "editor" | "files" | "preview" | "settings" | "revisions") => void;
+  readOnly: boolean;
   t: (key: string) => string;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -87,6 +89,7 @@ export function WorkspaceToolbar({
           aria-expanded={menuOpen}
         >
           <span className="workspace-project-title">{currentProject?.name ?? t("common.loading")}</span>
+          {readOnly && <span className="workspace-project-readonly">{t("workspace.readOnlyTag")}</span>}
           <ChevronDown className="workspace-project-chevron" size={14} aria-hidden />
         </button>
         {menuOpen && (

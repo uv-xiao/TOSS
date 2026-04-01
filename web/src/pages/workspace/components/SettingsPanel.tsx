@@ -3,8 +3,7 @@ import type {
   OrganizationMembership,
   ProjectAccessUser,
   ProjectOrganizationAccess,
-  ProjectShareLink,
-  ProjectTemplateOrganizationAccess
+  ProjectShareLink
 } from "@/lib/api";
 
 export function SettingsPanel({
@@ -18,13 +17,10 @@ export function SettingsPanel({
   templateEnabled,
   myOrganizations,
   projectOrgAccess,
-  projectTemplateOrgAccess,
   projectAccessUsers,
   onEntryFileChange,
   onCopyToClipboard,
   onToggleTemplate,
-  onRevokeTemplateOrgAccess,
-  onGrantTemplateOrgAccess,
   activeReadShare,
   activeWriteShare,
   onCreateShare,
@@ -46,13 +42,10 @@ export function SettingsPanel({
   templateEnabled: boolean;
   myOrganizations: OrganizationMembership[];
   projectOrgAccess: ProjectOrganizationAccess[];
-  projectTemplateOrgAccess: ProjectTemplateOrganizationAccess[];
   projectAccessUsers: ProjectAccessUser[];
   onEntryFileChange: (path: string) => Promise<void>;
   onCopyToClipboard: (controlKey: string, value: string) => Promise<void>;
   onToggleTemplate: () => Promise<void>;
-  onRevokeTemplateOrgAccess: (organizationId: string) => Promise<void>;
-  onGrantTemplateOrgAccess: (organizationId: string) => Promise<void>;
   activeReadShare: ProjectShareLink | null;
   activeWriteShare: ProjectShareLink | null;
   onCreateShare: (permission: "read" | "write") => Promise<void>;
@@ -114,44 +107,6 @@ export function SettingsPanel({
             </UiButton>
           </div>
           <small>{t("settings.templateHint")}</small>
-          {templateEnabled && (
-            <div className="card-list">
-              {myOrganizations.length > 0 ? (
-                myOrganizations.map((org) => {
-                  const granted = projectTemplateOrgAccess.some(
-                    (item) => item.organization_id === org.organization_id
-                  );
-                  return (
-                    <div className="card" key={`tpl-${org.organization_id}`}>
-                      <strong>{org.organization_name}</strong>
-                      <div className="toolbar compact-left">
-                        {granted ? (
-                          <UiButton
-                            size="sm"
-                            variant="danger"
-                            onClick={() => onRevokeTemplateOrgAccess(org.organization_id)}
-                            disabled={!canManageProject}
-                          >
-                            {t("common.revoke")}
-                          </UiButton>
-                        ) : (
-                          <UiButton
-                            size="sm"
-                            onClick={() => onGrantTemplateOrgAccess(org.organization_id)}
-                            disabled={!canManageProject}
-                          >
-                            {t("settings.templateGrant")}
-                          </UiButton>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })
-              ) : (
-                <small>{t("projects.noOrganizations")}</small>
-              )}
-            </div>
-          )}
         </div>
         <div className="settings-section">
           <strong>{t("share.title")}</strong>
@@ -269,4 +224,3 @@ export function SettingsPanel({
     </aside>
   );
 }
-
