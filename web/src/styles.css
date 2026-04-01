@@ -494,12 +494,18 @@ a {
 .workspace-access-banner.with-action {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
+  justify-content: space-between;
 }
 
 .workspace-access-banner.with-action > span {
-  flex: 1;
+  flex: 1 1 auto;
   min-width: 0;
+}
+
+.workspace-access-banner.with-action .ui-button {
+  flex: 0 0 auto;
+  margin-left: 12px;
 }
 
 .workspace-topbar-controls {
