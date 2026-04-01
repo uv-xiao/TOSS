@@ -1484,8 +1484,18 @@ a {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 12px;
   flex-wrap: wrap;
+}
+
+.connection-warning-row > span {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.connection-warning-row .ui-button {
+  flex: 0 0 auto;
+  margin-left: 12px;
 }
 
 .preview-runtime-status {

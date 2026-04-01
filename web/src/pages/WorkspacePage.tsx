@@ -2102,7 +2102,7 @@ export function WorkspacePage({
         </div>
       )}
       {project?.is_template && !isAnonymousShare && (
-        <div className="workspace-access-banner template-banner" role="status">
+        <div className="workspace-access-banner with-action template-banner" role="status">
           <span>{`${t("settings.templateEnabled")} · ${t("projects.copyDialogHint")} ${project.name}`}</span>
           <UiButton
             size="sm"
