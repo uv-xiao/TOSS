@@ -142,6 +142,26 @@ function sameStringMap(a: Record<string, string>, b: Record<string, string>) {
   return true;
 }
 
+function sameProjectNodeList(a: ProjectNode[], b: ProjectNode[]) {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const left = a[i];
+    const right = b[i];
+    if (left.path !== right.path || left.kind !== right.kind) return false;
+  }
+  return true;
+}
+
+function mergeRevisionsStable(primary: Revision[], previous: Revision[]) {
+  const merged = prependUniqueById(primary, previous);
+  if (merged.length !== previous.length) return merged;
+  for (let i = 0; i < merged.length; i += 1) {
+    if (merged[i].id !== previous[i].id) return merged;
+  }
+  return previous;
+}
+
 type WorkspacePageProps = {
   projects: Project[];
   organizations: OrganizationMembership[];
@@ -501,11 +521,17 @@ export function WorkspacePage({
 
   const compileDocuments = useMemo(() => {
     const baseDocs = { ...sourceDocs };
-    if (!isRevisionMode && hasActiveLiveDoc && activePath && activePath in baseDocs) {
+    if (
+      !isRevisionMode &&
+      hasActiveLiveDoc &&
+      realtimeDocReady &&
+      activePath &&
+      activePath in baseDocs
+    ) {
       baseDocs[activePath] = docText;
     }
     return Object.entries(baseDocs).map(([path, content]) => ({ path, content }));
-  }, [activePath, docText, hasActiveLiveDoc, isRevisionMode, sourceDocs]);
+  }, [activePath, docText, hasActiveLiveDoc, isRevisionMode, realtimeDocReady, sourceDocs]);
   const compileAssets = useMemo(
     () => Object.entries(sourceAssetBase64).map(([path, contentBase64]) => ({ path, contentBase64 })),
     [sourceAssetBase64]
@@ -860,7 +886,7 @@ export function WorkspacePage({
           if (revisionHeadSeqRef.current !== requestSeq) return;
           setApiReachable(true);
           const latest = res.revisions || [];
-          setRevisions((previous) => prependUniqueById(latest, previous));
+          setRevisions((previous) => mergeRevisionsStable(latest, previous));
         })
         .catch(() => setApiReachable(false));
     }, 8000);
@@ -970,6 +996,10 @@ export function WorkspacePage({
       return;
     }
     if (!isRevisionMode && workspaceSyncPending) return;
+    if (!isRevisionMode && hasActiveLiveDoc && !realtimeDocReady) {
+      setCompileActive(false);
+      return;
+    }
     const applyCompileOutput = (output: CompileOutput) => {
       setVectorData(output.vectorData);
       setPdfData(output.pdfData);
@@ -1046,7 +1076,9 @@ export function WorkspacePage({
     fontData,
     isRevisionMode,
     projectId,
+    realtimeDocReady,
     requiredAssetPaths,
+    hasActiveLiveDoc,
     sourceEntryFilePath,
     workspaceLoaded,
     workspaceSyncPending
@@ -1281,7 +1313,7 @@ export function WorkspacePage({
       const nextEntry =
         settings.entry_file_path || treeRes.entry_file_path || entryFilePathRef.current || "main.typ";
       const nextNodes = treeRes.nodes;
-      setNodes(nextNodes);
+      setNodes((previous) => (sameProjectNodeList(previous, nextNodes) ? previous : nextNodes));
       setEntryFilePath(nextEntry);
 
       const incomingDocs: Record<string, string> = {};
