@@ -293,6 +293,10 @@ export function WorkspacePage({
   const [previewZoom, setPreviewZoom] = useState(1);
   const [previewFitMode, setPreviewFitMode] = useState<PreviewFitMode>("page");
   const [previewSettingsHydratedProjectId, setPreviewSettingsHydratedProjectId] = useState<string | null>(null);
+  const [previewInitialAnchor, setPreviewInitialAnchor] = useState<{ xRatio: number; yRatio: number }>({
+    xRatio: 0,
+    yRatio: 0
+  });
   const [lineWrapEnabled, setLineWrapEnabled] = useState(true);
   const [jumpTarget, setJumpTarget] = useState<{ line: number; column: number; token: number } | null>(null);
   const [queuedJump, setQueuedJump] = useState<{ path: string; line: number; column: number } | null>(null);
@@ -313,6 +317,7 @@ export function WorkspacePage({
   const [copiedControl, setCopiedControl] = useState<string | null>(null);
   const assetMetaRef = useRef<Record<string, AssetMeta>>({});
   const assetBase64Ref = useRef<Record<string, string>>({});
+  const previewAnchorRef = useRef<{ xRatio: number; yRatio: number }>({ xRatio: 0, yRatio: 0 });
   const activePathRef = useRef("main.typ");
   const entryFilePathRef = useRef("main.typ");
 
@@ -566,6 +571,12 @@ export function WorkspacePage({
   );
 
   const previewPixelPerPt = pixelPerPtForZoom(previewFitMode, previewZoom);
+  const handleViewportAnchorChange = (anchor: { xRatio: number; yRatio: number }) => {
+    previewAnchorRef.current = anchor;
+    if (!projectId) return;
+    if (previewSettingsHydratedProjectId !== projectId) return;
+    persistPreviewSettings(projectId, previewFitMode, previewZoom);
+  };
   const {
     canvasPreviewRef,
     previewRenderTick,
@@ -587,7 +598,9 @@ export function WorkspacePage({
     onRenderError: (message) => {
       setCompileErrors([message]);
       setCompileDiagnostics([]);
-    }
+    },
+    initialViewportAnchor: previewInitialAnchor,
+    onViewportAnchorChange: handleViewportAnchorChange
   });
 
   const remoteCursors = useMemo(
@@ -696,20 +709,48 @@ export function WorkspacePage({
     return () => unsub();
   }, []);
 
+  const persistPreviewSettings = (targetProjectId: string, fitMode: PreviewFitMode, zoom: number) => {
+    const key = `workspace.preview.settings.${targetProjectId}`;
+    const payload = JSON.stringify({
+      fitMode,
+      zoom,
+      anchor: previewAnchorRef.current
+    });
+    window.localStorage.setItem(key, payload);
+  };
+
   useEffect(() => {
     if (!projectId) return;
     setPreviewSettingsHydratedProjectId(null);
+    previewAnchorRef.current = { xRatio: 0, yRatio: 0 };
+    setPreviewInitialAnchor({ xRatio: 0, yRatio: 0 });
     const key = `workspace.preview.settings.${projectId}`;
     const raw = window.localStorage.getItem(key);
     if (raw) {
       try {
-        const parsed = JSON.parse(raw) as { fitMode?: PreviewFitMode; zoom?: number };
+        const parsed = JSON.parse(raw) as {
+          fitMode?: PreviewFitMode;
+          zoom?: number;
+          anchor?: { xRatio?: number; yRatio?: number };
+        };
         if (parsed.fitMode === "manual" || parsed.fitMode === "page" || parsed.fitMode === "width") {
           setPreviewFitMode(parsed.fitMode);
         }
         if (typeof parsed.zoom === "number" && Number.isFinite(parsed.zoom)) {
           setPreviewZoom(clampNumber(parsed.zoom, PREVIEW_MIN_ZOOM, PREVIEW_MAX_ZOOM));
         }
+        const nextAnchor = {
+          xRatio:
+            typeof parsed.anchor?.xRatio === "number" && Number.isFinite(parsed.anchor.xRatio)
+              ? clampNumber(parsed.anchor.xRatio, 0, 1)
+              : 0,
+          yRatio:
+            typeof parsed.anchor?.yRatio === "number" && Number.isFinite(parsed.anchor.yRatio)
+              ? clampNumber(parsed.anchor.yRatio, 0, 1)
+              : 0
+        };
+        previewAnchorRef.current = nextAnchor;
+        setPreviewInitialAnchor(nextAnchor);
       } catch {
         // Ignore malformed local preference payload.
       }
@@ -720,12 +761,7 @@ export function WorkspacePage({
   useEffect(() => {
     if (!projectId) return;
     if (previewSettingsHydratedProjectId !== projectId) return;
-    const key = `workspace.preview.settings.${projectId}`;
-    const payload = JSON.stringify({
-      fitMode: previewFitMode,
-      zoom: previewZoom
-    });
-    window.localStorage.setItem(key, payload);
+    persistPreviewSettings(projectId, previewFitMode, previewZoom);
   }, [previewFitMode, previewZoom, projectId, previewSettingsHydratedProjectId]);
 
   useEffect(() => {
