@@ -1,10 +1,11 @@
 import { UiButton } from "@/components/ui";
-import { ChevronDown, Eye, FileText, FolderOpen, History, LayoutGrid, Settings } from "lucide-react";
+import { ChevronDown, Eye, FileText, FolderOpen, History, LayoutGrid, LogOut, Settings, UserRound } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 type ToolbarProject = {
   id: string;
   name: string;
+  archived?: boolean;
 };
 
 export function WorkspaceToolbar({
@@ -25,6 +26,10 @@ export function WorkspaceToolbar({
   onToggleSettings,
   onToggleRevisions,
   onSelectPanel,
+  showAccountControlsInViewMenu,
+  accountDisplayName,
+  onOpenProfile,
+  onLogout,
   readOnly,
   t
 }: {
@@ -45,6 +50,10 @@ export function WorkspaceToolbar({
   onToggleSettings: () => void;
   onToggleRevisions: () => void;
   onSelectPanel: (panel: "editor" | "files" | "preview" | "settings" | "revisions") => void;
+  showAccountControlsInViewMenu: boolean;
+  accountDisplayName: string | null;
+  onOpenProfile: () => void;
+  onLogout: () => void;
   readOnly: boolean;
   t: (key: string) => string;
 }) {
@@ -53,7 +62,10 @@ export function WorkspaceToolbar({
   const menuRef = useRef<HTMLDivElement | null>(null);
   const viewMenuRef = useRef<HTMLDivElement | null>(null);
   const currentProject = useMemo(() => projects.find((item) => item.id === projectId) ?? null, [projectId, projects]);
-  const otherProjects = useMemo(() => projects.filter((item) => item.id !== projectId), [projectId, projects]);
+  const otherProjects = useMemo(
+    () => projects.filter((item) => item.id !== projectId && !item.archived),
+    [projectId, projects]
+  );
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -213,6 +225,39 @@ export function WorkspaceToolbar({
                   </span>
                   <span>{t("workspace.revisions")}</span>
                 </button>
+                {showAccountControlsInViewMenu && (
+                  <>
+                    <div className="workspace-view-menu-divider" aria-hidden />
+                    <button
+                      type="button"
+                      className="workspace-view-menu-item"
+                      role="menuitem"
+                      onClick={() => {
+                        setViewMenuOpen(false);
+                        onOpenProfile();
+                      }}
+                    >
+                      <span className="view-item-icon" aria-hidden>
+                        <UserRound size={14} />
+                      </span>
+                      <span>{accountDisplayName || t("nav.profile")}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="workspace-view-menu-item"
+                      role="menuitem"
+                      onClick={() => {
+                        setViewMenuOpen(false);
+                        onLogout();
+                      }}
+                    >
+                      <span className="view-item-icon" aria-hidden>
+                        <LogOut size={14} />
+                      </span>
+                      <span>{t("nav.logout")}</span>
+                    </button>
+                  </>
+                )}
               </div>
             )}
           </div>

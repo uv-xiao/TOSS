@@ -12,6 +12,7 @@ type ShareWorkspacePageProps = {
   t: (key: string) => string;
   onTopbarChange: (content: ReactNode | null) => void;
   onSignedIn: () => Promise<void>;
+  onLogoutFromWorkspace: () => Promise<void>;
 };
 
 export function ShareWorkspacePage({
@@ -21,7 +22,8 @@ export function ShareWorkspacePage({
   refreshProjects,
   t,
   onTopbarChange,
-  onSignedIn
+  onSignedIn,
+  onLogoutFromWorkspace
 }: ShareWorkspacePageProps) {
   const { token = "" } = useParams();
   const [resolved, setResolved] = useState<{
@@ -115,6 +117,7 @@ export function ShareWorkspacePage({
       sharePermission={resolved.permission}
       anonymousMode={resolved.anonymousMode}
       onSignInFromWorkspace={onSignedIn}
+      onLogoutFromWorkspace={onLogoutFromWorkspace}
     />
   );
 }

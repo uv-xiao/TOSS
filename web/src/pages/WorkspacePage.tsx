@@ -124,6 +124,7 @@ type WorkspacePageProps = {
   sharePermission?: "read" | "write" | null;
   anonymousMode?: string | null;
   onSignInFromWorkspace?: () => Promise<void>;
+  onLogoutFromWorkspace?: () => Promise<void>;
 };
 
 export function WorkspacePage({
@@ -138,7 +139,8 @@ export function WorkspacePage({
   shareToken,
   sharePermission,
   anonymousMode,
-  onSignInFromWorkspace
+  onSignInFromWorkspace,
+  onLogoutFromWorkspace
 }: WorkspacePageProps) {
   const { projectId: routeProjectId = "" } = useParams();
   const projectId = projectIdOverride || routeProjectId;
@@ -294,6 +296,7 @@ export function WorkspacePage({
   const canViewShareLinks = !!authUser && !isAnonymousShare;
   const collapsePanelToggles = viewportWidth <= 1320;
   const singlePanelMode = viewportWidth <= 980;
+  const showAccountControlsInViewMenu = viewportWidth <= 1180;
   const effectiveShowFilesPanel = singlePanelMode ? compactPanelView === "files" : showFilesPanel;
   const effectiveShowPreviewPanel = singlePanelMode ? compactPanelView === "preview" : showPreviewPanel;
   const effectiveShowSettingsPanel = singlePanelMode ? compactPanelView === "settings" : showProjectSettingsPanel;
@@ -2021,6 +2024,14 @@ export function WorkspacePage({
         }}
         onToggleRevisions={toggleRevisionPanel}
         onSelectPanel={setCompactPanelView}
+        showAccountControlsInViewMenu={showAccountControlsInViewMenu}
+        accountDisplayName={authUser?.display_name ?? null}
+        onOpenProfile={() => navigate("/profile")}
+        onLogout={async () => {
+          if (onLogoutFromWorkspace) {
+            await onLogoutFromWorkspace();
+          }
+        }}
         readOnly={projectReadOnly}
         t={t}
       />
@@ -2038,7 +2049,9 @@ export function WorkspacePage({
       projectId,
       projectReadOnly,
       projects,
+      showAccountControlsInViewMenu,
       singlePanelMode,
+      onLogoutFromWorkspace,
       t
     ]
   );

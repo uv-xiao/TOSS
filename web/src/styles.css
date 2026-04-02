@@ -570,10 +570,13 @@ a {
   top: calc(100% + 6px);
   left: 50%;
   transform: translateX(-50%);
+  isolation: isolate;
   min-width: 280px;
   max-width: 420px;
   max-height: 340px;
   overflow: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: #fff;
@@ -582,6 +585,15 @@ a {
   display: grid;
   gap: 3px;
   z-index: 80;
+}
+
+.workspace-project-menu::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: #fff;
+  z-index: -1;
 }
 
 .workspace-project-menu-item {
@@ -633,6 +645,12 @@ a {
   display: grid;
   gap: 4px;
   z-index: 80;
+}
+
+.workspace-view-menu-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 2px;
 }
 
 .workspace-view-menu-item {

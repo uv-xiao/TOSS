@@ -230,6 +230,7 @@ export function App() {
                 t={t}
                 onTopbarChange={setWorkspaceTopbar}
                 onSignInFromWorkspace={completeSignIn}
+                onLogoutFromWorkspace={handleLogout}
               />
             }
           />
@@ -244,6 +245,7 @@ export function App() {
                 t={t}
                 onTopbarChange={setWorkspaceTopbar}
                 onSignedIn={completeSignIn}
+                onLogoutFromWorkspace={handleLogout}
               />
             }
           />
