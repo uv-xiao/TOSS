@@ -1,5 +1,6 @@
 import {
   startTransition,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -632,7 +633,9 @@ export function WorkspacePage({
     ? Object.prototype.hasOwnProperty.call(revisionDocs, activePath)
     : hasActiveLiveDoc;
   const isActiveEditableTextDoc = isActiveTextDoc && activePathIsTextFile;
-  const currentEditorLanguage = editorLanguageForPath(activePath);
+  const inferredEditorLanguage = editorLanguageForPath(activePath);
+  const currentEditorLanguage =
+    inferredEditorLanguage === "typst" && docText.length > 60_000 ? "plain" : inferredEditorLanguage;
   const previewPercent = Math.round(previewZoom * 100);
   const activeFileName = activePath.split("/").filter(Boolean).at(-1) || activePath;
   const realtimeRequired = isActiveEditableTextDoc && !isRevisionMode;
@@ -2121,14 +2124,25 @@ export function WorkspacePage({
     return () => onTopbarChange(null);
   }, [onTopbarChange, workspaceTopbarControls]);
 
-  function handleEditorDelta(changes: Array<{ from: number; to: number; insert: string }>) {
+  const handleEditorDelta = useCallback((changes: Array<{ from: number; to: number; insert: string }>) => {
     if (canRequestGuestWrite && !guestSessionToken) {
       setAuthModalOpen(true);
       return false;
     }
     applyDocumentDeltas(changes);
     return true;
-  }
+  }, [applyDocumentDeltas, canRequestGuestWrite, guestSessionToken]);
+
+  const handleEditorCursorChange = useCallback(
+    (cursor: { line: number; column: number }) => {
+      realtimeRef.current?.sendCursor(cursor);
+    },
+    [realtimeRef]
+  );
+
+  const handleEditorJumpHandled = useCallback(() => {
+    setJumpTarget(null);
+  }, []);
 
   async function beginTemporaryGuestEditing() {
     if (!shareToken || !projectId) return;
@@ -2275,7 +2289,7 @@ export function WorkspacePage({
                     editorInstanceKey={`${activePath}:${activeRevisionId ?? "live"}:${currentEditorLanguage}`}
                     value={docText}
                     onDelta={handleEditorDelta}
-                    onCursorChange={(cursor) => realtimeRef.current?.sendCursor(cursor)}
+                    onCursorChange={handleEditorCursorChange}
                     readOnly={
                       isRevisionMode ||
                       (!canWrite && !canRequestGuestWrite) ||
@@ -2285,7 +2299,7 @@ export function WorkspacePage({
                     language={currentEditorLanguage}
                     remoteCursors={remoteCursors}
                     jumpTo={jumpTarget}
-                    onJumpHandled={() => setJumpTarget(null)}
+                    onJumpHandled={handleEditorJumpHandled}
                   />
                 </div>
               ) : (
