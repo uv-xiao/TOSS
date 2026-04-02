@@ -34,8 +34,16 @@ npm run build
 ```
 
 `npm run build` now runs `sync:typst-assets` first, which stages Typst default text
-font assets into `web/public/vendor/typst-assets/fonts` from a pinned Typst assets
-version (`v0.13.1`) and serves them on the same origin (no jsDelivr runtime fetch).
+font assets into `web/public/vendor/typst-assets/fonts` from a Typst-assets git tag
+resolved from the installed compiler version (with fallback). The script caches fonts
+under `web/.cache/typst-assets/<tag>/...` and writes a local manifest, so repeated
+builds do not re-download once synced.
+
+Optional override:
+
+```bash
+TYPST_ASSETS_TAG=v0.13.1 npm run build --prefix web
+```
 
 ### 2. Start backend monolith
 
