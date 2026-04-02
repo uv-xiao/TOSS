@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { ArrowLeft } from "lucide-react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { UiButton } from "@/components/ui";
@@ -107,14 +107,14 @@ export function App() {
   const firstProject = projects.find((project) => !project.archived)?.id ?? projects[0]?.id;
   const siteName = authConfig?.site_name?.trim() || t("brand.name");
 
-  async function handleLogout() {
+  const handleLogout = useCallback(async () => {
     await logout();
     setAuthUser(null);
     setProjects([]);
     setOrganizations([]);
-  }
+  }, []);
 
-  async function refreshProjects() {
+  const refreshProjects = useCallback(async () => {
     if (!authUser) return;
     const [next, orgs, adminAccess] = await Promise.all([
       listProjects({ includeArchived: true }),
@@ -124,7 +124,7 @@ export function App() {
     setProjects(next.projects);
     setOrganizations(orgs.organizations);
     setHasAdminAccess(adminAccess);
-  }
+  }, [authUser]);
 
   if (authLoading) return <main className="loading">Loading...</main>;
 
