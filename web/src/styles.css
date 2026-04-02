@@ -1218,6 +1218,17 @@ a {
   min-height: 200px;
 }
 
+.preview-runtime-overlay {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  top: 10px;
+  z-index: 5;
+  display: grid;
+  gap: 8px;
+  pointer-events: none;
+}
+
 .preview-stale-overlay,
 .preview-empty-error {
   position: absolute;
@@ -1534,10 +1545,13 @@ a {
   justify-content: space-between;
   gap: 12px;
   padding: 8px 10px;
-  border-bottom: 1px solid var(--border);
-  background: #ecf4ff;
+  border: 1px solid #c9dbef;
+  border-radius: 8px;
+  background: rgba(236, 244, 255, 0.94);
+  box-shadow: 0 3px 12px rgba(31, 95, 140, 0.16);
   color: #274f74;
   font-size: 12px;
+  pointer-events: none;
 }
 
 .panel-inline-error.diagnostics {

@@ -173,42 +173,44 @@ export function PreviewPanel({
         </div>
       </div>
       <div className="panel-content flush preview-panel-content">
-        {workspaceSyncPending && (
-          <div className="preview-runtime-status">
-            <strong>{t("preview.loadingProject")}</strong>
-          </div>
-        )}
-        {assetHydrationProgress.active && (
-          <div className="preview-runtime-status">
-            <strong>
-              {t("preview.loadingProjectAssets")
-                .replace("{loaded}", String(assetHydrationProgress.loaded))
-                .replace("{total}", String(assetHydrationProgress.total))}
-            </strong>
-            <span>
-              {assetHydrationProgress.totalBytes > 0
-                ? `${Math.round((100 * assetHydrationProgress.loadedBytes) / assetHydrationProgress.totalBytes)}%`
-                : `${assetHydrationProgress.loaded}/${assetHydrationProgress.total}`}
-            </span>
-          </div>
-        )}
-        {(compileActive || previewRendering) && (
-          <div className="preview-runtime-status">
-            <strong>
-              {typstRuntimeStatus.stage === "downloading-compiler"
-                ? t("preview.loadingCompiler")
-                : t("preview.compiling")}
-            </strong>
-            {typstRuntimeStatus.stage === "downloading-compiler" && (
-              <span>
-                {typstRuntimeStatus.totalBytes && typstRuntimeStatus.totalBytes > 0
-                  ? `${Math.round((100 * (typstRuntimeStatus.loadedBytes || 0)) / typstRuntimeStatus.totalBytes)}%`
-                  : `${Math.round((typstRuntimeStatus.loadedBytes || 0) / 1024)} KB`}
-              </span>
+        <div className="preview-stage">
+          <div className="preview-runtime-overlay" aria-live="polite">
+            {workspaceSyncPending && (
+              <div className="preview-runtime-status">
+                <strong>{t("preview.loadingProject")}</strong>
+              </div>
+            )}
+            {assetHydrationProgress.active && (
+              <div className="preview-runtime-status">
+                <strong>
+                  {t("preview.loadingProjectAssets")
+                    .replace("{loaded}", String(assetHydrationProgress.loaded))
+                    .replace("{total}", String(assetHydrationProgress.total))}
+                </strong>
+                <span>
+                  {assetHydrationProgress.totalBytes > 0
+                    ? `${Math.round((100 * assetHydrationProgress.loadedBytes) / assetHydrationProgress.totalBytes)}%`
+                    : `${assetHydrationProgress.loaded}/${assetHydrationProgress.total}`}
+                </span>
+              </div>
+            )}
+            {(compileActive || previewRendering) && (
+              <div className="preview-runtime-status">
+                <strong>
+                  {typstRuntimeStatus.stage === "downloading-compiler"
+                    ? t("preview.loadingCompiler")
+                    : t("preview.compiling")}
+                </strong>
+                {typstRuntimeStatus.stage === "downloading-compiler" && (
+                  <span>
+                    {typstRuntimeStatus.totalBytes && typstRuntimeStatus.totalBytes > 0
+                      ? `${Math.round((100 * (typstRuntimeStatus.loadedBytes || 0)) / typstRuntimeStatus.totalBytes)}%`
+                      : `${Math.round((typstRuntimeStatus.loadedBytes || 0) / 1024)} KB`}
+                  </span>
+                )}
+              </div>
             )}
           </div>
-        )}
-        <div className="preview-stage">
           <div
             ref={canvasPreviewRef}
             className={`pdf-frame preview-fit-${previewFitMode} ${previewIsPanning ? "is-panning" : ""}`}

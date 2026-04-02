@@ -74,6 +74,7 @@ export function usePreviewCanvas({
   const previewFitModeRef = useRef(previewFitMode);
   const previewZoomRef = useRef(previewZoom);
   const lastRenderSignatureRef = useRef<string>("");
+  const viewportAnchorRef = useRef<PreviewViewportAnchor>({ xRatio: 0.5, yRatio: 0.5 });
   const [previewRenderTick, setPreviewRenderTick] = useState(0);
   const [previewIsPanning, setPreviewIsPanning] = useState(false);
   const [previewRendering, setPreviewRendering] = useState(false);
@@ -137,7 +138,7 @@ export function usePreviewCanvas({
     const frame = canvasPreviewRef.current;
     if (!frame) return;
     syncPreviewScrollbarWidth(frame);
-    const preRenderAnchor = captureViewportAnchor(frame);
+    viewportAnchorRef.current = captureViewportAnchor(frame);
     if (!vectorData) {
       lastRenderSignatureRef.current = "";
       setPreviewRendering(false);
@@ -171,7 +172,8 @@ export function usePreviewCanvas({
           const zoom = fitMode === "manual" ? currentZoom : deriveFitZoom(frame, pages, fitMode);
           applyPreviewZoom(frame, zoom);
           syncPreviewScrollbarWidth(frame);
-          restoreViewportAnchor(frame, preRenderAnchor);
+          restoreViewportAnchor(frame, viewportAnchorRef.current);
+          viewportAnchorRef.current = captureViewportAnchor(frame);
           if (fitMode !== "manual" && Math.abs(zoom - currentZoom) > FIT_ZOOM_SYNC_EPSILON) {
             setPreviewZoom(zoom);
           }
@@ -205,10 +207,12 @@ export function usePreviewCanvas({
     const pages = frame.querySelector(".pdf-pages") as HTMLElement | null;
     if (!pages) return;
     const anchor = captureViewportAnchor(frame);
+    viewportAnchorRef.current = anchor;
     const zoom = previewFitMode === "manual" ? previewZoom : deriveFitZoom(frame, pages, previewFitMode);
     applyPreviewZoom(frame, zoom);
     syncPreviewScrollbarWidth(frame);
-    restoreViewportAnchor(frame, anchor);
+    restoreViewportAnchor(frame, viewportAnchorRef.current);
+    viewportAnchorRef.current = captureViewportAnchor(frame);
     if (previewFitMode !== "manual" && Math.abs(zoom - previewZoom) > FIT_ZOOM_SYNC_EPSILON) {
       setPreviewZoom(zoom);
     }
@@ -223,11 +227,12 @@ export function usePreviewCanvas({
       syncPreviewScrollbarWidth(frame);
       const pages = frame.querySelector(".pdf-pages") as HTMLElement | null;
       if (!pages || previewFitMode === "manual") return;
-      const anchor = captureViewportAnchor(frame);
+      viewportAnchorRef.current = captureViewportAnchor(frame);
       const zoom = deriveFitZoom(frame, pages, previewFitMode);
       applyPreviewZoom(frame, zoom);
       syncPreviewScrollbarWidth(frame);
-      restoreViewportAnchor(frame, anchor);
+      restoreViewportAnchor(frame, viewportAnchorRef.current);
+      viewportAnchorRef.current = captureViewportAnchor(frame);
       setPreviewZoom((current) =>
         Math.abs(current - zoom) > FIT_ZOOM_SYNC_EPSILON ? zoom : current
       );
@@ -239,8 +244,12 @@ export function usePreviewCanvas({
   useEffect(() => {
     const frame = canvasPreviewRef.current;
     if (!frame) return;
-    const onScroll = () => refreshPageIndicator(frame);
+    const onScroll = () => {
+      viewportAnchorRef.current = captureViewportAnchor(frame);
+      refreshPageIndicator(frame);
+    };
     frame.addEventListener("scroll", onScroll, { passive: true });
+    viewportAnchorRef.current = captureViewportAnchor(frame);
     refreshPageIndicator(frame);
     return () => frame.removeEventListener("scroll", onScroll);
   }, [previewRenderTick]);
@@ -254,11 +263,12 @@ export function usePreviewCanvas({
       syncPreviewScrollbarWidth(frame);
       const pages = frame.querySelector(".pdf-pages") as HTMLElement | null;
       if (!pages) return;
-      const anchor = captureViewportAnchor(frame);
+      viewportAnchorRef.current = captureViewportAnchor(frame);
       const zoom = deriveFitZoom(frame, pages, previewFitMode);
       applyPreviewZoom(frame, zoom);
       syncPreviewScrollbarWidth(frame);
-      restoreViewportAnchor(frame, anchor);
+      restoreViewportAnchor(frame, viewportAnchorRef.current);
+      viewportAnchorRef.current = captureViewportAnchor(frame);
       setPreviewZoom((current) =>
         Math.abs(current - zoom) > FIT_ZOOM_SYNC_EPSILON ? zoom : current
       );
@@ -311,6 +321,7 @@ export function usePreviewCanvas({
     const desiredTop = target.offsetTop - Math.max(0, (frame.clientHeight - target.clientHeight) / 2);
     const maxTop = Math.max(0, frame.scrollHeight - frame.clientHeight);
     frame.scrollTop = Math.min(maxTop, Math.max(0, desiredTop));
+    viewportAnchorRef.current = captureViewportAnchor(frame);
     refreshPageIndicator(frame);
   }
 
