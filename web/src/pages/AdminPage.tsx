@@ -29,14 +29,22 @@ export function AdminPage({ t }: { t: (key: string) => string }) {
   const [discoveryUrl, setDiscoveryUrl] = useState("");
   const [error, setError] = useState<string | null>(null);
 
+  async function refreshMappings(targetOrgId: string) {
+    if (!targetOrgId) {
+      setMappings([]);
+      return;
+    }
+    const groupMappings = await listOrgGroupRoleMappings(targetOrgId);
+    setMappings(groupMappings);
+  }
+
   async function refresh() {
     try {
       const [orgs, authSettings] = await Promise.all([listOrganizations(), getAdminAuthSettings()]);
       const resolvedOrgId = orgId || orgs.organizations[0]?.id || "";
-      const groupMappings = resolvedOrgId ? await listOrgGroupRoleMappings(resolvedOrgId) : [];
       setOrganizations(orgs.organizations);
       setOrgId(resolvedOrgId);
-      setMappings(groupMappings);
+      await refreshMappings(resolvedOrgId);
       setSettings(authSettings);
       setDiscoveryUrl(authSettings.oidc_issuer || "");
       setError(null);
@@ -57,14 +65,49 @@ export function AdminPage({ t }: { t: (key: string) => string }) {
 
   useEffect(() => {
     if (!orgId) return;
-    listOrgGroupRoleMappings(orgId)
-      .then((groupMappings) => {
-        setMappings(groupMappings);
-      })
+    refreshMappings(orgId)
       .catch(() => {
         setMappings([]);
       });
   }, [orgId]);
+
+  async function saveAuthSettings() {
+    if (!settings) return;
+    const updated = await upsertAdminAuthSettings({
+      allow_local_login: settings.allow_local_login,
+      allow_local_registration: settings.allow_local_registration,
+      allow_oidc: settings.allow_oidc,
+      anonymous_mode: settings.anonymous_mode || "off",
+      site_name: settings.site_name || null,
+      announcement: settings.announcement || null,
+      oidc_discovery_url: discoveryUrl || null,
+      oidc_client_id: settings.oidc_client_id || null,
+      oidc_client_secret: settings.oidc_client_secret || null,
+      oidc_redirect_uri: settings.oidc_redirect_uri || null,
+      oidc_groups_claim: settings.oidc_groups_claim || "groups"
+    });
+    setSettings(updated);
+  }
+
+  async function createOrganizationAction() {
+    const name = newOrganizationName.trim();
+    if (!name) return;
+    await createOrganization({ name });
+    setNewOrganizationName("");
+    await refresh();
+  }
+
+  async function saveMapping() {
+    if (!orgId || !groupName.trim()) return;
+    await upsertOrgGroupRoleMapping(orgId, { group_name: groupName.trim(), role });
+    setGroupName("");
+    await refresh();
+  }
+
+  async function removeMapping(group: string) {
+    await deleteOrgGroupRoleMapping(orgId, group);
+    await refresh();
+  }
 
   return (
     <section className="page">
@@ -144,23 +187,7 @@ export function AdminPage({ t }: { t: (key: string) => string }) {
                 placeholder="OIDC groups claim"
               />
               <UiButton
-                onClick={async () => {
-                  if (!settings) return;
-                  const updated = await upsertAdminAuthSettings({
-                    allow_local_login: settings.allow_local_login,
-                    allow_local_registration: settings.allow_local_registration,
-                    allow_oidc: settings.allow_oidc,
-                    anonymous_mode: settings.anonymous_mode || "off",
-                    site_name: settings.site_name || null,
-                    announcement: settings.announcement || null,
-                    oidc_discovery_url: discoveryUrl || null,
-                    oidc_client_id: settings.oidc_client_id || null,
-                    oidc_client_secret: settings.oidc_client_secret || null,
-                    oidc_redirect_uri: settings.oidc_redirect_uri || null,
-                    oidc_groups_claim: settings.oidc_groups_claim || "groups"
-                  });
-                  setSettings(updated);
-                }}
+                onClick={saveAuthSettings}
               >
                 Save Auth Settings
               </UiButton>
@@ -179,13 +206,7 @@ export function AdminPage({ t }: { t: (key: string) => string }) {
               placeholder="Organization name"
             />
             <UiButton
-              onClick={async () => {
-                const name = newOrganizationName.trim();
-                if (!name) return;
-                await createOrganization({ name });
-                setNewOrganizationName("");
-                await refresh();
-              }}
+              onClick={createOrganizationAction}
             >
               Create
             </UiButton>
@@ -219,13 +240,7 @@ export function AdminPage({ t }: { t: (key: string) => string }) {
               ))}
             </UiSelect>
             <UiButton
-              onClick={async () => {
-                if (!orgId) return;
-                if (!groupName.trim()) return;
-                await upsertOrgGroupRoleMapping(orgId, { group_name: groupName.trim(), role });
-                setGroupName("");
-                await refresh();
-              }}
+              onClick={saveMapping}
               disabled={!orgId}
             >
               Save
@@ -237,10 +252,7 @@ export function AdminPage({ t }: { t: (key: string) => string }) {
                 <strong>{mapping.group_name}</strong>
                 <span>{roleOptions.find((option) => option.value === mapping.role)?.label ?? mapping.role}</span>
                 <UiButton
-                  onClick={async () => {
-                    await deleteOrgGroupRoleMapping(orgId, mapping.group_name);
-                    await refresh();
-                  }}
+                  onClick={() => removeMapping(mapping.group_name)}
                 >
                   Remove
                 </UiButton>

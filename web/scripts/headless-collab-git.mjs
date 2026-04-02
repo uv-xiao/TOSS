@@ -231,14 +231,13 @@ async function main() {
   const owner = await registerOrLogin(ownerEmail, ownerPassword, "Git Owner");
   const collaborator = await registerOrLogin(collaboratorEmail, collaboratorPassword, "Git Collaborator");
   const project = await bearerApi("POST", "/v1/projects", owner.sessionToken, {
-    name: `Git Test ${runId}`,
-    description: "Headless collab git test project"
+    name: `Git Test ${runId}`
   });
   const projectId = project.id;
-  await bearerApi("POST", `/v1/projects/${projectId}/roles`, owner.sessionToken, {
-    user_id: collaborator.userId,
-    role: "Student"
+  const writeShare = await bearerApi("POST", `/v1/projects/${projectId}/share-links`, owner.sessionToken, {
+    permission: "write"
   });
+  await bearerApi("POST", `/v1/share/${encodeURIComponent(writeShare.token)}/join`, collaborator.sessionToken);
   await bearerApi(
     "PUT",
     `/v1/projects/${projectId}/documents/by-path/${encodeURIComponent("main.typ")}`,

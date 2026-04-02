@@ -9,8 +9,7 @@ import {
   type ReactNode
 } from "react";
 import { Navigate, useNavigate, useParams } from "react-router-dom";
-import { EditorPane } from "@/components/EditorPane";
-import { UiButton, UiDialog, UiInput } from "@/components/ui";
+import { UiButton } from "@/components/ui";
 import {
   getAuthMe,
   copyProject,
@@ -52,7 +51,6 @@ import {
   setShareAccessContext,
   type AuthConfig
 } from "@/lib/api";
-import { AuthForm } from "@/components/AuthForm";
 import { loadProjectSnapshotFromCache, saveProjectSnapshotToCache } from "@/lib/projectCache";
 import {
   compileTypstClientSide,
@@ -62,15 +60,37 @@ import {
   type TypstRuntimeStatus
 } from "@/lib/typst";
 import { FileTreePanel } from "@/pages/workspace/components/FileTreePanel";
+import { EditorPanel } from "@/pages/workspace/components/EditorPanel";
 import { PreviewPanel } from "@/pages/workspace/components/PreviewPanel";
 import { RevisionsPanel } from "@/pages/workspace/components/RevisionsPanel";
 import { SettingsPanel } from "@/pages/workspace/components/SettingsPanel";
-import { UnsupportedFilePane } from "@/pages/workspace/components/UnsupportedFilePane";
+import { WorkspaceAccessBanner } from "@/pages/workspace/components/WorkspaceAccessBanner";
+import { WorkspaceOverlays } from "@/pages/workspace/components/WorkspaceOverlays";
 import { WorkspaceToolbar } from "@/pages/workspace/components/WorkspaceToolbar";
 import { usePreviewCanvas } from "@/pages/workspace/hooks/usePreviewCanvas";
 import { useProjectTree } from "@/pages/workspace/hooks/useProjectTree";
 import { useRealtimeDoc } from "@/pages/workspace/hooks/useRealtimeDoc";
 import { useWorkspaceLayout } from "@/pages/workspace/hooks/useWorkspaceLayout";
+import {
+  deriveWorkspacePermissions,
+  formatAccessSource,
+  formatAccessType,
+  formatRoleLabel
+} from "@/pages/workspace/access";
+import {
+  createAssetHydrationProgressState,
+  createRevisionLoadingState
+} from "@/pages/workspace/state";
+import { applyRevisionTransfer } from "@/pages/workspace/revisions";
+import {
+  mergeRevisionsStable,
+  sameAssetMeta,
+  sameAssetMetaMap,
+  sameProjectNodeList,
+  sameStringMap
+} from "@/pages/workspace/equality";
+import { mapAssetMetaByPath, mapDocumentsByPath } from "@/pages/workspace/mappers";
+import { collectUploadCandidates, type UploadCandidate } from "@/pages/workspace/uploads";
 import type { AssetMeta, ContextMenuState, PathDialogState, PreviewFitMode, ProjectNode } from "@/pages/workspace/types";
 import {
   buildCompileInputKey,
@@ -92,16 +112,10 @@ import {
   pickWorkspaceOpenPath,
   pixelPerPtForZoom,
   presenceColor,
-  prependUniqueById,
   PREVIEW_MAX_ZOOM,
   PREVIEW_MIN_ZOOM
 } from "@/pages/workspace/utils";
 import type { ProjectCopyDialogState } from "@/types/project-ui";
-
-type UploadCandidate = {
-  relativePath: string;
-  file: File;
-};
 
 type ProjectRenameDialogState = {
   projectId: string;
@@ -111,55 +125,8 @@ type ProjectRenameDialogState = {
 
 const REVISION_PAGE_SIZE = 40;
 
-function sameAssetMeta(a: AssetMeta | undefined, b: AssetMeta | undefined) {
-  if (!a || !b) return a === b;
-  return (
-    a.id === b.id &&
-    a.objectKey === b.objectKey &&
-    a.contentType === b.contentType &&
-    a.sizeBytes === b.sizeBytes &&
-    a.createdAt === b.createdAt
-  );
-}
-
-function sameAssetMetaMap(a: Record<string, AssetMeta>, b: Record<string, AssetMeta>) {
-  const aKeys = Object.keys(a);
-  const bKeys = Object.keys(b);
-  if (aKeys.length !== bKeys.length) return false;
-  for (const key of aKeys) {
-    if (!sameAssetMeta(a[key], b[key])) return false;
-  }
-  return true;
-}
-
-function sameStringMap(a: Record<string, string>, b: Record<string, string>) {
-  const aKeys = Object.keys(a);
-  const bKeys = Object.keys(b);
-  if (aKeys.length !== bKeys.length) return false;
-  for (const key of aKeys) {
-    if (a[key] !== b[key]) return false;
-  }
-  return true;
-}
-
-function sameProjectNodeList(a: ProjectNode[], b: ProjectNode[]) {
-  if (a === b) return true;
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i += 1) {
-    const left = a[i];
-    const right = b[i];
-    if (left.path !== right.path || left.kind !== right.kind) return false;
-  }
-  return true;
-}
-
-function mergeRevisionsStable(primary: Revision[], previous: Revision[]) {
-  const merged = prependUniqueById(primary, previous);
-  if (merged.length !== previous.length) return merged;
-  for (let i = 0; i < merged.length; i += 1) {
-    if (merged[i].id !== previous[i].id) return merged;
-  }
-  return previous;
+function workspaceErrorMessage(err: unknown, fallback: string) {
+  return err instanceof Error ? err.message : fallback;
 }
 
 type WorkspacePageProps = {
@@ -246,19 +213,9 @@ export function WorkspacePage({
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [workspaceLoaded, setWorkspaceLoaded] = useState(false);
   const [workspaceSyncPending, setWorkspaceSyncPending] = useState(false);
-  const [assetHydrationProgress, setAssetHydrationProgress] = useState<{
-    active: boolean;
-    loaded: number;
-    total: number;
-    loadedBytes: number;
-    totalBytes: number;
-  }>({
-    active: false,
-    loaded: 0,
-    total: 0,
-    loadedBytes: 0,
-    totalBytes: 0
-  });
+  const [assetHydrationProgress, setAssetHydrationProgress] = useState(
+    createAssetHydrationProgressState
+  );
   const [gitRepoUrl, setGitRepoUrl] = useState("");
   const [revisions, setRevisions] = useState<Revision[]>([]);
   const [revisionsHasMore, setRevisionsHasMore] = useState(true);
@@ -269,17 +226,7 @@ export function WorkspacePage({
   const [revisionEntryFilePath, setRevisionEntryFilePath] = useState("main.typ");
   const [revisionAssetBase64, setRevisionAssetBase64] = useState<Record<string, string>>({});
   const [revisionAssetMeta, setRevisionAssetMeta] = useState<Record<string, AssetMeta>>({});
-  const [revisionLoading, setRevisionLoading] = useState<{
-    active: boolean;
-    revisionId: string | null;
-    loadedBytes: number;
-    totalBytes: number | null;
-  }>({
-    active: false,
-    revisionId: null,
-    loadedBytes: 0,
-    totalBytes: null
-  });
+  const [revisionLoading, setRevisionLoading] = useState(createRevisionLoadingState);
   const [showFilesPanel, setShowFilesPanel] = useState(true);
   const [showRevisionPanel, setShowRevisionPanel] = useState(false);
   const [showProjectSettingsPanel, setShowProjectSettingsPanel] = useState(false);
@@ -332,25 +279,20 @@ export function WorkspacePage({
     setEditorRatio
   } = useWorkspaceLayout();
   const project = projects.find((p) => p.id === projectId);
-  const canRequestGuestWrite =
-    isAnonymousShare &&
-    !project?.is_template &&
-    sharePermission === "write" &&
-    anonymousMode === "read_write_named" &&
-    !guestSessionToken;
-  const canWrite = authUser
-    ? project?.my_role !== "ReadOnly"
-    : !project?.is_template &&
-      sharePermission === "write" &&
-      anonymousMode === "read_write_named" &&
-      !!guestSessionToken;
-  const canManageProject = authUser
-    ? project?.my_role === "Owner"
-    : false;
-  const canViewWriteShareLink = authUser
-    ? project?.my_role === "Owner" || project?.my_role === "ReadWrite"
-    : false;
-  const canViewShareLinks = !!authUser && !isAnonymousShare;
+  const {
+    canRequestGuestWrite,
+    canWrite,
+    canManageProject,
+    canViewWriteShareLink,
+    canViewShareLinks
+  } = deriveWorkspacePermissions({
+    isAnonymousShare,
+    sharePermission: sharePermission ?? null,
+    anonymousMode,
+    project,
+    hasGuestSessionToken: !!guestSessionToken,
+    hasAuthUser: !!authUser
+  });
   const collapsePanelToggles = viewportWidth <= 1320;
   const singlePanelMode = viewportWidth <= 980;
   const showAccountControlsInViewMenu = viewportWidth <= 1180;
@@ -546,7 +488,7 @@ export function WorkspacePage({
     if (isRevisionMode) return [] as string[];
     return collectReferencedAssetPaths(compileDocuments, assetMeta);
   }, [assetMeta, compileDocuments, isRevisionMode]);
-  const assetFontData = useMemo(
+  const fontData = useMemo(
     () =>
       Object.entries(sourceAssetBase64)
         .filter(([path]) => isFontFile(path))
@@ -558,7 +500,6 @@ export function WorkspacePage({
         }),
     [sourceAssetBase64]
   );
-  const fontData = useMemo(() => assetFontData, [assetFontData]);
   const compileInputKey = useMemo(
     () =>
       buildCompileInputKey({
@@ -627,7 +568,6 @@ export function WorkspacePage({
   const assetDataUrl = activeAssetBase64 ? `data:${activeAssetType};base64,${activeAssetBase64}` : "";
   const activeReadShare = shareLinks.find((link) => link.permission === "read" && !link.revoked_at) ?? null;
   const activeWriteShare = shareLinks.find((link) => link.permission === "write" && !link.revoked_at) ?? null;
-  const myOrganizations = organizations;
   const typEntryOptions = useMemo(() => {
     const values = new Set<string>();
     for (const path of Object.keys(docs)) {
@@ -659,26 +599,6 @@ export function WorkspacePage({
     "{seconds}",
     String(Math.max(0, reconnectState.secondsRemaining))
   );
-
-  const formatAccessType = (accessType: string, role: string) => {
-    if (accessType === "manage") return "Manage";
-    if (accessType === "write") return "Read + write";
-    if (accessType === "read") return "Read only";
-    return role;
-  };
-  const formatRoleLabel = (role: string) => {
-    if (role === "ReadWrite") return "Read write";
-    if (role === "ReadOnly") return "Read only";
-    return role;
-  };
-  const formatAccessSource = (source: string) => {
-    if (source === "share_link_invite") return "Accepted share link";
-    if (source === "direct_role") return "Direct assignment";
-    if (source.startsWith("organization:")) {
-      return `Organization (${source.slice("organization:".length)})`;
-    }
-    return source;
-  };
 
   useEffect(() => {
     assetMetaRef.current = assetMeta;
@@ -812,25 +732,8 @@ export function WorkspacePage({
     setRevisions([]);
     setRevisionsHasMore(true);
     setRevisionsLoadingMore(false);
-    setActiveRevisionId(null);
-    setRevisionDocs({});
-    setRevisionNodes([]);
-    setRevisionAssetBase64({});
-    setRevisionAssetMeta({});
-    setRevisionEntryFilePath("main.typ");
-    setRevisionLoading({
-      active: false,
-      revisionId: null,
-      loadedBytes: 0,
-      totalBytes: null
-    });
-    setAssetHydrationProgress({
-      active: false,
-      loaded: 0,
-      total: 0,
-      loadedBytes: 0,
-      totalBytes: 0
-    });
+    clearRevisionSelection();
+    setAssetHydrationProgress(createAssetHydrationProgressState());
     setCompileErrors([]);
     setCompileDiagnostics([]);
     setVectorData(null);
@@ -887,18 +790,7 @@ export function WorkspacePage({
   useEffect(() => {
     if (effectiveShowRevisionPanel) return;
     if (!activeRevisionId) return;
-    setActiveRevisionId(null);
-    setRevisionDocs({});
-    setRevisionNodes([]);
-    setRevisionAssetBase64({});
-    setRevisionAssetMeta({});
-    setRevisionEntryFilePath("main.typ");
-    setRevisionLoading({
-      active: false,
-      revisionId: null,
-      loadedBytes: 0,
-      totalBytes: null
-    });
+    clearRevisionSelection();
   }, [activeRevisionId, effectiveShowRevisionPanel]);
 
   useEffect(() => {
@@ -1288,8 +1180,7 @@ export function WorkspacePage({
     setProjectOrgAccess(orgAccessRes);
     setProjectAccessUsers(accessUsersRes);
 
-    const nextDocs: Record<string, string> = {};
-    for (const doc of docsRes.documents) nextDocs[doc.path] = doc.content;
+    const nextDocs = mapDocumentsByPath(docsRes.documents);
     lastDocsSyncAtRef.current = maxDocumentUpdatedAtIso(docsRes.documents, new Date().toISOString());
     setDocs(nextDocs);
     saveProjectSnapshotToCache({
@@ -1299,16 +1190,7 @@ export function WorkspacePage({
       docs: nextDocs
     });
 
-    const nextAssetMeta: Record<string, AssetMeta> = {};
-    for (const asset of assetsRes.assets) {
-      nextAssetMeta[asset.path] = {
-        id: asset.id,
-        objectKey: asset.object_key,
-        contentType: asset.content_type,
-        sizeBytes: asset.size_bytes,
-        createdAt: asset.created_at
-      };
-    }
+    const nextAssetMeta = mapAssetMetaByPath(assetsRes.assets);
     assetMetaRef.current = nextAssetMeta;
     setAssetMeta(nextAssetMeta);
     assetLoadFailedRef.current.clear();
@@ -1357,8 +1239,7 @@ export function WorkspacePage({
       setNodes((previous) => (sameProjectNodeList(previous, nextNodes) ? previous : nextNodes));
       setEntryFilePath(nextEntry);
 
-      const incomingDocs: Record<string, string> = {};
-      for (const doc of docsRes.documents) incomingDocs[doc.path] = doc.content;
+      const incomingDocs = mapDocumentsByPath(docsRes.documents);
       if (docsRes.documents.length > 0) {
         lastDocsSyncAtRef.current = maxDocumentUpdatedAtIso(
           docsRes.documents,
@@ -1426,16 +1307,7 @@ export function WorkspacePage({
         docs: docsForCache
       });
 
-      const nextAssetMeta: Record<string, AssetMeta> = {};
-      for (const asset of assetsRes.assets) {
-        nextAssetMeta[asset.path] = {
-          id: asset.id,
-          objectKey: asset.object_key,
-          contentType: asset.content_type,
-          sizeBytes: asset.size_bytes,
-          createdAt: asset.created_at
-        };
-      }
+      const nextAssetMeta = mapAssetMetaByPath(assetsRes.assets);
       const previousMeta = assetMetaRef.current;
       const stableMeta = sameAssetMetaMap(previousMeta, nextAssetMeta) ? previousMeta : nextAssetMeta;
       assetMetaRef.current = stableMeta;
@@ -1535,8 +1407,7 @@ export function WorkspacePage({
       setPathDialog(null);
       setWorkspaceError(null);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to update path";
-      setWorkspaceError(message);
+      setWorkspaceError(workspaceErrorMessage(err, "Unable to update path"));
     }
   }
 
@@ -1563,8 +1434,7 @@ export function WorkspacePage({
       await refreshProjectData();
       setWorkspaceError(null);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to upload";
-      setWorkspaceError(message);
+      setWorkspaceError(workspaceErrorMessage(err, "Unable to upload"));
     }
   }
 
@@ -1583,71 +1453,11 @@ export function WorkspacePage({
     picker.click();
   }
 
-  async function collectDragFiles(dataTransfer: DataTransfer): Promise<UploadCandidate[]> {
-    const output: UploadCandidate[] = [];
-    const pending: Array<Promise<void>> = [];
-    const itemList = Array.from(dataTransfer.items || []);
-
-    const walkEntry = async (entry: any, prefix: string) => {
-      if (!entry) return;
-      if (entry.isFile) {
-        await new Promise<void>((resolve) => {
-          entry.file(
-            (file: File) => {
-              const relativePath = prefix ? `${prefix}/${file.name}` : file.name;
-              output.push({ relativePath, file });
-              resolve();
-            },
-            () => resolve()
-          );
-        });
-        return;
-      }
-      if (!entry.isDirectory) return;
-      const currentPrefix = prefix ? `${prefix}/${entry.name}` : entry.name;
-      const reader = entry.createReader();
-      const readAll = async (): Promise<any[]> => {
-        const all: any[] = [];
-        while (true) {
-          const batch = await new Promise<any[]>((resolve) => reader.readEntries(resolve, () => resolve([])));
-          if (!batch.length) break;
-          all.push(...batch);
-        }
-        return all;
-      };
-      const entries = await readAll();
-      for (const child of entries) {
-        await walkEntry(child, currentPrefix);
-      }
-    };
-
-    for (const item of itemList) {
-      const entry = (item as any).webkitGetAsEntry?.();
-      if (entry) {
-        pending.push(walkEntry(entry, ""));
-      } else {
-        const file = item.getAsFile();
-        if (!file) continue;
-        const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
-        output.push({ relativePath, file });
-      }
-    }
-    if (pending.length > 0) {
-      await Promise.all(pending);
-      return output;
-    }
-    for (const file of Array.from(dataTransfer.files || [])) {
-      const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
-      output.push({ relativePath, file });
-    }
-    return output;
-  }
-
   async function onTreeDrop(event: ReactDragEvent<HTMLDivElement>) {
     event.preventDefault();
     setFilesDropActive(false);
     if (!canWrite || isRevisionMode) return;
-    const items = await collectDragFiles(event.dataTransfer);
+    const items = await collectUploadCandidates(event.dataTransfer);
     await commitUploads(items, "");
   }
 
@@ -1676,8 +1486,7 @@ export function WorkspacePage({
       setShareLinks(latest);
       setWorkspaceError(null);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to create share link";
-      setWorkspaceError(message);
+      setWorkspaceError(workspaceErrorMessage(err, "Unable to create share link"));
     }
   }
 
@@ -1689,8 +1498,7 @@ export function WorkspacePage({
       setShareLinks(latest);
       setWorkspaceError(null);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to revoke share link";
-      setWorkspaceError(message);
+      setWorkspaceError(workspaceErrorMessage(err, "Unable to revoke share link"));
     }
   }
 
@@ -1722,8 +1530,7 @@ export function WorkspacePage({
       await refreshProjects().catch(() => undefined);
       navigate(`/project/${created.id}`, { replace: true });
     } catch (err) {
-      const message = err instanceof Error ? err.message : t("projects.copyFailed");
-      setWorkspaceError(message);
+      setWorkspaceError(workspaceErrorMessage(err, t("projects.copyFailed")));
     } finally {
       setCopyBusy(false);
     }
@@ -1737,26 +1544,30 @@ export function WorkspacePage({
       await refreshProjects();
       setRenameDialog(null);
     } catch (err) {
-      setWorkspaceError(err instanceof Error ? err.message : t("projects.renameFailed"));
+      setWorkspaceError(workspaceErrorMessage(err, t("projects.renameFailed")));
     } finally {
       setRenameBusy(false);
     }
+  }
+
+  async function refreshProjectAccessData() {
+    if (!projectId) return;
+    const [grants, users] = await Promise.all([
+      listProjectOrganizationAccess(projectId).catch(() => []),
+      listProjectAccessUsers(projectId).then((res) => res.users).catch(() => [])
+    ]);
+    setProjectOrgAccess(grants);
+    setProjectAccessUsers(users);
   }
 
   async function upsertOrgAccessGrant(organizationId: string, permission: "read" | "write") {
     if (!projectId) return;
     try {
       await upsertProjectOrganizationAccess(projectId, organizationId, permission);
-      const [grants, users] = await Promise.all([
-        listProjectOrganizationAccess(projectId).catch(() => []),
-        listProjectAccessUsers(projectId).then((res) => res.users).catch(() => [])
-      ]);
-      setProjectOrgAccess(grants);
-      setProjectAccessUsers(users);
+      await refreshProjectAccessData();
       setWorkspaceError(null);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to update organization access";
-      setWorkspaceError(message);
+      setWorkspaceError(workspaceErrorMessage(err, "Unable to update organization access"));
     }
   }
 
@@ -1768,8 +1579,7 @@ export function WorkspacePage({
       await refreshProjects().catch(() => undefined);
       setWorkspaceError(null);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to update template settings";
-      setWorkspaceError(message);
+      setWorkspaceError(workspaceErrorMessage(err, "Unable to update template settings"));
     }
   }
 
@@ -1777,16 +1587,10 @@ export function WorkspacePage({
     if (!projectId) return;
     try {
       await deleteProjectOrganizationAccess(projectId, organizationId);
-      const [grants, users] = await Promise.all([
-        listProjectOrganizationAccess(projectId).catch(() => []),
-        listProjectAccessUsers(projectId).then((res) => res.users).catch(() => [])
-      ]);
-      setProjectOrgAccess(grants);
-      setProjectAccessUsers(users);
+      await refreshProjectAccessData();
       setWorkspaceError(null);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to remove organization access";
-      setWorkspaceError(message);
+      setWorkspaceError(workspaceErrorMessage(err, "Unable to remove organization access"));
     }
   }
 
@@ -1834,19 +1638,7 @@ export function WorkspacePage({
   async function openRevision(revisionId: string) {
     if (!projectId) return;
     if (activeRevisionId === revisionId) {
-      revisionLoadSeqRef.current += 1;
-      setActiveRevisionId(null);
-      setRevisionDocs({});
-      setRevisionNodes([]);
-      setRevisionAssetBase64({});
-      setRevisionAssetMeta({});
-      setRevisionEntryFilePath("main.typ");
-      setRevisionLoading({
-        active: false,
-        revisionId: null,
-        loadedBytes: 0,
-        totalBytes: null
-      });
+      clearRevisionSelection();
       return;
     }
     const requestSeq = revisionLoadSeqRef.current + 1;
@@ -1868,69 +1660,6 @@ export function WorkspacePage({
       });
     };
 
-    const applyRevisionTransfer = (
-      response: Awaited<ReturnType<typeof getRevisionDocuments>>,
-      forceFull = false
-    ): boolean => {
-      const transferMode =
-        !forceFull && response.transfer_mode === "delta" ? "delta" : "full";
-      const baseAnchor = response.base_anchor ?? "none";
-      const baseRevisionId = response.base_revision_id ?? null;
-
-      let map: Record<string, string> = {};
-      let revisionAssets: Record<string, string> = {};
-      let revisionAssetMetaMap: Record<string, AssetMeta> = {};
-
-      if (transferMode === "delta") {
-        if (
-          baseAnchor === "revision" &&
-          baseRevisionId &&
-          currentRevisionAnchorId &&
-          baseRevisionId === currentRevisionAnchorId
-        ) {
-          map = { ...revisionDocs };
-          revisionAssets = { ...revisionAssetBase64 };
-          revisionAssetMetaMap = { ...revisionAssetMeta };
-        } else if (baseAnchor === "live") {
-          map = { ...docs };
-          revisionAssets = { ...assetBase64 };
-          revisionAssetMetaMap = { ...assetMeta };
-        } else if (baseAnchor === "none") {
-          map = {};
-          revisionAssets = {};
-          revisionAssetMetaMap = {};
-        } else {
-          return false;
-        }
-      }
-
-      for (const path of response.deleted_documents || []) {
-        delete map[path];
-      }
-      for (const doc of response.documents || []) {
-        map[doc.path] = doc.content;
-      }
-
-      for (const path of response.deleted_assets || []) {
-        delete revisionAssets[path];
-        delete revisionAssetMetaMap[path];
-      }
-      for (const asset of response.assets || []) {
-        revisionAssets[asset.path] = asset.content_base64;
-        revisionAssetMetaMap[asset.path] = {
-          contentType: asset.content_type
-        };
-      }
-
-      setRevisionDocs(map);
-      setRevisionNodes(response.nodes || []);
-      setRevisionAssetBase64(revisionAssets);
-      setRevisionAssetMeta(revisionAssetMetaMap);
-      setRevisionEntryFilePath(response.entry_file_path || "main.typ");
-      setActiveRevisionId(revisionId);
-      return true;
-    };
-
     try {
       const response = await getRevisionDocuments(
         projectId,
@@ -1942,8 +1671,17 @@ export function WorkspacePage({
         progressHandler
       );
       if (revisionLoadSeqRef.current !== requestSeq) return;
-      let applied = applyRevisionTransfer(response);
-      if (!applied && response.transfer_mode === "delta") {
+      let transfer = applyRevisionTransfer({
+        response,
+        currentRevisionAnchorId,
+        liveDocs: docs,
+        liveAssets: assetBase64,
+        liveAssetMeta: assetMeta,
+        revisionDocs,
+        revisionAssets: revisionAssetBase64,
+        revisionAssetMeta
+      });
+      if (!transfer.applied && response.transfer_mode === "delta") {
         const fallback = await getRevisionDocuments(
           projectId,
           revisionId,
@@ -1951,16 +1689,31 @@ export function WorkspacePage({
           progressHandler
         );
         if (revisionLoadSeqRef.current !== requestSeq) return;
-        applied = applyRevisionTransfer(fallback, true);
+        transfer = applyRevisionTransfer({
+          response: fallback,
+          forceFull: true,
+          currentRevisionAnchorId,
+          liveDocs: docs,
+          liveAssets: assetBase64,
+          liveAssetMeta: assetMeta,
+          revisionDocs,
+          revisionAssets: revisionAssetBase64,
+          revisionAssetMeta
+        });
       }
-      if (!applied) {
+      if (!transfer.applied) {
         throw new Error("Unable to apply revision delta; please retry.");
       }
+      setRevisionDocs(transfer.docs);
+      setRevisionNodes(transfer.nodes);
+      setRevisionAssetBase64(transfer.assets);
+      setRevisionAssetMeta(transfer.assetMeta);
+      setRevisionEntryFilePath(transfer.entryFilePath);
+      setActiveRevisionId(revisionId);
       setWorkspaceError(null);
     } catch (err) {
       if (revisionLoadSeqRef.current !== requestSeq) return;
-      const message = err instanceof Error ? err.message : "Unable to load revision snapshot";
-      setWorkspaceError(message);
+      setWorkspaceError(workspaceErrorMessage(err, "Unable to load revision snapshot"));
     } finally {
       if (revisionLoadSeqRef.current === requestSeq) {
         setRevisionLoading((prev) => ({
@@ -2040,6 +1793,17 @@ export function WorkspacePage({
     setPreviewZoom((value) => clampNumber(value - 0.1, PREVIEW_MIN_ZOOM, PREVIEW_MAX_ZOOM));
   }
 
+  function clearRevisionSelection() {
+    revisionLoadSeqRef.current += 1;
+    setActiveRevisionId(null);
+    setRevisionDocs({});
+    setRevisionNodes([]);
+    setRevisionAssetBase64({});
+    setRevisionAssetMeta({});
+    setRevisionEntryFilePath("main.typ");
+    setRevisionLoading(createRevisionLoadingState());
+  }
+
   function toggleRevisionPanel() {
     if (singlePanelMode) {
       setCompactPanelView("revisions");
@@ -2047,19 +1811,7 @@ export function WorkspacePage({
     }
     setShowRevisionPanel((shown) => {
       if (shown) {
-        revisionLoadSeqRef.current += 1;
-        setActiveRevisionId(null);
-        setRevisionDocs({});
-        setRevisionNodes([]);
-        setRevisionAssetBase64({});
-        setRevisionAssetMeta({});
-        setRevisionEntryFilePath("main.typ");
-        setRevisionLoading({
-          active: false,
-          revisionId: null,
-          loadedBytes: 0,
-          totalBytes: null
-        });
+        clearRevisionSelection();
       }
       return !shown;
     });
@@ -2194,6 +1946,20 @@ export function WorkspacePage({
     }
   }
 
+  async function handleAuthModalSignedIn() {
+    if (shareToken) {
+      await joinProjectShareLink(shareToken).catch(() => undefined);
+    }
+    if (onSignInFromWorkspace) {
+      await onSignInFromWorkspace();
+    } else {
+      await getAuthMe();
+    }
+    await refreshProjects();
+    setAuthModalOpen(false);
+    navigate(`/project/${projectId}`, { replace: true });
+  }
+
   if (!projectId) return <Navigate to="/projects" replace />;
   if (!project && projects.length > 0 && !projectIdOverride) {
     return <Navigate to={`/project/${projects[0].id}`} replace />;
@@ -2208,41 +1974,22 @@ export function WorkspacePage({
 
   return (
     <section className="workspace-shell">
-      {isAnonymousShare && (
-        <div className="workspace-access-banner with-action ui-message-with-action" role="status">
-          <span className="message-text">
-            {project?.is_template
-              ? t("share.templateSavePrompt").replace("{name}", project.name)
-              : t("share.savePrompt")}
-          </span>
-          <UiButton
-            size="sm"
-            onClick={() => {
-              setGuestAuthError(null);
-              setAuthModalOpen(true);
-            }}
-          >
-            {t("share.logIn")}
-          </UiButton>
-        </div>
-      )}
-      {project?.is_template && !isAnonymousShare && (
-        <div className="workspace-access-banner with-action template-banner ui-message-with-action" role="status">
-          <span className="message-text">{`${t("settings.templateEnabled")} · ${t("projects.copyDialogHint")} ${project.name}`}</span>
-          <UiButton
-            size="sm"
-            onClick={() =>
-              setCopyDialog({
-                projectId: project.id,
-                sourceName: project.name,
-                suggestedName: `${project.name} ${t("projects.copySuffix")}`
-              })
-            }
-          >
-            {t("projects.copyAction")}
-          </UiButton>
-        </div>
-      )}
+      <WorkspaceAccessBanner
+        project={project}
+        isAnonymousShare={isAnonymousShare}
+        onRequestSignIn={() => {
+          setGuestAuthError(null);
+          setAuthModalOpen(true);
+        }}
+        onCopyTemplate={() =>
+          setCopyDialog({
+            projectId: project.id,
+            sourceName: project.name,
+            suggestedName: `${project.name} ${t("projects.copySuffix")}`
+          })
+        }
+        t={t}
+      />
       <section className="workspace-stage">
         {effectiveShowFilesPanel && (
           <>
@@ -2289,74 +2036,47 @@ export function WorkspacePage({
 
         <div className="center-split" ref={centerSplitRef}>
           {effectiveShowEditorPanel && (
-            <article
-              className="panel panel-editor"
-              style={
+            <EditorPanel
+              activePath={activePath}
+              activeFileName={activeFileName}
+              lineWrapEnabled={lineWrapEnabled}
+              onToggleLineWrap={() => setLineWrapEnabled((value) => !value)}
+              remoteCursors={remoteCursors}
+              connectionOnline={connectionOnline}
+              isActiveEditableTextDoc={isActiveEditableTextDoc}
+              docText={docText}
+              onEditorDelta={handleEditorDelta}
+              onCursorChange={(cursor) => realtimeRef.current?.sendCursor(cursor)}
+              readOnly={
+                isRevisionMode ||
+                (!canWrite && !canRequestGuestWrite) ||
+                (!isRevisionMode && !realtimeDocReady)
+              }
+              currentEditorLanguage={currentEditorLanguage}
+              jumpTarget={jumpTarget}
+              onJumpHandled={() => setJumpTarget(null)}
+              isRevisionMode={isRevisionMode}
+              canWrite={!!canWrite}
+              canRequestGuestWrite={!!canRequestGuestWrite}
+              realtimeDocReady={realtimeDocReady}
+              activeAssetBase64={activeAssetBase64}
+              activeAssetIsImage={isImageAsset(activePath, activeAssetType)}
+              activeAssetIsPdf={isPdfAsset(activePath, activeAssetType)}
+              assetDataUrl={assetDataUrl}
+              workspaceError={workspaceError}
+              showConnectionWarning={showConnectionWarning}
+              realtimeStatus={realtimeStatus}
+              reconnectState={reconnectState}
+              reconnectCountdownText={reconnectCountdownText}
+              onReconnectNow={() => realtimeRef.current?.reconnectNow()}
+              activePathExistsInTree={activePathExistsInTree}
+              panelStyle={
                 effectiveShowPreviewPanel
                   ? { flex: `${editorRatio} 1 0`, minWidth: 320 }
                   : { flex: "1 1 auto", minWidth: 320 }
               }
-            >
-            <div className="panel-header workspace-main-header">
-              <h2 title={activePath}>{activeFileName}</h2>
-              <div className="panel-status compact">
-                <button className="inline-toggle" onClick={() => setLineWrapEnabled((value) => !value)}>
-                  {lineWrapEnabled ? t("status.wrapOn") : t("status.wrapOff")}
-                </button>
-                <span className="status-pill" title={remoteCursors.map((user) => user.name).join(", ")}>{`👥 ${remoteCursors.length}`}</span>
-                <span className={`status-pill ${connectionOnline ? "ok" : "warn"}`}>
-                  {connectionOnline ? t("status.online") : t("status.offline")}
-                </span>
-              </div>
-            </div>
-            <div className="panel-content flush editor-panel-content">
-              {isActiveEditableTextDoc ? (
-                <div className="editor-surface">
-                  <EditorPane
-                    editorInstanceKey={`${activePath}:${activeRevisionId ?? "live"}:${currentEditorLanguage}`}
-                    value={docText}
-                    onDelta={handleEditorDelta}
-                    onCursorChange={(cursor) => realtimeRef.current?.sendCursor(cursor)}
-                    readOnly={
-                      isRevisionMode ||
-                      (!canWrite && !canRequestGuestWrite) ||
-                      (!isRevisionMode && !realtimeDocReady)
-                    }
-                    lineWrap={lineWrapEnabled}
-                    language={currentEditorLanguage}
-                    remoteCursors={remoteCursors}
-                    jumpTo={jumpTarget}
-                    onJumpHandled={() => setJumpTarget(null)}
-                  />
-                </div>
-              ) : (
-                <UnsupportedFilePane
-                  path={activePath}
-                  hasData={!!activeAssetBase64}
-                  isImage={isImageAsset(activePath, activeAssetType)}
-                  isPdf={isPdfAsset(activePath, activeAssetType)}
-                  dataUrl={assetDataUrl}
-                  t={t}
-                />
-              )}
-              {!isActiveEditableTextDoc && <div className="error panel-inline-error">{t("workspace.notEditable")}</div>}
-              {isRevisionMode && !activePathExistsInTree && (
-                <div className="error panel-inline-error">This file did not exist in this revision snapshot.</div>
-              )}
-              {showConnectionWarning && realtimeStatus === "disconnected" && (
-                <div className="error panel-inline-error connection-warning connection-warning-row ui-message-with-action">
-                  <span className="message-text">{reconnectState.active ? reconnectCountdownText : t("workspace.connectionLost")}</span>
-                  <UiButton size="sm" onClick={() => realtimeRef.current?.reconnectNow()}>
-                    {t("workspace.reconnectNow")}
-                  </UiButton>
-                </div>
-              )}
-              {showConnectionWarning && realtimeStatus === "connecting" && !reconnectState.active && (
-                <div className="error panel-inline-error connection-warning">{t("workspace.connectionReconnecting")}</div>
-              )}
-              {workspaceError && <div className="error panel-inline-error">{workspaceError}</div>}
-            </div>
-            </article>
+              t={t}
+            />
           )}
 
           {!singlePanelMode && effectiveShowEditorPanel && effectiveShowPreviewPanel && (
@@ -2449,7 +2169,7 @@ export function WorkspacePage({
                 gitRepoUrl={gitRepoUrl}
                 copiedControl={copiedControl}
                 templateEnabled={templateEnabled}
-                myOrganizations={myOrganizations}
+                myOrganizations={organizations}
                 projectOrgAccess={projectOrgAccess}
                 projectAccessUsers={projectAccessUsers}
                 onEntryFileChange={async (path) => {
@@ -2504,179 +2224,49 @@ export function WorkspacePage({
         )}
       </section>
 
-      {contextMenu && canWrite && (
-        <div className="context-menu context-menu-floating" style={{ left: contextMenu.x, top: contextMenu.y }}>
-          {contextMenu.kind === "directory" && (
-            <UiButton className="mini" size="sm" onClick={() => addPath("file", contextMenu.path)}>
-              {t("workspace.newFile")}
-            </UiButton>
-          )}
-          {contextMenu.kind === "directory" && (
-            <UiButton className="mini" size="sm" onClick={() => addPath("directory", contextMenu.path)}>
-              {t("workspace.newFolder")}
-            </UiButton>
-          )}
-          {contextMenu.kind === "directory" && (
-            <UiButton className="mini" size="sm" onClick={() => uploadFromPicker(contextMenu.path)}>
-              {t("workspace.upload")}
-            </UiButton>
-          )}
-          <UiButton className="mini" size="sm" onClick={() => renamePath(contextMenu.path)}>
-            {t("common.rename")}
-          </UiButton>
-          <UiButton className="mini" size="sm" variant="danger" onClick={() => removePath(contextMenu.path)}>
-            {t("common.delete")}
-          </UiButton>
-        </div>
-      )}
-      <UiDialog
-        open={!!copyDialog}
-        title={t("projects.copyDialogTitle")}
-        description={copyDialog ? `${t("projects.copyDialogHint")} ${copyDialog.sourceName}` : undefined}
-        onClose={() => setCopyDialog(null)}
-        actions={
-          <>
-            <UiButton onClick={() => setCopyDialog(null)}>{t("common.cancel")}</UiButton>
-            <UiButton
-              variant="primary"
-              onClick={createProjectFromTemplate}
-              disabled={copyBusy || !copyDialog?.suggestedName.trim()}
-            >
-              {copyBusy ? t("projects.copying") : t("projects.copyAction")}
-            </UiButton>
-          </>
+      <WorkspaceOverlays
+        contextMenu={contextMenu}
+        canWrite={!!canWrite}
+        onAddPath={addPath}
+        onUploadFromPicker={uploadFromPicker}
+        onRenamePath={renamePath}
+        onRemovePath={removePath}
+        copyDialog={copyDialog}
+        copyBusy={copyBusy}
+        onCloseCopyDialog={() => setCopyDialog(null)}
+        onCreateProjectFromTemplate={createProjectFromTemplate}
+        onChangeCopyName={(name) =>
+          setCopyDialog((current) => (current ? { ...current, suggestedName: name } : current))
         }
-      >
-        <UiInput
-          value={copyDialog?.suggestedName ?? ""}
-          onChange={(e) =>
-            setCopyDialog((current) =>
-              current
-                ? {
-                    ...current,
-                    suggestedName: e.target.value
-                  }
-                : current
-            )
-          }
-          placeholder={t("projects.namePlaceholder")}
-        />
-      </UiDialog>
-      <UiDialog
-        open={!!renameDialog}
-        title={t("projects.renameDialogTitle")}
-        description={renameDialog ? `${t("projects.renameDialogHint")} ${renameDialog.sourceName}` : undefined}
-        onClose={() => setRenameDialog(null)}
-        actions={
-          <>
-            <UiButton onClick={() => setRenameDialog(null)}>{t("common.cancel")}</UiButton>
-            <UiButton
-              variant="primary"
-              onClick={submitProjectRename}
-              disabled={renameBusy || !renameDialog?.nextName.trim()}
-            >
-              {renameBusy ? t("common.loading") : t("projects.renameAction")}
-            </UiButton>
-          </>
+        renameDialog={renameDialog}
+        renameBusy={renameBusy}
+        onCloseRenameDialog={() => setRenameDialog(null)}
+        onSubmitProjectRename={submitProjectRename}
+        onChangeRenameName={(name) =>
+          setRenameDialog((current) => (current ? { ...current, nextName: name } : current))
         }
-      >
-        <UiInput
-          value={renameDialog?.nextName ?? ""}
-          onChange={(event) =>
-            setRenameDialog((current) => (current ? { ...current, nextName: event.target.value } : current))
-          }
-          placeholder={t("projects.namePlaceholder")}
-        />
-      </UiDialog>
-      <UiDialog
-        open={!!pathDialog}
-        title={
-          pathDialog?.mode === "create"
-            ? pathDialog.kind === "file"
-              ? t("workspace.newFile")
-              : t("workspace.newFolder")
-            : pathDialog?.mode === "rename"
-              ? t("common.rename")
-              : t("common.delete")
+        pathDialog={pathDialog}
+        onClosePathDialog={() => setPathDialog(null)}
+        onSubmitPathDialog={submitPathDialog}
+        onChangePathDialogValue={(value) =>
+          setPathDialog((current) => {
+            if (!current || current.mode === "delete") return current;
+            return { ...current, value };
+          })
         }
-        description={pathDialog?.mode === "delete" ? `${t("settings.deletePathConfirm")} ${pathDialog.path}` : undefined}
-        onClose={() => setPathDialog(null)}
-        actions={
-          <>
-            <UiButton onClick={() => setPathDialog(null)}>{t("common.cancel")}</UiButton>
-            <UiButton
-              variant={pathDialog?.mode === "delete" ? "danger" : "primary"}
-              onClick={submitPathDialog}
-              disabled={!!pathDialog && pathDialog.mode !== "delete" && !pathDialog.value.trim()}
-            >
-              {pathDialog?.mode === "delete" ? t("common.delete") : t("common.save")}
-            </UiButton>
-          </>
-        }
-      >
-        {pathDialog && pathDialog.mode !== "delete" && (
-          <UiInput
-            value={pathDialog.value}
-            onChange={(event) =>
-              setPathDialog((current) => {
-                if (!current || current.mode === "delete") return current;
-                return {
-                  ...current,
-                  value: event.target.value
-                };
-              })
-            }
-            placeholder={t("workspace.pathPlaceholder")}
-          />
-        )}
-      </UiDialog>
-      <UiDialog
-        open={authModalOpen}
-        title={canRequestGuestWrite ? t("share.guestEditTitle") : t("auth.signIn")}
-        description={
-          canRequestGuestWrite
-            ? `${t("share.guestEditDescription")} ${project?.name || ""}.`
-            : isAnonymousShare && project?.is_template
-              ? t("share.templateSavePrompt").replace("{name}", project.name)
-              : t("share.savePrompt")
-        }
-        onClose={() => setAuthModalOpen(false)}
-      >
-        {canRequestGuestWrite && (
-          <div className="auth-fields">
-            <UiInput
-              value={guestNameInput}
-              onChange={(event) => setGuestNameInput(event.target.value)}
-              placeholder={t("share.yourName")}
-            />
-            <UiButton variant="primary" onClick={beginTemporaryGuestEditing}>
-              {t("share.startGuestEdit")}
-            </UiButton>
-            <div className="auth-divider">
-              <span>{t("share.orLogin")}</span>
-            </div>
-          </div>
-        )}
-        <AuthForm
-          config={authConfig ?? null}
-          t={t}
-          compact
-          onSignedIn={async () => {
-            if (shareToken) {
-              await joinProjectShareLink(shareToken).catch(() => undefined);
-            }
-            if (onSignInFromWorkspace) {
-              await onSignInFromWorkspace();
-            } else {
-              await getAuthMe();
-            }
-            await refreshProjects();
-            setAuthModalOpen(false);
-            navigate(`/project/${projectId}`, { replace: true });
-          }}
-        />
-        {guestAuthError && <div className="error">{guestAuthError}</div>}
-      </UiDialog>
+        authModalOpen={authModalOpen}
+        canRequestGuestWrite={!!canRequestGuestWrite}
+        projectName={project?.name || ""}
+        isAnonymousShareTemplate={isAnonymousShare && !!project?.is_template}
+        guestNameInput={guestNameInput}
+        onChangeGuestNameInput={setGuestNameInput}
+        onBeginTemporaryGuestEditing={beginTemporaryGuestEditing}
+        authConfig={authConfig ?? null}
+        onSignedIn={handleAuthModalSignedIn}
+        guestAuthError={guestAuthError}
+        onCloseAuthModal={() => setAuthModalOpen(false)}
+        t={t}
+      />
     </section>
   );
 }

@@ -6,6 +6,58 @@ import type {
   ProjectShareLink
 } from "@/lib/api";
 
+type ShareLinkCardProps = {
+  title: string;
+  activeShare: ProjectShareLink | null;
+  canManageProject: boolean;
+  copiedControl: string | null;
+  copyControlKey: string;
+  windowOrigin: string;
+  onCreate: () => Promise<void>;
+  onRevoke: (shareLinkId: string) => Promise<void>;
+  onCopyToClipboard: (controlKey: string, value: string) => Promise<void>;
+  t: (key: string) => string;
+};
+
+function ShareLinkCard({
+  title,
+  activeShare,
+  canManageProject,
+  copiedControl,
+  copyControlKey,
+  windowOrigin,
+  onCreate,
+  onRevoke,
+  onCopyToClipboard,
+  t
+}: ShareLinkCardProps) {
+  const linkValue = activeShare?.token_value ? `${windowOrigin}/share/${activeShare.token_value}` : "";
+  return (
+    <div className="card">
+      <strong>{title}</strong>
+      {canManageProject && (
+        <div className="toolbar compact-left">
+          {activeShare ? (
+            <UiButton onClick={() => onRevoke(activeShare.id)}>{t("common.disable")}</UiButton>
+          ) : (
+            <UiButton onClick={onCreate}>{t("common.enable")}</UiButton>
+          )}
+        </div>
+      )}
+      {linkValue ? (
+        <>
+          <code>{linkValue}</code>
+          <UiButton onClick={() => onCopyToClipboard(copyControlKey, linkValue)}>
+            {copiedControl === copyControlKey ? t("share.copied") : t("share.copy")}
+          </UiButton>
+        </>
+      ) : (
+        <small>{t("share.none")}</small>
+      )}
+    </div>
+  );
+}
+
 export function SettingsPanel({
   width,
   projectId,
@@ -59,6 +111,7 @@ export function SettingsPanel({
   formatAccessSource: (source: string) => string;
   t: (key: string) => string;
 }) {
+  const windowOrigin = window.location.origin;
   return (
     <aside className="panel panel-settings" style={{ width }}>
       <div className="panel-header">
@@ -113,67 +166,31 @@ export function SettingsPanel({
         <div className="settings-section">
           <strong>{t("share.title")}</strong>
           <div className="settings-share-grid">
-            <div className="card">
-              <strong>{t("share.readLink")}</strong>
-              {canManageProject && (
-                <div className="toolbar compact-left">
-                  {activeReadShare ? (
-                    <UiButton onClick={() => onRevokeShare(activeReadShare.id)}>
-                      {t("common.disable")}
-                    </UiButton>
-                  ) : (
-                    <UiButton onClick={() => onCreateShare("read")}>
-                      {t("common.enable")}
-                    </UiButton>
-                  )}
-                </div>
-              )}
-              {activeReadShare?.token_value ? (
-                <>
-                  <code>{`${window.location.origin}/share/${activeReadShare.token_value}`}</code>
-                  <UiButton
-                    onClick={async () => {
-                      await onCopyToClipboard("share-read-link", `${window.location.origin}/share/${activeReadShare.token_value}`);
-                    }}
-                  >
-                    {copiedControl === "share-read-link" ? t("share.copied") : t("share.copy")}
-                  </UiButton>
-                </>
-              ) : (
-                <small>{t("share.none")}</small>
-              )}
-            </div>
+            <ShareLinkCard
+              title={t("share.readLink")}
+              activeShare={activeReadShare}
+              canManageProject={canManageProject}
+              copiedControl={copiedControl}
+              copyControlKey="share-read-link"
+              windowOrigin={windowOrigin}
+              onCreate={() => onCreateShare("read")}
+              onRevoke={onRevokeShare}
+              onCopyToClipboard={onCopyToClipboard}
+              t={t}
+            />
             {canViewWriteShareLink && (
-              <div className="card">
-                <strong>{t("share.writeLink")}</strong>
-                {canManageProject && (
-                  <div className="toolbar compact-left">
-                    {activeWriteShare ? (
-                      <UiButton onClick={() => onRevokeShare(activeWriteShare.id)}>
-                        {t("common.disable")}
-                      </UiButton>
-                    ) : (
-                      <UiButton onClick={() => onCreateShare("write")}>
-                        {t("common.enable")}
-                      </UiButton>
-                    )}
-                  </div>
-                )}
-                {activeWriteShare?.token_value ? (
-                  <>
-                    <code>{`${window.location.origin}/share/${activeWriteShare.token_value}`}</code>
-                    <UiButton
-                      onClick={async () => {
-                        await onCopyToClipboard("share-write-link", `${window.location.origin}/share/${activeWriteShare.token_value}`);
-                      }}
-                    >
-                      {copiedControl === "share-write-link" ? t("share.copied") : t("share.copy")}
-                    </UiButton>
-                  </>
-                ) : (
-                  <small>{t("share.none")}</small>
-                )}
-              </div>
+              <ShareLinkCard
+                title={t("share.writeLink")}
+                activeShare={activeWriteShare}
+                canManageProject={canManageProject}
+                copiedControl={copiedControl}
+                copyControlKey="share-write-link"
+                windowOrigin={windowOrigin}
+                onCreate={() => onCreateShare("write")}
+                onRevoke={onRevokeShare}
+                onCopyToClipboard={onCopyToClipboard}
+                t={t}
+              />
             )}
           </div>
         </div>

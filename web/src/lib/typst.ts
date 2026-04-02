@@ -41,7 +41,7 @@ export type TypstRuntimeStatus = {
   totalBytes?: number;
 };
 
-export type CompileOptions = {
+type CompileOptions = {
   entryFilePath: string;
   documents: Array<{ path: string; content: string }>;
   assets: Array<{ path: string; contentBase64: string }>;

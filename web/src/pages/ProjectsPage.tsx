@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import { useNavigate } from "react-router-dom";
 import { Archive, ArrowRight, Copy, Pencil, Plus } from "lucide-react";
 import { UiBadge, UiButton, UiCard, UiDialog, UiIconButton, UiInput } from "@/components/ui";
@@ -64,6 +64,76 @@ function ProjectThumbnail({
   return <img className="project-thumb loaded" src={src} alt={project.name} loading="lazy" />;
 }
 
+type ProjectRowProps = {
+  project: Project;
+  busyProjectId: string | null;
+  onOpenProject: (project: Project) => void;
+  onOpenRenameDialog: (project: Project) => void;
+  onOpenCopyDialog: (project: Project) => void;
+  onToggleProjectArchived: (project: Project) => Promise<void>;
+  t: (key: string) => string;
+};
+
+function ProjectRow({
+  project,
+  busyProjectId,
+  onOpenProject,
+  onOpenRenameDialog,
+  onOpenCopyDialog,
+  onToggleProjectArchived,
+  t
+}: ProjectRowProps) {
+  return (
+    <div className="projects-row" key={project.id}>
+      <button className="project-title-cell" onClick={() => onOpenProject(project)}>
+        <ProjectThumbnail project={project} t={t} />
+        <div className="project-main">
+          <strong>{project.name}</strong>
+          <div className="project-tags">
+            {project.is_template && <UiBadge tone="accent">{t("projects.templateBadge")}</UiBadge>}
+            {!project.can_read && <UiBadge tone="warning">{t("projects.templateUseOnly")}</UiBadge>}
+          </div>
+        </div>
+      </button>
+      <span>{project.owner_display_name}</span>
+      <span title={new Date(project.last_edited_at).toLocaleString()}>
+        {formatRelativeTime(project.last_edited_at)}
+      </span>
+      <div className="projects-row-actions">
+        <UiIconButton
+          tooltip={t("projects.open")}
+          label={t("projects.open")}
+          onClick={() => onOpenProject(project)}
+        >
+          <ArrowRight size={16} />
+        </UiIconButton>
+        <UiIconButton
+          tooltip={t("projects.rename")}
+          label={t("projects.rename")}
+          onClick={() => onOpenRenameDialog(project)}
+        >
+          <Pencil size={16} />
+        </UiIconButton>
+        <UiIconButton
+          tooltip={t("projects.copy")}
+          label={t("projects.copy")}
+          onClick={() => onOpenCopyDialog(project)}
+        >
+          <Copy size={16} />
+        </UiIconButton>
+        <UiIconButton
+          tooltip={project.archived ? t("projects.unarchive") : t("projects.archive")}
+          label={project.archived ? t("projects.unarchive") : t("projects.archive")}
+          disabled={busyProjectId === project.id}
+          onClick={() => onToggleProjectArchived(project)}
+        >
+          <Archive size={16} />
+        </UiIconButton>
+      </div>
+    </div>
+  );
+}
+
 function formatRelativeTime(iso: string) {
   const at = Date.parse(iso);
   if (!Number.isFinite(at)) return iso;
@@ -105,6 +175,34 @@ function formatRelativeTime(iso: string) {
     numeric: "auto"
   });
   return formatter.format(diffMs >= 0 ? -value : value, unit as Intl.RelativeTimeFormatUnit);
+}
+
+function updateRenameDialogName(
+  value: string,
+  setRenameDialog: Dispatch<SetStateAction<ProjectRenameDialogState | null>>
+) {
+  setRenameDialog((current) =>
+    current
+      ? {
+          ...current,
+          nextName: value
+        }
+      : current
+  );
+}
+
+function updateCopyDialogName(
+  value: string,
+  setCopyDialog: Dispatch<SetStateAction<ProjectCopyDialogState | null>>
+) {
+  setCopyDialog((current) =>
+    current
+      ? {
+          ...current,
+          suggestedName: value
+        }
+      : current
+  );
 }
 
 export function ProjectsPage({
@@ -177,6 +275,54 @@ export function ProjectsPage({
     navigate(`/project/${project.id}`);
   }
 
+  function openRenameDialog(project: Project) {
+    setRenameDialog({
+      projectId: project.id,
+      sourceName: project.name,
+      nextName: project.name
+    });
+  }
+
+  function openCopyDialog(project: Project) {
+    setCopyDialog({
+      projectId: project.id,
+      sourceName: project.name,
+      suggestedName: `${project.name} ${t("projects.copySuffix")}`
+    });
+  }
+
+  async function toggleProjectArchived(project: Project) {
+    try {
+      setError(null);
+      setBusyProjectId(project.id);
+      await setProjectArchived(project.id, !project.archived);
+      await refreshProjects();
+    } catch (err) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : project.archived
+            ? "Unable to unarchive project"
+            : "Unable to archive project";
+      setError(message);
+    } finally {
+      setBusyProjectId(null);
+    }
+  }
+
+  async function createNamedProject() {
+    if (!name.trim()) return;
+    try {
+      setError(null);
+      await createProject({ name: name.trim() });
+      setName("");
+      await refreshProjects();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to create project";
+      setError(message);
+    }
+  }
+
   return (
     <section className="page projects-page">
       <div className="projects-title-row">
@@ -188,18 +334,7 @@ export function ProjectsPage({
           <UiInput value={name} onChange={(e) => setName(e.target.value)} placeholder={t("projects.namePlaceholder")} />
           <UiButton
             variant="primary"
-            onClick={async () => {
-              if (!name.trim()) return;
-              try {
-                setError(null);
-                await createProject({ name: name.trim() });
-                setName("");
-                await refreshProjects();
-              } catch (err) {
-                const message = err instanceof Error ? err.message : "Unable to create project";
-                setError(message);
-              }
-            }}
+            onClick={createNamedProject}
           >
             <Plus size={16} />
             <span>{t("projects.createAction")}</span>
@@ -231,82 +366,16 @@ export function ProjectsPage({
         </div>
         <div className="projects-list">
           {filteredProjects.map((project) => (
-            <div className="projects-row" key={project.id}>
-              <button className="project-title-cell" onClick={() => openProject(project)}>
-                <ProjectThumbnail project={project} t={t} />
-                <div className="project-main">
-                  <strong>{project.name}</strong>
-                  <div className="project-tags">
-                    {project.is_template && <UiBadge tone="accent">{t("projects.templateBadge")}</UiBadge>}
-                    {!project.can_read && <UiBadge tone="warning">{t("projects.templateUseOnly")}</UiBadge>}
-                  </div>
-                </div>
-              </button>
-              <span>{project.owner_display_name}</span>
-              <span title={new Date(project.last_edited_at).toLocaleString()}>
-                {formatRelativeTime(project.last_edited_at)}
-              </span>
-              <div className="projects-row-actions">
-                <UiIconButton
-                  tooltip={t("projects.open")}
-                  label={t("projects.open")}
-                  onClick={() => openProject(project)}
-                >
-                  <ArrowRight size={16} />
-                </UiIconButton>
-                <UiIconButton
-                  tooltip={t("projects.rename")}
-                  label={t("projects.rename")}
-                  onClick={() =>
-                    setRenameDialog({
-                      projectId: project.id,
-                      sourceName: project.name,
-                      nextName: project.name
-                    })
-                  }
-                >
-                  <Pencil size={16} />
-                </UiIconButton>
-                <UiIconButton
-                  tooltip={t("projects.copy")}
-                  label={t("projects.copy")}
-                  onClick={() =>
-                    setCopyDialog({
-                      projectId: project.id,
-                      sourceName: project.name,
-                      suggestedName: `${project.name} ${t("projects.copySuffix")}`
-                    })
-                  }
-                >
-                  <Copy size={16} />
-                </UiIconButton>
-                <UiIconButton
-                  tooltip={project.archived ? t("projects.unarchive") : t("projects.archive")}
-                  label={project.archived ? t("projects.unarchive") : t("projects.archive")}
-                  disabled={busyProjectId === project.id}
-                  onClick={async () => {
-                    try {
-                      setError(null);
-                      setBusyProjectId(project.id);
-                      await setProjectArchived(project.id, !project.archived);
-                      await refreshProjects();
-                    } catch (err) {
-                      const message =
-                        err instanceof Error
-                          ? err.message
-                          : project.archived
-                            ? "Unable to unarchive project"
-                            : "Unable to archive project";
-                      setError(message);
-                    } finally {
-                      setBusyProjectId(null);
-                    }
-                  }}
-                >
-                  <Archive size={16} />
-                </UiIconButton>
-              </div>
-            </div>
+            <ProjectRow
+              key={project.id}
+              project={project}
+              busyProjectId={busyProjectId}
+              onOpenProject={openProject}
+              onOpenRenameDialog={openRenameDialog}
+              onOpenCopyDialog={openCopyDialog}
+              onToggleProjectArchived={toggleProjectArchived}
+              t={t}
+            />
           ))}
           {filteredProjects.length === 0 && <div className="projects-empty">{t("projects.empty")}</div>}
         </div>
@@ -341,16 +410,7 @@ export function ProjectsPage({
       >
         <UiInput
           value={renameDialog?.nextName ?? ""}
-          onChange={(e) =>
-            setRenameDialog((current) =>
-              current
-                ? {
-                    ...current,
-                    nextName: e.target.value
-                  }
-                : current
-            )
-          }
+          onChange={(e) => updateRenameDialogName(e.target.value, setRenameDialog)}
           placeholder={t("projects.namePlaceholder")}
         />
       </UiDialog>
@@ -370,16 +430,7 @@ export function ProjectsPage({
       >
         <UiInput
           value={copyDialog?.suggestedName ?? ""}
-          onChange={(e) =>
-            setCopyDialog((current) =>
-              current
-                ? {
-                    ...current,
-                    suggestedName: e.target.value
-                  }
-                : current
-            )
-          }
+          onChange={(e) => updateCopyDialogName(e.target.value, setCopyDialog)}
           placeholder={t("projects.namePlaceholder")}
         />
       </UiDialog>

@@ -61,7 +61,7 @@ export function UiSelect(props: SelectHTMLAttributes<HTMLSelectElement>) {
   return <select {...props} className={`ui-select ${props.className || ""}`.trim()} />;
 }
 
-export function UiTooltip({
+function UiTooltip({
   content,
   children,
   className = ""

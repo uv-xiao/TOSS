@@ -25,7 +25,7 @@ function encodePathPreservingSlashes(path: string) {
     .join("/");
 }
 
-export class ApiError extends Error {
+class ApiError extends Error {
   status: number;
   constructor(message: string, status: number) {
     super(message);
@@ -74,7 +74,7 @@ async function parseJsonOrThrow<T>(res: Response, message: string): Promise<T> {
   return (await res.json()) as T;
 }
 
-export type ProjectRole = "Owner" | "ReadWrite" | "ReadOnly";
+type ProjectRole = "Owner" | "ReadWrite" | "ReadOnly";
 export type OrganizationMembershipRole = "owner" | "member";
 export type SharePermission = "read" | "write";
 
@@ -106,12 +106,12 @@ export type Project = {
   archived_at: string | null;
 };
 
-export type ProjectTreeNode = {
+type ProjectTreeNode = {
   path: string;
   kind: "file" | "directory";
 };
 
-export type ProjectTreeResponse = {
+type ProjectTreeResponse = {
   nodes: ProjectTreeNode[];
   entry_file_path: string;
 };
@@ -124,7 +124,7 @@ export type Document = {
   updated_at: string;
 };
 
-export type RevisionAuthor = {
+type RevisionAuthor = {
   user_id: string;
   display_name: string;
   email: string;
@@ -139,12 +139,12 @@ export type Revision = {
   authors: RevisionAuthor[];
 };
 
-export type RevisionDocument = {
+type RevisionDocument = {
   path: string;
   content: string;
 };
 
-export type RevisionAsset = {
+type RevisionAsset = {
   path: string;
   content_type: string;
   size_bytes: number;
@@ -164,17 +164,17 @@ export type RevisionDocumentsResponse = {
   deleted_assets?: string[];
 };
 
-export type DownloadProgress = {
+type DownloadProgress = {
   loadedBytes: number;
   totalBytes: number | null;
 };
 
-export type RevisionDocumentsFetchOptions = {
+type RevisionDocumentsFetchOptions = {
   currentRevisionId?: string | null;
   includeLiveAnchor?: boolean;
 };
 
-export type ListRevisionsOptions = {
+type ListRevisionsOptions = {
   before?: string;
   limit?: number;
 };
@@ -190,12 +190,12 @@ export type ProjectAsset = {
   created_at: string;
 };
 
-export type ProjectAssetContent = {
+type ProjectAssetContent = {
   asset: ProjectAsset;
   content_base64: string;
 };
 
-export type GitRepoLink = {
+type GitRepoLink = {
   project_id: string;
   repo_url: string;
 };
@@ -210,7 +210,7 @@ export type PersonalAccessTokenInfo = {
   revoked_at: string | null;
 };
 
-export type CreatePatResponse = {
+type CreatePatResponse = {
   id: string;
   label: string;
   token: string;
@@ -226,7 +226,7 @@ export type OrgGroupRoleMapping = {
   granted_at: string;
 };
 
-export type ProjectSettings = {
+type ProjectSettings = {
   project_id: string;
   entry_file_path: string;
   updated_at: string;
@@ -280,17 +280,17 @@ export type ProjectShareLink = {
   revoked_at: string | null;
 };
 
-export type CreateProjectShareLinkResponse = {
+type CreateProjectShareLinkResponse = {
   link: ProjectShareLink;
   token: string;
 };
 
-export type JoinProjectShareLinkResponse = {
+type JoinProjectShareLinkResponse = {
   project_id: string;
   role: ProjectRole;
 };
 
-export type ResolveProjectShareLinkResponse = {
+type ResolveProjectShareLinkResponse = {
   project_id: string;
   project_name: string;
   permission: SharePermission;
@@ -298,7 +298,7 @@ export type ResolveProjectShareLinkResponse = {
   anonymous_mode: "off" | "read_only" | "read_write_named" | string;
 };
 
-export type TemporaryShareLoginResponse = {
+type TemporaryShareLoginResponse = {
   project_id: string;
   session_token: string;
   session_id: string;
@@ -328,15 +328,7 @@ export type ProjectOrganizationAccess = {
   granted_at: string;
 };
 
-export type ProjectTemplateOrganizationAccess = {
-  project_id: string;
-  organization_id: string;
-  organization_name: string;
-  granted_by: string | null;
-  granted_at: string;
-};
-
-export type ProjectTemplateState = {
+type ProjectTemplateState = {
   project_id: string;
   is_template: boolean;
   updated_at: string;
@@ -945,45 +937,6 @@ export async function listProjectOrganizationAccess(projectId: string) {
     res,
     "Unable to list organization access"
   );
-}
-
-export async function listProjectTemplateOrganizationAccess(projectId: string) {
-  const res = await fetch(apiUrl(`/v1/projects/${projectId}/template-organization-access`), {
-    cache: "no-store",
-    credentials: authCredentials(),
-    headers: authHeaders()
-  });
-  return parseJsonOrThrow<ProjectTemplateOrganizationAccess[]>(
-    res,
-    "Unable to list template organizations"
-  );
-}
-
-export async function upsertProjectTemplateOrganizationAccess(projectId: string, organizationId: string) {
-  const res = await fetch(
-    apiUrl(`/v1/projects/${projectId}/template-organization-access/${organizationId}`),
-    {
-      method: "PUT",
-      credentials: authCredentials(),
-      headers: authHeaders()
-    }
-  );
-  return parseJsonOrThrow<ProjectTemplateOrganizationAccess>(
-    res,
-    "Unable to grant template organization access"
-  );
-}
-
-export async function deleteProjectTemplateOrganizationAccess(projectId: string, organizationId: string) {
-  const res = await fetch(
-    apiUrl(`/v1/projects/${projectId}/template-organization-access/${organizationId}`),
-    {
-      method: "DELETE",
-      credentials: authCredentials(),
-      headers: authHeaders()
-    }
-  );
-  if (!res.ok) await throwApiError(res, "Unable to revoke template organization access");
 }
 
 export async function upsertProjectOrganizationAccess(

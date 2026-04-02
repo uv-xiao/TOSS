@@ -381,15 +381,13 @@ try {
   const owner = await registerOrLogin(ownerEmail, ownerPassword, "Owner");
   const collaborator = await registerOrLogin(collaboratorEmail, collaboratorPassword, "Collaborator");
   const project = await bearerApi("POST", "/v1/projects", owner.sessionToken, {
-    organization_id: "00000000-0000-0000-0000-000000000001",
-    name: `Smoke Project ${runId}`,
-    description: "Headless smoke test project"
+    name: `Smoke Project ${runId}`
   });
   const projectId = project.id;
-  await bearerApi("POST", `/v1/projects/${projectId}/roles`, owner.sessionToken, {
-    user_id: collaborator.userId,
-    role: "Student"
+  const writeShare = await bearerApi("POST", `/v1/projects/${projectId}/share-links`, owner.sessionToken, {
+    permission: "write"
   });
+  await bearerApi("POST", `/v1/share/${encodeURIComponent(writeShare.token)}/join`, collaborator.sessionToken);
 
   let optionalFontBytes = null;
   if (fontPath) {

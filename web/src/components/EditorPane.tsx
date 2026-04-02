@@ -33,7 +33,7 @@ export type EditorChange = {
   insert: string;
 };
 
-export type EditorDeltaHandlerResult = boolean | void;
+type EditorDeltaHandlerResult = boolean | void;
 
 type RemoteCursor = {
   id: string;

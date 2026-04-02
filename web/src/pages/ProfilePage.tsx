@@ -86,6 +86,27 @@ export function ProfilePage({ t }: { t: (key: string) => string }) {
     }
   }
 
+  async function copyNewToken() {
+    if (!newToken) return;
+    await navigator.clipboard.writeText(newToken.token);
+    setCopiedToken(true);
+    window.setTimeout(() => setCopiedToken(false), 1200);
+  }
+
+  async function copyTokenPrefix(prefix: string) {
+    await navigator.clipboard.writeText(prefix);
+  }
+
+  async function revokeToken(tokenId: string) {
+    try {
+      setBusyTokenId(tokenId);
+      await revokePersonalAccessToken(tokenId);
+      await refresh();
+    } finally {
+      setBusyTokenId(null);
+    }
+  }
+
   return (
     <section className="page profile-page">
       <h2>{t("profile.title")}</h2>
@@ -143,11 +164,7 @@ export function ProfilePage({ t }: { t: (key: string) => string }) {
             <div className="toolbar">
               <UiButton
                 size="sm"
-                onClick={async () => {
-                  await navigator.clipboard.writeText(newToken.token);
-                  setCopiedToken(true);
-                  window.setTimeout(() => setCopiedToken(false), 1200);
-                }}
+                onClick={copyNewToken}
               >
                 {copiedToken ? t("share.copied") : t("profile.copyToken")}
               </UiButton>
@@ -178,24 +195,14 @@ export function ProfilePage({ t }: { t: (key: string) => string }) {
                 <div className="toolbar">
                   <UiButton
                     size="sm"
-                    onClick={async () => {
-                      await navigator.clipboard.writeText(token.token_prefix);
-                    }}
+                    onClick={() => copyTokenPrefix(token.token_prefix)}
                   >
                     {t("profile.copyPrefix")}
                   </UiButton>
                   <UiButton
                     size="sm"
                     disabled={!!token.revoked_at || busyTokenId === token.id}
-                    onClick={async () => {
-                      try {
-                        setBusyTokenId(token.id);
-                        await revokePersonalAccessToken(token.id);
-                        await refresh();
-                      } finally {
-                        setBusyTokenId(null);
-                      }
-                    }}
+                    onClick={() => revokeToken(token.id)}
                   >
                     {token.revoked_at ? t("profile.revoked") : t("common.revoke")}
                   </UiButton>

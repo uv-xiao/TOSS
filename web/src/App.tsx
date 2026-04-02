@@ -24,6 +24,23 @@ import { SignInPage } from "@/pages/SignInPage";
 import { ShareWorkspacePage } from "@/pages/ShareWorkspacePage";
 import { WorkspacePage } from "@/pages/WorkspacePage";
 
+function TopbarAccountControls({
+  displayName,
+  onLogout,
+  t
+}: {
+  displayName: string;
+  onLogout: () => Promise<void>;
+  t: (key: string) => string;
+}) {
+  return (
+    <>
+      <span>{displayName}</span>
+      <UiButton onClick={onLogout}>{t("nav.logout")}</UiButton>
+    </>
+  );
+}
+
 export function App() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -47,6 +64,16 @@ export function App() {
     ? decodeURIComponent(location.pathname.replace("/share/", ""))
     : null;
   const t = useMemo(() => (key: string) => translate(locale, key), [locale]);
+  const loadSignedInContext = useCallback(async () => {
+    const [res, orgs, adminAccess] = await Promise.all([
+      listProjects({ includeArchived: true }),
+      listMyOrganizations(),
+      canAccessAdminPanel().catch(() => false)
+    ]);
+    setProjects(res.projects);
+    setOrganizations(orgs.organizations);
+    setHasAdminAccess(adminAccess);
+  }, []);
 
   useEffect(() => {
     if (!shareTokenFromPath) return;
@@ -79,15 +106,8 @@ export function App() {
       setHasAdminAccess(false);
       return;
     }
-    Promise.all([
-      listProjects({ includeArchived: true }),
-      listMyOrganizations(),
-      canAccessAdminPanel().catch(() => false)
-    ])
-      .then(([res, orgs, adminAccess]) => {
-        setProjects(res.projects);
-        setOrganizations(orgs.organizations);
-        setHasAdminAccess(adminAccess);
+    loadSignedInContext()
+      .then(() => {
         setError(null);
       })
       .catch((err) => {
@@ -96,7 +116,7 @@ export function App() {
         setHasAdminAccess(false);
         setError(err instanceof Error ? err.message : "Unable to load projects");
       });
-  }, [authUser?.user_id]);
+  }, [authUser?.user_id, loadSignedInContext]);
 
   useEffect(() => {
     if (!onWorkspaceRoute && workspaceTopbar) {
@@ -112,19 +132,13 @@ export function App() {
     setAuthUser(null);
     setProjects([]);
     setOrganizations([]);
+    setHasAdminAccess(false);
   }, []);
 
   const refreshProjects = useCallback(async () => {
     if (!authUser) return;
-    const [next, orgs, adminAccess] = await Promise.all([
-      listProjects({ includeArchived: true }),
-      listMyOrganizations(),
-      canAccessAdminPanel().catch(() => false)
-    ]);
-    setProjects(next.projects);
-    setOrganizations(orgs.organizations);
-    setHasAdminAccess(adminAccess);
-  }, [authUser]);
+    await loadSignedInContext();
+  }, [authUser, loadSignedInContext]);
 
   if (authLoading) return <main className="loading">Loading...</main>;
 
@@ -170,10 +184,11 @@ export function App() {
             <div className="workspace-slot-center">{workspaceTopbar}</div>
             <div className="meta workspace-meta">
               {authUser ? (
-                <>
-                  <span>{authUser.display_name}</span>
-                  <UiButton onClick={handleLogout}>{t("nav.logout")}</UiButton>
-                </>
+                <TopbarAccountControls
+                  displayName={authUser.display_name}
+                  onLogout={handleLogout}
+                  t={t}
+                />
               ) : null}
             </div>
           </div>
@@ -195,10 +210,11 @@ export function App() {
               </>
             )}
             {authUser ? (
-              <>
-                <span>{authUser.display_name}</span>
-                <UiButton onClick={handleLogout}>{t("nav.logout")}</UiButton>
-              </>
+              <TopbarAccountControls
+                displayName={authUser.display_name}
+                onLogout={handleLogout}
+                t={t}
+              />
             ) : null}
           </div>
         )}

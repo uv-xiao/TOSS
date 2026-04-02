@@ -201,11 +201,11 @@ export function isFontFile(path: string) {
   return /\.(ttf|otf|woff|woff2)$/i.test(path);
 }
 
-export function isImageFile(path: string) {
+function isImageFile(path: string) {
   return /\.(png|jpe?g|gif|bmp|webp|svg)$/i.test(path);
 }
 
-export function isPdfFile(path: string) {
+function isPdfFile(path: string) {
   return /\.pdf$/i.test(path);
 }
 
@@ -220,13 +220,13 @@ export function inferContentType(path: string, contentType?: string) {
   return "application/octet-stream";
 }
 
-export function previewSurfaces(pages: HTMLElement): HTMLElement[] {
+function previewSurfaces(pages: HTMLElement): HTMLElement[] {
   const pageNodes = Array.from(pages.querySelectorAll(".typst-page")) as HTMLElement[];
   if (pageNodes.length > 0) return pageNodes;
   return Array.from(pages.querySelectorAll("canvas")) as HTMLElement[];
 }
 
-export function previewSurfaceBaseSize(node: HTMLElement) {
+function previewSurfaceBaseSize(node: HTMLElement) {
   const storedWidth = Number(node.dataset.baseWidth);
   const storedHeight = Number(node.dataset.baseHeight);
   if (storedWidth > 0 && storedHeight > 0) return { width: storedWidth, height: storedHeight };

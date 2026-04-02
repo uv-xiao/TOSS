@@ -1,6 +1,6 @@
 export type UiLocale = "en" | "zh-CN";
 
-export const DEFAULT_LOCALE: UiLocale = "en";
+const DEFAULT_LOCALE: UiLocale = "en";
 
 const messages: Record<UiLocale, Record<string, string>> = {
   en: {
