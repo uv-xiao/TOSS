@@ -333,7 +333,10 @@ export function EditorPane({
         if (!onDelta && onChange) onChange(v);
       }}
       editable={!readOnly}
-      basicSetup={false}
+      basicSetup={{
+        lineNumbers: true,
+        highlightActiveLine: true
+      }}
       theme="light"
     />
   );
