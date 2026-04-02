@@ -111,6 +111,9 @@ type ProjectRenameDialogState = {
 };
 
 const REVISION_PAGE_SIZE = 40;
+const API_HEALTH_POLL_MS = 15_000;
+const REVISION_POLL_MS = 30_000;
+const WORKSPACE_SYNC_POLL_MS = 20_000;
 
 function sameAssetMeta(a: AssetMeta | undefined, b: AssetMeta | undefined) {
   if (!a || !b) return a === b;
@@ -839,7 +842,7 @@ export function WorkspacePage({
     run().catch(() => undefined);
     const timer = window.setInterval(() => {
       run().catch(() => undefined);
-    }, 5000);
+    }, API_HEALTH_POLL_MS);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
@@ -892,7 +895,7 @@ export function WorkspacePage({
           setRevisions((previous) => mergeRevisionsStable(latest, previous));
         })
         .catch(() => setApiReachable(false));
-    }, 8000);
+    }, REVISION_POLL_MS);
     return () => window.clearInterval(timer);
   }, [projectId, workspaceLoaded]);
 
@@ -900,7 +903,7 @@ export function WorkspacePage({
     if (!projectId || !workspaceLoaded || isRevisionMode || workspaceSyncPending) return;
     const timer = window.setInterval(() => {
       syncWorkspaceFromServerRef.current().catch(() => undefined);
-    }, 5000);
+    }, WORKSPACE_SYNC_POLL_MS);
     return () => window.clearInterval(timer);
   }, [isRevisionMode, projectId, workspaceLoaded, workspaceSyncPending]);
 
