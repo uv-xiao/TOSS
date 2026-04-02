@@ -111,6 +111,37 @@ type ProjectRenameDialogState = {
 
 const REVISION_PAGE_SIZE = 40;
 
+function sameAssetMeta(a: AssetMeta | undefined, b: AssetMeta | undefined) {
+  if (!a || !b) return a === b;
+  return (
+    a.id === b.id &&
+    a.objectKey === b.objectKey &&
+    a.contentType === b.contentType &&
+    a.sizeBytes === b.sizeBytes &&
+    a.createdAt === b.createdAt
+  );
+}
+
+function sameAssetMetaMap(a: Record<string, AssetMeta>, b: Record<string, AssetMeta>) {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const key of aKeys) {
+    if (!sameAssetMeta(a[key], b[key])) return false;
+  }
+  return true;
+}
+
+function sameStringMap(a: Record<string, string>, b: Record<string, string>) {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const key of aKeys) {
+    if (a[key] !== b[key]) return false;
+  }
+  return true;
+}
+
 type WorkspacePageProps = {
   projects: Project[];
   organizations: OrganizationMembership[];
@@ -1333,24 +1364,21 @@ export function WorkspacePage({
         };
       }
       const previousMeta = assetMetaRef.current;
-      assetMetaRef.current = nextAssetMeta;
-      setAssetMeta(nextAssetMeta);
+      const stableMeta = sameAssetMetaMap(previousMeta, nextAssetMeta) ? previousMeta : nextAssetMeta;
+      assetMetaRef.current = stableMeta;
+      setAssetMeta((previous) => (sameAssetMetaMap(previous, stableMeta) ? previous : stableMeta));
       setAssetBase64((previous) => {
         const next: Record<string, string> = {};
         for (const [path, value] of Object.entries(previous)) {
-          const latest = nextAssetMeta[path];
+          const latest = stableMeta[path];
           const old = previousMeta[path];
           if (!latest || !old) continue;
-          const sameVersion =
-            latest.id === old.id &&
-            latest.objectKey === old.objectKey &&
-            latest.createdAt === old.createdAt &&
-            latest.sizeBytes === old.sizeBytes &&
-            latest.contentType === old.contentType;
+          const sameVersion = sameAssetMeta(latest, old);
           if (sameVersion) next[path] = value;
         }
-        assetBase64Ref.current = next;
-        return next;
+        const stableBase64 = sameStringMap(previous, next) ? previous : next;
+        assetBase64Ref.current = stableBase64;
+        return stableBase64;
       });
 
       const filePaths = new Set(nextNodes.filter((node) => node.kind === "file").map((node) => node.path));

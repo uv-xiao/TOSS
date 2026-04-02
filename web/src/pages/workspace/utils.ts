@@ -318,16 +318,14 @@ export function applyPreviewZoom(frame: HTMLElement, zoom: number) {
 }
 
 export function pixelPerPtForZoom(mode: PreviewFitMode, zoom: number) {
-  const safeZoom = clampNumber(Number.isFinite(zoom) ? zoom : 1, PREVIEW_MIN_ZOOM, PREVIEW_MAX_ZOOM);
   const dpr = typeof window === "undefined" ? 1 : Math.max(1, window.devicePixelRatio || 1);
-  // Keep render density tied to effective visual zoom and device DPR, while
-  // maintaining a stronger floor in fit modes so embedded PDF/vector details
-  // stay clear after panel resizes and fit recalculation.
-  const baseDensity = safeZoom * dpr;
-  const desiredDensity =
-    mode === "manual"
-      ? Math.max(baseDensity, dpr * 1.5)
-      : Math.max(baseDensity, dpr * 2.25);
+  // Fit modes can have tiny zoom jitter when panel geometry/scrollbars settle.
+  // Keep their render density stable to avoid repeated full canvas rerenders.
+  if (mode !== "manual") {
+    return clampNumber(Math.ceil(dpr * 2.5), 3, 12);
+  }
+  const safeZoom = clampNumber(Number.isFinite(zoom) ? zoom : 1, PREVIEW_MIN_ZOOM, PREVIEW_MAX_ZOOM);
+  const desiredDensity = Math.max(safeZoom * dpr, dpr * 1.5);
   return clampNumber(Math.ceil(desiredDensity), 3, 12);
 }
 

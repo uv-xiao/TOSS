@@ -32,6 +32,8 @@ type PreviewViewportAnchor = {
   yRatio: number;
 };
 
+const FIT_ZOOM_SYNC_EPSILON = 0.03;
+
 function captureViewportAnchor(frame: HTMLElement): PreviewViewportAnchor {
   const scrollWidth = Math.max(1, frame.scrollWidth);
   const scrollHeight = Math.max(1, frame.scrollHeight);
@@ -170,7 +172,7 @@ export function usePreviewCanvas({
           applyPreviewZoom(frame, zoom);
           syncPreviewScrollbarWidth(frame);
           restoreViewportAnchor(frame, preRenderAnchor);
-          if (fitMode !== "manual" && Math.abs(zoom - currentZoom) > 0.01) {
+          if (fitMode !== "manual" && Math.abs(zoom - currentZoom) > FIT_ZOOM_SYNC_EPSILON) {
             setPreviewZoom(zoom);
           }
         }
@@ -207,7 +209,7 @@ export function usePreviewCanvas({
     applyPreviewZoom(frame, zoom);
     syncPreviewScrollbarWidth(frame);
     restoreViewportAnchor(frame, anchor);
-    if (previewFitMode !== "manual" && Math.abs(zoom - previewZoom) > 0.01) {
+    if (previewFitMode !== "manual" && Math.abs(zoom - previewZoom) > FIT_ZOOM_SYNC_EPSILON) {
       setPreviewZoom(zoom);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -226,7 +228,9 @@ export function usePreviewCanvas({
       applyPreviewZoom(frame, zoom);
       syncPreviewScrollbarWidth(frame);
       restoreViewportAnchor(frame, anchor);
-      setPreviewZoom((current) => (Math.abs(current - zoom) > 0.01 ? zoom : current));
+      setPreviewZoom((current) =>
+        Math.abs(current - zoom) > FIT_ZOOM_SYNC_EPSILON ? zoom : current
+      );
     });
     observer.observe(frame);
     return () => observer.disconnect();
@@ -255,7 +259,9 @@ export function usePreviewCanvas({
       applyPreviewZoom(frame, zoom);
       syncPreviewScrollbarWidth(frame);
       restoreViewportAnchor(frame, anchor);
-      setPreviewZoom((current) => (Math.abs(current - zoom) > 0.01 ? zoom : current));
+      setPreviewZoom((current) =>
+        Math.abs(current - zoom) > FIT_ZOOM_SYNC_EPSILON ? zoom : current
+      );
     };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
