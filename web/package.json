@@ -3,9 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "vite --host 127.0.0.1 --port 3000",
-    "build": "tsc -b && vite build",
-    "preview": "vite preview --host 127.0.0.1 --port 3000"
+    "sync:typst-assets": "node scripts/sync-typst-assets.mjs",
+    "dev": "npm run sync:typst-assets && vite --host 127.0.0.1 --port 3000",
+    "build": "npm run sync:typst-assets && tsc -b && vite build",
+    "preview": "npm run sync:typst-assets && vite preview --host 127.0.0.1 --port 3000"
   },
   "dependencies": {
     "@codemirror/lang-markdown": "^6.3.3",

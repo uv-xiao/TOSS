@@ -33,6 +33,10 @@ npm install
 npm run build
 ```
 
+`npm run build` now runs `sync:typst-assets` first, which stages Typst default text
+font assets into `web/public/vendor/typst-assets/fonts` from a pinned Typst assets
+version (`v0.13.1`) and serves them on the same origin (no jsDelivr runtime fetch).
+
 ### 2. Start backend monolith
 
 ```bash

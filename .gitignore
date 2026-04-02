@@ -10,3 +10,5 @@ tmp
 *.tsbuildinfo
 ops/minio/data
 ops/postgres/data
+web/.cache
+web/public/vendor/typst-assets/fonts

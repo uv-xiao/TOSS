@@ -71,6 +71,10 @@ function packageProxyBase(coreApiUrl: string, appOrigin: string) {
   return `${base.replace(/\/$/, "")}/v1/typst/packages`;
 }
 
+function localTypstFontAssetBase(appOrigin: string) {
+  return `${appOrigin.replace(/\/$/, "")}/vendor/typst-assets/fonts/`;
+}
+
 function normalizeWorkspacePath(path: string) {
   const clean = path.trim().replace(/^\/+/, "");
   if (!clean) return "main.typ";
@@ -220,7 +224,10 @@ async function getTypst(coreApiUrl: string, fontData: Uint8Array[], appOrigin: s
           // Align browser preview with Typst CLI defaults by loading Typst's
           // builtin "text" font asset set (Libertinus/NewCM/DejaVu Mono),
           // while still layering project-uploaded raw fonts on top.
-          loadFonts(fontData, { assets: ["text"] })
+          loadFonts(fontData, {
+            assets: ["text"],
+            assetUrlPrefix: localTypstFontAssetBase(appOrigin)
+          })
         ],
         getModule: async () => {
           self.postMessage({
