@@ -65,6 +65,37 @@ Health check:
 curl http://127.0.0.1:18080/health
 ```
 
+### Optional: Self-Hosted TeXLive On-Demand (SwiftLaTeX)
+
+The backend can serve SwiftLaTeX TeXLive assets directly from a local directory
+without running a separate Python/Flask service.
+
+Environment variables:
+
+- `LATEX_TEXLIVE_LOCAL_MODE`
+  - `off` (default): upstream HTTP mirror only
+  - `prefer`: try local on-demand first, then fallback to upstream
+  - `local_only`: local on-demand only (returns `301` when missing)
+- `LATEX_TEXLIVE_LOCAL_DIR`
+  - Path to your local TeXLive-OnDemand data root (e.g. clone containing
+    `swiftlatexxetex.fmt`, `swiftlatexpdftex.fmt`, `xetexfontlist.txt`, and TeX trees)
+- `LATEX_TEXLIVE_BASE_URL`
+  - Upstream fallback mirror when mode is `off` or `prefer`
+
+Example:
+
+```bash
+cd backend
+DATABASE_URL=postgres://typstapp:iv61v6mRPCGxvWjt@127.0.0.1:5432/typstappdb \
+CORE_API_PORT=18080 \
+DATA_DIR=/tmp/typst-data \
+WEB_STATIC_DIR=../web/dist \
+LATEX_TEXLIVE_LOCAL_MODE=prefer \
+LATEX_TEXLIVE_LOCAL_DIR=~/scratch/Texlive-Ondemand \
+LATEX_TEXLIVE_BASE_URL=https://texlive2.swiftlatex.com \
+cargo run
+```
+
 ## Initial Admin Account
 
 On first startup, the backend seeds an initial admin user and generates a random local password once.
