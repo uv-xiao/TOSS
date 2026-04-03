@@ -142,6 +142,9 @@ type WorkspacePageProps = {
   shareToken?: string | null;
   sharePermission?: "read" | "write" | null;
   anonymousMode?: string | null;
+  shareSaveStatus?: "idle" | "saving" | "saved" | "error";
+  shareSaveError?: string | null;
+  onSaveSharedProject?: () => Promise<void>;
   onSignInFromWorkspace?: () => Promise<void>;
   onLogoutFromWorkspace?: () => Promise<void>;
 };
@@ -158,6 +161,9 @@ export function WorkspacePage({
   shareToken,
   sharePermission,
   anonymousMode,
+  shareSaveStatus = "idle",
+  shareSaveError = null,
+  onSaveSharedProject,
   onSignInFromWorkspace,
   onLogoutFromWorkspace
 }: WorkspacePageProps) {
@@ -319,10 +325,10 @@ export function WorkspacePage({
   }, [projectId]);
 
   useEffect(() => {
-    if (isAnonymousShare) {
+    if (shareToken) {
       setShareAccessContext({
-        shareToken: shareToken ?? null,
-        guestSession: guestSessionToken
+        shareToken,
+        guestSession: isAnonymousShare ? guestSessionToken : null
       });
       return;
     }
@@ -463,7 +469,7 @@ export function WorkspacePage({
     canWrite: !!canWrite,
     effectiveUserId,
     effectiveUserName,
-    shareToken: isAnonymousShare ? shareToken : null,
+    shareToken: shareToken ?? null,
     guestSession: isAnonymousShare ? guestSessionToken : null
   });
   const docTextRef = useRef(docText);
@@ -1999,6 +2005,11 @@ export function WorkspacePage({
       <WorkspaceAccessBanner
         project={project}
         isAnonymousShare={isAnonymousShare}
+        isShareLinkContext={!!shareToken}
+        isAuthenticated={!!authUser}
+        saveStatus={shareSaveStatus}
+        saveError={shareSaveError}
+        onSaveToProjects={onSaveSharedProject}
         onRequestSignIn={() => {
           setGuestAuthError(null);
           setAuthModalOpen(true);

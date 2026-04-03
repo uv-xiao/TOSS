@@ -4,12 +4,22 @@ import type { Project } from "@/lib/api";
 export function WorkspaceAccessBanner({
   project,
   isAnonymousShare,
+  isShareLinkContext,
+  isAuthenticated,
+  saveStatus,
+  saveError,
+  onSaveToProjects,
   onRequestSignIn,
   onCopyTemplate,
   t
 }: {
   project: Project | undefined;
   isAnonymousShare: boolean;
+  isShareLinkContext: boolean;
+  isAuthenticated: boolean;
+  saveStatus: "idle" | "saving" | "saved" | "error";
+  saveError: string | null;
+  onSaveToProjects?: (() => Promise<void>) | undefined;
   onRequestSignIn: () => void;
   onCopyTemplate: () => void;
   t: (key: string) => string;
@@ -25,6 +35,22 @@ export function WorkspaceAccessBanner({
         <UiButton size="sm" onClick={onRequestSignIn}>
           {t("share.logIn")}
         </UiButton>
+      </div>
+    );
+  }
+
+  if (isShareLinkContext && isAuthenticated) {
+    return (
+      <div className="workspace-access-banner with-action ui-message-with-action" role="status">
+        <span className="message-text">
+          {saveStatus === "saved" ? t("share.savedToProjects") : t("share.saveToProjectsPrompt")}
+        </span>
+        {saveStatus !== "saved" && onSaveToProjects && (
+          <UiButton size="sm" onClick={() => onSaveToProjects()} disabled={saveStatus === "saving"}>
+            {saveStatus === "saving" ? t("share.savingToProjects") : t("share.saveToProjects")}
+          </UiButton>
+        )}
+        {saveError && <span className="error">{saveError}</span>}
       </div>
     );
   }

@@ -256,6 +256,7 @@ export function App() {
               <ShareWorkspacePage
                 authUser={authUser}
                 authConfig={authConfig}
+                projects={projects}
                 organizations={organizations}
                 refreshProjects={refreshProjects}
                 t={t}

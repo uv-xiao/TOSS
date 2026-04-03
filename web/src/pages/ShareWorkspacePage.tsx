@@ -1,12 +1,20 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useParams } from "react-router-dom";
-import { resolveProjectShareLink, type AuthConfig, type AuthUser, type OrganizationMembership, type Project } from "@/lib/api";
+import {
+  joinProjectShareLink,
+  resolveProjectShareLink,
+  type AuthConfig,
+  type AuthUser,
+  type OrganizationMembership,
+  type Project
+} from "@/lib/api";
 import { SignInPage } from "@/pages/SignInPage";
 import { WorkspacePage } from "@/pages/WorkspacePage";
 
 type ShareWorkspacePageProps = {
   authUser: AuthUser | null;
   authConfig: AuthConfig | null;
+  projects: Project[];
   organizations: OrganizationMembership[];
   refreshProjects: () => Promise<void>;
   t: (key: string) => string;
@@ -18,6 +26,7 @@ type ShareWorkspacePageProps = {
 export function ShareWorkspacePage({
   authUser,
   authConfig,
+  projects,
   organizations,
   refreshProjects,
   t,
@@ -34,6 +43,8 @@ export function ShareWorkspacePage({
     anonymousMode: string;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -57,6 +68,43 @@ export function ShareWorkspacePage({
       cancelled = true;
     };
   }, [t, token]);
+
+  const alreadySavedToProjects = useMemo(
+    () => !!resolved && projects.some((project) => project.id === resolved.projectId),
+    [projects, resolved]
+  );
+
+  useEffect(() => {
+    if (!authUser || !resolved) return;
+    if (alreadySavedToProjects) {
+      setSaveStatus("saved");
+      setSaveError(null);
+      return;
+    }
+    setSaveStatus((current) => (current === "saved" ? "saved" : "idle"));
+  }, [alreadySavedToProjects, authUser, resolved]);
+
+  useEffect(() => {
+    if (!authUser || !resolved) return;
+    if (alreadySavedToProjects) return;
+    if (saveStatus !== "idle") return;
+    saveSharedProjectToList().catch(() => undefined);
+  }, [alreadySavedToProjects, authUser, resolved, saveStatus]);
+
+  async function saveSharedProjectToList() {
+    if (!resolved) return;
+    if (saveStatus === "saving") return;
+    try {
+      setSaveStatus("saving");
+      setSaveError(null);
+      await joinProjectShareLink(token);
+      await refreshProjects();
+      setSaveStatus("saved");
+    } catch (err) {
+      setSaveStatus("error");
+      setSaveError(err instanceof Error ? err.message : t("share.joinFailed"));
+    }
+  }
 
   const pseudoProject = useMemo<Project[]>(
     () =>
@@ -103,6 +151,27 @@ export function ShareWorkspacePage({
     return <SignInPage config={authConfig} t={t} onSignedIn={onSignedIn} />;
   }
 
+  if (authUser && resolved && !alreadySavedToProjects && saveStatus !== "saved") {
+    return (
+      <section className="page">
+        <div className="card">
+          <strong>{saveStatus === "saving" ? t("share.joining") : t("share.saveToProjectsPrompt")}</strong>
+          {saveError && <div className="error">{saveError}</div>}
+          {saveStatus !== "saving" && (
+            <button
+              className="ui-button ui-primary"
+              onClick={() => {
+                saveSharedProjectToList().catch(() => undefined);
+              }}
+            >
+              {t("share.saveToProjects")}
+            </button>
+          )}
+        </div>
+      </section>
+    );
+  }
+
   return (
     <WorkspacePage
       projects={pseudoProject}
@@ -116,6 +185,9 @@ export function ShareWorkspacePage({
       shareToken={token}
       sharePermission={resolved.permission}
       anonymousMode={resolved.anonymousMode}
+      shareSaveStatus={saveStatus}
+      shareSaveError={saveError}
+      onSaveSharedProject={saveSharedProjectToList}
       onSignInFromWorkspace={onSignedIn}
       onLogoutFromWorkspace={onLogoutFromWorkspace}
     />
