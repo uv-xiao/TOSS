@@ -450,6 +450,7 @@ export function WorkspacePage({
     docText,
     setDocText,
     realtimeDocReady,
+    realtimeBoundPath,
     hasActiveLiveDoc,
     applyDocumentDeltas
   } = useRealtimeDoc({
@@ -469,17 +470,20 @@ export function WorkspacePage({
 
   const compileDocuments = useMemo(() => {
     const baseDocs = { ...sourceDocs };
-    if (
+    const activeLiveDocReady =
       !isRevisionMode &&
       hasActiveLiveDoc &&
       realtimeDocReady &&
+      realtimeBoundPath === activePath;
+    if (
+      activeLiveDocReady &&
       activePath &&
       activePath in baseDocs
     ) {
       baseDocs[activePath] = docText;
     }
     return Object.entries(baseDocs).map(([path, content]) => ({ path, content }));
-  }, [activePath, docText, hasActiveLiveDoc, isRevisionMode, realtimeDocReady, sourceDocs]);
+  }, [activePath, docText, hasActiveLiveDoc, isRevisionMode, realtimeBoundPath, realtimeDocReady, sourceDocs]);
   const compileAssets = useMemo(
     () => Object.entries(sourceAssetBase64).map(([path, contentBase64]) => ({ path, contentBase64 })),
     [sourceAssetBase64]
@@ -585,6 +589,11 @@ export function WorkspacePage({
   const isActiveTextDoc = isRevisionMode
     ? Object.prototype.hasOwnProperty.call(revisionDocs, activePath)
     : hasActiveLiveDoc;
+  const activeLiveDocReady =
+    !isRevisionMode &&
+    hasActiveLiveDoc &&
+    realtimeDocReady &&
+    realtimeBoundPath === activePath;
   const isActiveEditableTextDoc = isActiveTextDoc && activePathIsTextFile;
   const currentEditorLanguage = editorLanguageForPath(activePath);
   const previewPercent = Math.round(previewZoom * 100);
@@ -754,7 +763,11 @@ export function WorkspacePage({
   useEffect(() => {
     if (!projectId || !workspaceLoaded || isRevisionMode) return;
     const nextDocs = { ...docs };
-    if (activePath && Object.prototype.hasOwnProperty.call(nextDocs, activePath)) {
+    if (
+      activeLiveDocReady &&
+      activePath &&
+      Object.prototype.hasOwnProperty.call(nextDocs, activePath)
+    ) {
       nextDocs[activePath] = docText;
     }
     saveProjectSnapshotToCache({
@@ -763,7 +776,7 @@ export function WorkspacePage({
       nodes,
       docs: nextDocs
     });
-  }, [activePath, docText, docs, entryFilePath, isRevisionMode, nodes, projectId, workspaceLoaded]);
+  }, [activeLiveDocReady, activePath, docText, docs, entryFilePath, isRevisionMode, nodes, projectId, workspaceLoaded]);
 
   useEffect(() => {
     let cancelled = false;
@@ -835,7 +848,7 @@ export function WorkspacePage({
   }, [isRevisionMode, projectId, workspaceLoaded, workspaceSyncPending]);
 
   useEffect(() => {
-    if (!projectId || !activePath || isRevisionMode || !workspaceLoaded || !realtimeDocReady) return;
+    if (!projectId || !activePath || isRevisionMode || !workspaceLoaded || !activeLiveDocReady) return;
     if (!hasActiveLiveDoc) return;
     if (docText === lastSavedDocRef.current) return;
     const timer = window.setTimeout(() => {
@@ -857,7 +870,7 @@ export function WorkspacePage({
     isRevisionMode,
     lastSavedDocRef,
     projectId,
-    realtimeDocReady,
+    activeLiveDocReady,
     workspaceLoaded
   ]);
 
@@ -929,7 +942,7 @@ export function WorkspacePage({
       return;
     }
     if (!isRevisionMode && workspaceSyncPending) return;
-    if (!isRevisionMode && hasActiveLiveDoc && !realtimeDocReady) {
+    if (!isRevisionMode && hasActiveLiveDoc && !activeLiveDocReady) {
       setCompileActive(false);
       return;
     }
@@ -1012,6 +1025,7 @@ export function WorkspacePage({
     realtimeDocReady,
     requiredAssetPaths,
     hasActiveLiveDoc,
+    activeLiveDocReady,
     sourceEntryFilePath,
     workspaceLoaded,
     workspaceSyncPending
@@ -2050,7 +2064,7 @@ export function WorkspacePage({
               readOnly={
                 isRevisionMode ||
                 (!canWrite && !canRequestGuestWrite) ||
-                (!isRevisionMode && !realtimeDocReady)
+                (!isRevisionMode && !activeLiveDocReady)
               }
               currentEditorLanguage={currentEditorLanguage}
               jumpTarget={jumpTarget}

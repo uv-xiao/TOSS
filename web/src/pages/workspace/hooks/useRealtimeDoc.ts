@@ -48,6 +48,7 @@ export function useRealtimeDoc({
   });
   const [docText, setDocText] = useState("");
   const [realtimeDocReady, setRealtimeDocReady] = useState(false);
+  const [realtimeBoundPath, setRealtimeBoundPath] = useState("");
 
   const hasActiveLiveDoc = useMemo(
     () => Object.prototype.hasOwnProperty.call(docs, activePath),
@@ -61,6 +62,7 @@ export function useRealtimeDoc({
       activeBindingRef.current = "";
       setDocText("");
       setRealtimeDocReady(false);
+      setRealtimeBoundPath("");
       return;
     }
     const nextBinding = `${projectId}:${activePath}`;
@@ -68,6 +70,7 @@ export function useRealtimeDoc({
       activeBindingRef.current = nextBinding;
       setDocText("");
       setRealtimeDocReady(false);
+      setRealtimeBoundPath("");
     }
   }, [activePath, isRevisionMode, projectId]);
 
@@ -77,6 +80,7 @@ export function useRealtimeDoc({
       setPresence([]);
       setDocText("");
       setRealtimeDocReady(false);
+      setRealtimeBoundPath("");
       setRealtimeStatus("disconnected");
       setReconnectState({ active: false, secondsRemaining: 0, attempt: 0 });
       return;
@@ -109,6 +113,7 @@ export function useRealtimeDoc({
       const current = ytext.toString();
       setDocText(current);
       lastSavedDocRef.current = ytext.toString();
+      setRealtimeBoundPath(activePath);
       setRealtimeDocReady(true);
       if (seeded) {
         realtimeRef.current?.sendSyncSnapshot();
@@ -145,6 +150,7 @@ export function useRealtimeDoc({
       realtimeRef.current = null;
       setPresence([]);
       setRealtimeDocReady(false);
+      setRealtimeBoundPath("");
       setRealtimeStatus("disconnected");
       setReconnectState({ active: false, secondsRemaining: 0, attempt: 0 });
     };
@@ -188,6 +194,7 @@ export function useRealtimeDoc({
     docText,
     setDocText,
     realtimeDocReady,
+    realtimeBoundPath,
     hasActiveLiveDoc,
     applyDocumentDeltas
   };
