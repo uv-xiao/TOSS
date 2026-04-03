@@ -1,4 +1,5 @@
 use crate::git_utils::*;
+use crate::latex_cache::latex_texlive_proxy;
 use crate::object_storage::*;
 use crate::realtime::ws_handler as realtime_ws_handler;
 use crate::services::*;

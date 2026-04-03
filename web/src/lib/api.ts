@@ -94,6 +94,8 @@ export type Organization = {
 export type Project = {
   id: string;
   name: string;
+  project_type: "typst" | "latex" | string;
+  latex_engine: "pdftex" | "xetex" | string | null;
   owner_user_id: string | null;
   owner_display_name: string;
   my_role: ProjectRole;
@@ -228,7 +230,9 @@ export type OrgGroupRoleMapping = {
 
 type ProjectSettings = {
   project_id: string;
+  project_type: "typst" | "latex" | string;
   entry_file_path: string;
+  latex_engine: "pdftex" | "xetex" | string | null;
   updated_at: string;
 };
 
@@ -415,7 +419,11 @@ export async function listProjects(input?: { includeArchived?: boolean; q?: stri
   return parseJsonOrThrow<{ projects: Project[] }>(res, "Unable to load projects");
 }
 
-export async function createProject(input: { name: string }) {
+export async function createProject(input: {
+  name: string;
+  project_type?: "typst" | "latex";
+  latex_engine?: "pdftex" | "xetex";
+}) {
   const res = await fetch(apiUrl("/v1/projects"), {
     method: "POST",
     credentials: authCredentials(),
@@ -757,12 +765,15 @@ export async function getProjectSettings(projectId: string) {
   return parseJsonOrThrow<ProjectSettings>(res, "Unable to load project settings");
 }
 
-export async function upsertProjectSettings(projectId: string, entryFilePath: string) {
+export async function upsertProjectSettings(
+  projectId: string,
+  input: { entry_file_path: string; latex_engine?: "pdftex" | "xetex" | null }
+) {
   const res = await fetch(apiUrl(`/v1/projects/${projectId}/settings`), {
     method: "PUT",
     credentials: authCredentials(),
     headers: authHeaders({ "content-type": "application/json" }),
-    body: JSON.stringify({ entry_file_path: entryFilePath })
+    body: JSON.stringify(input)
   });
   return parseJsonOrThrow<ProjectSettings>(res, "Unable to save project settings");
 }

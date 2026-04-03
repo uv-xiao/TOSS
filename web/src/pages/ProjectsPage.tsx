@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import { useNavigate } from "react-router-dom";
 import { Archive, ArrowRight, Copy, Pencil, Plus } from "lucide-react";
-import { UiBadge, UiButton, UiCard, UiDialog, UiIconButton, UiInput } from "@/components/ui";
+import { UiBadge, UiButton, UiCard, UiDialog, UiIconButton, UiInput, UiSelect } from "@/components/ui";
 import {
   copyProject,
   createProject,
@@ -218,6 +218,8 @@ export function ProjectsPage({
 }) {
   const navigate = useNavigate();
   const [name, setName] = useState("");
+  const [newProjectType, setNewProjectType] = useState<"typst" | "latex">("typst");
+  const [newLatexEngine, setNewLatexEngine] = useState<"pdftex" | "xetex">("xetex");
   const [search, setSearch] = useState("");
   const [view, setView] = useState<"active" | "archived">("active");
   const [busyProjectId, setBusyProjectId] = useState<string | null>(null);
@@ -314,7 +316,11 @@ export function ProjectsPage({
     if (!name.trim()) return;
     try {
       setError(null);
-      await createProject({ name: name.trim() });
+      await createProject({
+        name: name.trim(),
+        project_type: newProjectType,
+        latex_engine: newProjectType === "latex" ? newLatexEngine : undefined
+      });
       setName("");
       await refreshProjects();
     } catch (err) {
@@ -331,6 +337,16 @@ export function ProjectsPage({
       <UiCard className="projects-create-bar">
         <strong>{t("projects.createTitle")}</strong>
         <div className="projects-create-controls">
+          <UiSelect value={newProjectType} onChange={(e) => setNewProjectType(e.target.value === "latex" ? "latex" : "typst")}>
+            <option value="typst">{t("settings.projectTypeTypst")}</option>
+            <option value="latex">{t("settings.projectTypeLatex")}</option>
+          </UiSelect>
+          {newProjectType === "latex" && (
+            <UiSelect value={newLatexEngine} onChange={(e) => setNewLatexEngine(e.target.value === "pdftex" ? "pdftex" : "xetex")}>
+              <option value="xetex">XeTeX</option>
+              <option value="pdftex">pdfTeX</option>
+            </UiSelect>
+          )}
           <UiInput value={name} onChange={(e) => setName(e.target.value)} placeholder={t("projects.namePlaceholder")} />
           <UiButton
             variant="primary"

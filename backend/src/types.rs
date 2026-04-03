@@ -87,6 +87,8 @@ pub struct HealthResponse {
 pub struct Project {
     pub id: Uuid,
     pub name: String,
+    pub project_type: String,
+    pub latex_engine: Option<String>,
     pub owner_user_id: Option<Uuid>,
     pub owner_display_name: String,
     pub my_role: String,
@@ -137,6 +139,8 @@ pub struct CreateOrganizationInput {
 #[derive(Deserialize)]
 pub struct CreateProjectInput {
     pub name: String,
+    pub project_type: Option<String>,
+    pub latex_engine: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -352,6 +356,7 @@ pub struct CreatePatResponse {
 #[derive(Deserialize)]
 pub struct UpsertProjectSettingsInput {
     pub entry_file_path: String,
+    pub latex_engine: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -384,7 +389,9 @@ pub struct UploadProjectThumbnailInput {
 #[derive(Serialize)]
 pub struct ProjectSettingsResponse {
     pub project_id: Uuid,
+    pub project_type: String,
     pub entry_file_path: String,
+    pub latex_engine: Option<String>,
     pub updated_at: DateTime<Utc>,
 }
 

@@ -1631,8 +1631,13 @@ pub(super) async fn upload_project_pdf_artifact(
     Json(input): Json<UploadPdfArtifactInput>,
 ) -> Result<Json<PdfArtifact>, StatusCode> {
     let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Write).await?;
-    let entry_file_path =
-        sanitize_project_path(input.entry_file_path.as_deref().unwrap_or("main.typ"))?;
+    let default_entry_file_path = lookup_project_entry_file_path(&state.db, project_id).await;
+    let entry_file_path = sanitize_project_path(
+        input
+            .entry_file_path
+            .as_deref()
+            .unwrap_or(default_entry_file_path.as_str()),
+    )?;
     let content_type = input
         .content_type
         .unwrap_or_else(|| "application/pdf".to_string());

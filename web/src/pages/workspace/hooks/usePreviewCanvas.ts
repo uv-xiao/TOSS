@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { renderTypstVectorToCanvas } from "@/lib/typst";
+import { renderPdfBytesToCanvas } from "@/lib/pdf";
 import type { PreviewFitMode } from "@/pages/workspace/types";
 import { applyPreviewZoom, deriveFitZoom } from "@/pages/workspace/utils";
 
 type UsePreviewCanvasParams = {
   showPreviewPanel: boolean;
+  previewArtifactKind: "typst-vector" | "pdf";
   vectorData: Uint8Array | null;
+  pdfData: Uint8Array | null;
   previewPixelPerPt: number;
   previewFitMode: PreviewFitMode;
   previewZoom: number;
@@ -56,7 +59,9 @@ function restoreViewportAnchor(frame: HTMLElement, anchor: PreviewViewportAnchor
 
 export function usePreviewCanvas({
   showPreviewPanel,
+  previewArtifactKind,
   vectorData,
+  pdfData,
   previewPixelPerPt,
   previewFitMode,
   previewZoom,
@@ -159,7 +164,8 @@ export function usePreviewCanvas({
       viewportAnchorRef.current = captureViewportAnchor(frame);
     }
     if (viewportAnchorHydratedRef.current) emitViewportAnchor(frame);
-    if (!vectorData) {
+    const artifactBytes = previewArtifactKind === "typst-vector" ? vectorData : pdfData;
+    if (!artifactBytes) {
       lastRenderSignatureRef.current = "";
       setPreviewRendering(false);
       setHasPreviewPage(!!frame.querySelector(".pdf-pages .typst-page, .pdf-pages canvas"));
@@ -167,9 +173,11 @@ export function usePreviewCanvas({
       setPreviewRenderTick((value) => value + 1);
       return;
     }
-    const renderSignature = `${previewPixelPerPt}:${vectorData.byteLength}:${vectorData[0] ?? 0}:${
-      vectorData[Math.floor(vectorData.byteLength / 2)] ?? 0
-    }:${vectorData[vectorData.byteLength - 1] ?? 0}`;
+    const renderSignature = `${previewArtifactKind}:${previewPixelPerPt}:${artifactBytes.byteLength}:${
+      artifactBytes[0] ?? 0
+    }:${artifactBytes[Math.floor(artifactBytes.byteLength / 2)] ?? 0}:${
+      artifactBytes[artifactBytes.byteLength - 1] ?? 0
+    }`;
     const alreadyRendered =
       lastRenderSignatureRef.current === renderSignature && !!frame.querySelector(".pdf-pages .typst-page, .pdf-pages canvas");
     if (alreadyRendered) {
@@ -181,7 +189,11 @@ export function usePreviewCanvas({
     }
     let cancelled = false;
     setPreviewRendering(true);
-    renderTypstVectorToCanvas(frame, vectorData, { pixelPerPt: previewPixelPerPt })
+    const renderPromise =
+      previewArtifactKind === "typst-vector"
+        ? renderTypstVectorToCanvas(frame, artifactBytes, { pixelPerPt: previewPixelPerPt })
+        : renderPdfBytesToCanvas(frame, artifactBytes, { pixelPerPt: previewPixelPerPt });
+    renderPromise
       .then(() => {
         if (cancelled) return;
         lastRenderSignatureRef.current = renderSignature;
@@ -221,10 +233,12 @@ export function usePreviewCanvas({
       setPreviewRendering(false);
     };
   }, [
+    previewArtifactKind,
     previewPixelPerPt,
     setPreviewZoom,
     showPreviewPanel,
-    vectorData
+    vectorData,
+    pdfData
   ]);
 
   useEffect(() => {

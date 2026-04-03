@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Download, Maximize2, MoveHorizontal, ZoomIn, ZoomOut } from "lucide-react";
 import { UiIconButton } from "@/components/ui";
-import type { CompileDiagnostic, TypstRuntimeStatus } from "@/lib/typst";
+import type { CompileDiagnostic } from "@/lib/typst";
 
 export function PreviewPanel({
   editorRatio,
@@ -10,7 +10,8 @@ export function PreviewPanel({
   previewPageCurrent,
   previewPageTotal,
   pdfData,
-  typstRuntimeStatus,
+  compileRuntimeStatus,
+  compileKind,
   workspaceSyncPending,
   compileActive,
   previewRendering,
@@ -37,7 +38,12 @@ export function PreviewPanel({
   previewPageCurrent: number;
   previewPageTotal: number;
   pdfData: Uint8Array | null;
-  typstRuntimeStatus: TypstRuntimeStatus;
+  compileRuntimeStatus: {
+    stage: "downloading-compiler" | "compiling" | "ready" | "idle";
+    loadedBytes?: number;
+    totalBytes?: number;
+  };
+  compileKind: "typst" | "latex";
   workspaceSyncPending: boolean;
   compileActive: boolean;
   previewRendering: boolean;
@@ -197,15 +203,19 @@ export function PreviewPanel({
             {(compileActive || previewRendering) && (
               <div className="preview-runtime-status">
                 <strong>
-                  {typstRuntimeStatus.stage === "downloading-compiler"
-                    ? t("preview.loadingCompiler")
-                    : t("preview.compiling")}
+                  {compileRuntimeStatus.stage === "downloading-compiler"
+                    ? compileKind === "latex"
+                      ? t("preview.loadingCompilerLatex")
+                      : t("preview.loadingCompiler")
+                    : compileKind === "latex"
+                      ? t("preview.compilingLatex")
+                      : t("preview.compiling")}
                 </strong>
-                {typstRuntimeStatus.stage === "downloading-compiler" && (
+                {compileRuntimeStatus.stage === "downloading-compiler" && (
                   <span>
-                    {typstRuntimeStatus.totalBytes && typstRuntimeStatus.totalBytes > 0
-                      ? `${Math.round((100 * (typstRuntimeStatus.loadedBytes || 0)) / typstRuntimeStatus.totalBytes)}%`
-                      : `${Math.round((typstRuntimeStatus.loadedBytes || 0) / 1024)} KB`}
+                    {compileRuntimeStatus.totalBytes && compileRuntimeStatus.totalBytes > 0
+                      ? `${Math.round((100 * (compileRuntimeStatus.loadedBytes || 0)) / compileRuntimeStatus.totalBytes)}%`
+                      : `${Math.round((compileRuntimeStatus.loadedBytes || 0) / 1024)} KB`}
                   </span>
                 )}
               </div>

@@ -86,6 +86,8 @@ pub(super) async fn list_projects(
     let direct_rows = sqlx::query(
         "select p.id,
                 p.name,
+                p.project_type,
+                ps.latex_engine,
                 p.owner_user_id,
                 coalesce(owner.display_name, 'Unknown') as owner_display_name,
                 p.is_template,
@@ -102,6 +104,7 @@ pub(super) async fn list_projects(
          from projects p
          join project_roles pr on pr.project_id = p.id
          left join users owner on owner.id = p.owner_user_id
+         left join project_settings ps on ps.project_id = p.id
          left join project_user_archives pua on pua.project_id = p.id and pua.user_id = $1
          where pr.user_id = $1
            and ($2::boolean = true or pua.archived_at is null)
@@ -120,6 +123,8 @@ pub(super) async fn list_projects(
         sqlx::query(
             "select p.id,
                     p.name,
+                    p.project_type,
+                    ps.latex_engine,
                     p.owner_user_id,
                     coalesce(owner.display_name, 'Unknown') as owner_display_name,
                     p.is_template,
@@ -136,6 +141,7 @@ pub(super) async fn list_projects(
              from projects p
              join project_organization_access poa on poa.project_id = p.id
              left join users owner on owner.id = p.owner_user_id
+             left join project_settings ps on ps.project_id = p.id
              left join project_user_archives pua on pua.project_id = p.id and pua.user_id = $2
              where poa.organization_id = any($1::uuid[])
                and ($3::boolean = true or pua.archived_at is null)
@@ -155,6 +161,8 @@ pub(super) async fn list_projects(
         sqlx::query(
             "select p.id,
                     p.name,
+                    p.project_type,
+                    ps.latex_engine,
                     p.owner_user_id,
                     coalesce(owner.display_name, 'Unknown') as owner_display_name,
                     p.is_template,
@@ -170,6 +178,7 @@ pub(super) async fn list_projects(
              from projects p
              join project_template_organization_access ptoa on ptoa.project_id = p.id
              left join users owner on owner.id = p.owner_user_id
+             left join project_settings ps on ps.project_id = p.id
              left join project_user_archives pua on pua.project_id = p.id and pua.user_id = $2
              where ptoa.organization_id = any($1::uuid[])
                and p.is_template = true
@@ -192,6 +201,8 @@ pub(super) async fn list_projects(
             Project {
                 id: project_id,
                 name: row.get("name"),
+                project_type: row.get("project_type"),
+                latex_engine: row.get("latex_engine"),
                 owner_user_id: row.get("owner_user_id"),
                 owner_display_name: row.get("owner_display_name"),
                 my_role: row.get("my_role"),
@@ -226,6 +237,8 @@ pub(super) async fn list_projects(
             Project {
                 id: project_id,
                 name: row.get("name"),
+                project_type: row.get("project_type"),
+                latex_engine: row.get("latex_engine"),
                 owner_user_id: row.get("owner_user_id"),
                 owner_display_name: row.get("owner_display_name"),
                 my_role: derived_role,
@@ -253,6 +266,8 @@ pub(super) async fn list_projects(
             Project {
                 id: project_id,
                 name: row.get("name"),
+                project_type: row.get("project_type"),
+                latex_engine: row.get("latex_engine"),
                 owner_user_id: row.get("owner_user_id"),
                 owner_display_name: row.get("owner_display_name"),
                 my_role: "ReadOnly".to_string(),
@@ -403,18 +418,34 @@ pub(super) async fn create_project(
     let Some(actor) = request_user_id(&state.db, &headers).await else {
         return Err(StatusCode::UNAUTHORIZED);
     };
+    let project_type = input
+        .project_type
+        .as_deref()
+        .and_then(normalize_project_type)
+        .unwrap_or("typst");
+    let latex_engine = if project_type == "latex" {
+        input
+            .latex_engine
+            .as_deref()
+            .and_then(normalize_latex_engine)
+            .unwrap_or("xetex")
+    } else {
+        "xetex"
+    };
+    let default_entry = default_entry_file_path_for_project_type(project_type);
     let id = Uuid::new_v4();
     let created_at = Utc::now();
     let row = sqlx::query(
-        "insert into projects (id, owner_user_id, name, description, created_at)
-         values ($1, $2, $3, $4, $5)
-         returning id, name, created_at, owner_user_id",
+        "insert into projects (id, owner_user_id, name, description, created_at, project_type)
+         values ($1, $2, $3, $4, $5, $6)
+         returning id, name, created_at, owner_user_id, project_type",
     )
     .bind(id)
     .bind(actor)
     .bind(input.name)
     .bind(Option::<String>::None)
     .bind(created_at)
+    .bind(project_type)
     .fetch_one(&state.db)
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -438,22 +469,29 @@ pub(super) async fn create_project(
     .await;
 
     let _ = sqlx::query(
-        "insert into project_settings (project_id, entry_file_path, updated_at)
-         values ($1, 'main.typ', $2)
+        "insert into project_settings (project_id, entry_file_path, latex_engine, updated_at)
+         values ($1, $2, $3, $4)
          on conflict (project_id) do nothing",
     )
     .bind(id)
+    .bind(default_entry)
+    .bind(if project_type == "latex" {
+        Some(latex_engine)
+    } else {
+        None
+    })
     .bind(created_at)
     .execute(&state.db)
     .await;
 
     let _ = sqlx::query(
         "insert into documents (id, project_id, path, content, updated_at)
-         values ($1, $2, 'main.typ', '', $3)
+         values ($1, $2, $3, '', $4)
          on conflict (project_id, path) do nothing",
     )
     .bind(Uuid::new_v4())
     .bind(id)
+    .bind(default_entry)
     .bind(created_at)
     .execute(&state.db)
     .await;
@@ -479,6 +517,12 @@ pub(super) async fn create_project(
     Ok(Json(Project {
         id: row.get("id"),
         name: row.get("name"),
+        project_type: row.get("project_type"),
+        latex_engine: if project_type == "latex" {
+            Some(latex_engine.to_string())
+        } else {
+            None
+        },
         owner_user_id: row.get("owner_user_id"),
         owner_display_name,
         my_role: "Owner".to_string(),
@@ -602,14 +646,31 @@ pub(super) async fn copy_project(
     .fetch_all(&state.db)
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let source_entry_file =
-        sqlx::query("select entry_file_path from project_settings where project_id = $1")
-            .bind(project_id)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-            .map(|row| row.get::<String, _>("entry_file_path"))
-            .unwrap_or_else(|| "main.typ".to_string());
+    let source_project_type = lookup_project_type(&state.db, project_id).await;
+    let source_settings = sqlx::query(
+        "select entry_file_path, latex_engine from project_settings where project_id = $1",
+    )
+    .bind(project_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let source_entry_file = source_settings
+        .as_ref()
+        .map(|row| row.get::<String, _>("entry_file_path"))
+        .unwrap_or_else(|| {
+            default_entry_file_path_for_project_type(&source_project_type).to_string()
+        });
+    let source_latex_engine = source_settings
+        .as_ref()
+        .and_then(|row| row.get::<Option<String>, _>("latex_engine"))
+        .and_then(|raw| normalize_latex_engine(&raw).map(str::to_string))
+        .or_else(|| {
+            if source_project_type == "latex" {
+                Some("xetex".to_string())
+            } else {
+                None
+            }
+        });
     let source_thumbnail_row = sqlx::query(
         "select content_type, image_data from project_thumbnails where project_id = $1",
     )
@@ -702,14 +763,15 @@ pub(super) async fn copy_project(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     sqlx::query(
-        "insert into projects (id, owner_user_id, name, description, created_at, is_template)
-         values ($1, $2, $3, $4, $5, false)",
+        "insert into projects (id, owner_user_id, name, description, created_at, is_template, project_type)
+         values ($1, $2, $3, $4, $5, false, $6)",
     )
     .bind(new_project_id)
     .bind(actor)
     .bind(&name)
     .bind(Option::<String>::None)
     .bind(now)
+    .bind(&source_project_type)
     .execute(&mut *tx)
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -733,11 +795,12 @@ pub(super) async fn copy_project(
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     sqlx::query(
-        "insert into project_settings (project_id, entry_file_path, updated_at)
-         values ($1, $2, $3)",
+        "insert into project_settings (project_id, entry_file_path, latex_engine, updated_at)
+         values ($1, $2, $3, $4)",
     )
     .bind(new_project_id)
     .bind(&source_entry_file)
+    .bind(source_latex_engine)
     .bind(now)
     .execute(&mut *tx)
     .await
@@ -824,6 +887,8 @@ pub(super) async fn copy_project(
     Ok(Json(Project {
         id: new_project_id,
         name,
+        project_type: source_project_type,
+        latex_engine: lookup_project_latex_engine(&state.db, new_project_id).await,
         owner_user_id: Some(actor),
         owner_display_name,
         my_role: "Owner".to_string(),
@@ -1118,7 +1183,8 @@ pub(super) async fn list_project_share_links(
     headers: HeaderMap,
     Path(project_id): Path<Uuid>,
 ) -> Result<Json<Vec<ProjectShareLink>>, StatusCode> {
-    let principal = ensure_project_access(&state.db, &headers, project_id, AccessNeed::Read).await?;
+    let principal =
+        ensure_project_access(&state.db, &headers, project_id, AccessNeed::Read).await?;
     let rows = if principal.can_write {
         sqlx::query(
             "select id, project_id, token_prefix, token_value, permission, created_by, created_at, expires_at, revoked_at
@@ -1618,9 +1684,10 @@ pub(super) async fn get_project_tree(
             .fetch_optional(&state.db)
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let project_type = lookup_project_type(&state.db, project_id).await;
     let entry_file_path = settings
         .map(|r| r.get::<String, _>("entry_file_path"))
-        .unwrap_or_else(|| "main.typ".to_string());
+        .unwrap_or_else(|| default_entry_file_path_for_project_type(&project_type).to_string());
 
     let mut dirs: HashSet<String> = HashSet::new();
     let mut nodes = Vec::new();
@@ -1951,20 +2018,33 @@ pub(super) async fn get_project_settings(
     Path(project_id): Path<Uuid>,
 ) -> Result<Json<ProjectSettingsResponse>, StatusCode> {
     ensure_project_access(&state.db, &headers, project_id, AccessNeed::Read).await?;
+    let project_type = lookup_project_type(&state.db, project_id).await;
+    let default_entry = default_entry_file_path_for_project_type(&project_type);
+    let default_latex_engine = if project_type == "latex" {
+        Some("xetex")
+    } else {
+        None
+    };
     let row = sqlx::query(
-        "insert into project_settings (project_id, entry_file_path, updated_at)
-         values ($1, 'main.typ', $2)
+        "insert into project_settings (project_id, entry_file_path, latex_engine, updated_at)
+         values ($1, $2, $3, $4)
          on conflict (project_id) do update set project_id = excluded.project_id
-         returning project_id, entry_file_path, updated_at",
+         returning project_id, entry_file_path, latex_engine, updated_at",
     )
     .bind(project_id)
+    .bind(default_entry)
+    .bind(default_latex_engine)
     .bind(Utc::now())
     .fetch_one(&state.db)
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(ProjectSettingsResponse {
         project_id: row.get("project_id"),
+        project_type,
         entry_file_path: row.get("entry_file_path"),
+        latex_engine: row
+            .get::<Option<String>, _>("latex_engine")
+            .and_then(|raw| normalize_latex_engine(&raw).map(str::to_string)),
         updated_at: row.get("updated_at"),
     }))
 }
@@ -1976,15 +2056,31 @@ pub(super) async fn upsert_project_settings(
     Json(input): Json<UpsertProjectSettingsInput>,
 ) -> Result<Json<ProjectSettingsResponse>, StatusCode> {
     let actor = ensure_project_role(&state.db, &headers, project_id, AccessNeed::Manage).await?;
+    let project_type = lookup_project_type(&state.db, project_id).await;
     let entry_file_path = sanitize_project_path(&input.entry_file_path)?;
+    let latex_engine = if project_type == "latex" {
+        Some(
+            input
+                .latex_engine
+                .as_deref()
+                .and_then(normalize_latex_engine)
+                .unwrap_or("xetex"),
+        )
+    } else {
+        None
+    };
     let row = sqlx::query(
-        "insert into project_settings (project_id, entry_file_path, updated_at)
-         values ($1, $2, $3)
-         on conflict (project_id) do update set entry_file_path = excluded.entry_file_path, updated_at = excluded.updated_at
-         returning project_id, entry_file_path, updated_at",
+        "insert into project_settings (project_id, entry_file_path, latex_engine, updated_at)
+         values ($1, $2, $3, $4)
+         on conflict (project_id) do update set
+           entry_file_path = excluded.entry_file_path,
+           latex_engine = excluded.latex_engine,
+           updated_at = excluded.updated_at
+         returning project_id, entry_file_path, latex_engine, updated_at",
     )
     .bind(project_id)
     .bind(&entry_file_path)
+    .bind(latex_engine)
     .bind(Utc::now())
     .fetch_one(&state.db)
     .await
@@ -1992,7 +2088,11 @@ pub(super) async fn upsert_project_settings(
     mark_project_dirty(&state.db, project_id, Some(actor)).await;
     Ok(Json(ProjectSettingsResponse {
         project_id: row.get("project_id"),
+        project_type,
         entry_file_path: row.get("entry_file_path"),
+        latex_engine: row
+            .get::<Option<String>, _>("latex_engine")
+            .and_then(|raw| normalize_latex_engine(&raw).map(str::to_string)),
         updated_at: row.get("updated_at"),
     }))
 }

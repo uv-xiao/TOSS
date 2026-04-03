@@ -201,11 +201,12 @@ export function parentProjectPath(path: string) {
 }
 
 export function isTextFile(path: string) {
-  return /\.(typ|bib|txt|md|json|toml|yaml|yml|csv|xml|html|css|js|ts|tsx|jsx)$/i.test(path);
+  return /\.(typ|tex|ltx|sty|cls|bst|bib|txt|md|json|toml|yaml|yml|csv|xml|html|css|js|ts|tsx|jsx)$/i.test(path);
 }
 
-export function editorLanguageForPath(path: string): "typst" | "markdown" | "plain" {
+export function editorLanguageForPath(path: string): "typst" | "latex" | "markdown" | "plain" {
   if (/\.typ$/i.test(path)) return "typst";
+  if (/\.(tex|ltx|sty|cls|bst|bib)$/i.test(path)) return "latex";
   if (/\.md$/i.test(path)) return "markdown";
   return "plain";
 }

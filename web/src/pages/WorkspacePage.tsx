@@ -59,6 +59,12 @@ import {
   type CompileDiagnostic,
   type TypstRuntimeStatus
 } from "@/lib/typst";
+import {
+  compileLatexClientSide,
+  subscribeLatexRuntimeStatus,
+  type LatexCompileOutput,
+  type LatexRuntimeStatus
+} from "@/lib/latex";
 import { FileTreePanel } from "@/pages/workspace/components/FileTreePanel";
 import { EditorPanel } from "@/pages/workspace/components/EditorPanel";
 import { PreviewPanel } from "@/pages/workspace/components/PreviewPanel";
@@ -125,9 +131,24 @@ type ProjectRenameDialogState = {
 };
 
 const REVISION_PAGE_SIZE = 40;
+type ProjectTypesetter = "typst" | "latex";
+type LatexEngine = "pdftex" | "xetex";
+type CompileRuntimeStatus = TypstRuntimeStatus | LatexRuntimeStatus;
 
 function workspaceErrorMessage(err: unknown, fallback: string) {
   return err instanceof Error ? err.message : fallback;
+}
+
+function normalizeProjectType(raw: string | null | undefined): ProjectTypesetter {
+  return raw === "latex" ? "latex" : "typst";
+}
+
+function normalizeLatexEngine(raw: string | null | undefined): LatexEngine {
+  return raw === "pdftex" ? "pdftex" : "xetex";
+}
+
+function defaultEntryForProjectType(projectType: ProjectTypesetter): string {
+  return projectType === "latex" ? "main.tex" : "main.typ";
 }
 
 type WorkspacePageProps = {
@@ -195,7 +216,7 @@ export function WorkspacePage({
   const thumbnailUploadTimerRef = useRef<number | null>(null);
   const lastUploadedThumbnailRef = useRef<string>("");
   const lastCompileInputKeyRef = useRef<string>("");
-  const lastCompileOutputRef = useRef<CompileOutput | null>(null);
+  const lastCompileOutputRef = useRef<(CompileOutput | LatexCompileOutput) | null>(null);
   const revisionLoadSeqRef = useRef(0);
   const revisionHeadSeqRef = useRef(0);
   const revisionMoreSeqRef = useRef(0);
@@ -208,6 +229,8 @@ export function WorkspacePage({
   const syncWorkspaceFromServerRef = useRef<() => Promise<void>>(async () => undefined);
 
   const [nodes, setNodes] = useState<ProjectNode[]>([]);
+  const [projectType, setProjectType] = useState<ProjectTypesetter>("typst");
+  const [latexEngine, setLatexEngine] = useState<LatexEngine>("xetex");
   const [entryFilePath, setEntryFilePath] = useState("main.typ");
   const [activePath, setActivePath] = useState("main.typ");
   const [docs, setDocs] = useState<Record<string, string>>({});
@@ -265,7 +288,7 @@ export function WorkspacePage({
   const [renameDialog, setRenameDialog] = useState<ProjectRenameDialogState | null>(null);
   const [copyBusy, setCopyBusy] = useState(false);
   const [renameBusy, setRenameBusy] = useState(false);
-  const [typstRuntimeStatus, setTypstRuntimeStatus] = useState<TypstRuntimeStatus>({ stage: "idle" });
+  const [compileRuntimeStatus, setCompileRuntimeStatus] = useState<CompileRuntimeStatus>({ stage: "idle" });
   const [compileActive, setCompileActive] = useState(false);
   const [apiReachable, setApiReachable] = useState(true);
   const [copiedControl, setCopiedControl] = useState<string | null>(null);
@@ -318,11 +341,14 @@ export function WorkspacePage({
 
   useEffect(() => {
     if (!projectId) return;
+    const inferredProjectType = normalizeProjectType(project?.project_type);
+    setProjectType(inferredProjectType);
+    setLatexEngine(normalizeLatexEngine(project?.latex_engine));
     const session = window.localStorage.getItem(`guest.share.${projectId}.session`);
     const sessionId = window.localStorage.getItem(`guest.share.${projectId}.session.id`);
     setGuestSessionToken(session);
     setGuestSessionId(sessionId);
-  }, [projectId]);
+  }, [project?.latex_engine, project?.project_type, projectId]);
 
   useEffect(() => {
     if (shareToken) {
@@ -497,19 +523,22 @@ export function WorkspacePage({
   );
   const requiredAssetPaths = useMemo(() => {
     if (isRevisionMode) return [] as string[];
+    if (projectType === "latex") return Object.keys(assetMeta);
     return collectReferencedAssetPaths(compileDocuments, assetMeta);
-  }, [assetMeta, compileDocuments, isRevisionMode]);
+  }, [assetMeta, compileDocuments, isRevisionMode, projectType]);
   const fontData = useMemo(
-    () =>
-      Object.entries(sourceAssetBase64)
+    () => {
+      if (projectType !== "typst") return [];
+      return Object.entries(sourceAssetBase64)
         .filter(([path]) => isFontFile(path))
         .map(([, b64]) => {
           const binary = atob(b64);
           const bytes = new Uint8Array(binary.length);
           for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
           return bytes;
-        }),
-    [sourceAssetBase64]
+        });
+    },
+    [projectType, sourceAssetBase64]
   );
   const activeDocFingerprint = useMemo(() => {
     if (isRevisionMode) return null;
@@ -548,7 +577,9 @@ export function WorkspacePage({
     beginPreviewPan
   } = usePreviewCanvas({
     showPreviewPanel: effectiveShowPreviewPanel,
+    previewArtifactKind: projectType === "latex" ? "pdf" : "typst-vector",
     vectorData,
+    pdfData,
     previewPixelPerPt,
     previewFitMode,
     previewZoom,
@@ -587,17 +618,18 @@ export function WorkspacePage({
   const activeReadShare = shareLinks.find((link) => link.permission === "read" && !link.revoked_at) ?? null;
   const activeWriteShare = shareLinks.find((link) => link.permission === "write" && !link.revoked_at) ?? null;
   const typEntryOptions = useMemo(() => {
+    const pattern = projectType === "latex" ? /\.(tex|ltx)$/i : /\.typ$/i;
     const values = new Set<string>();
     for (const path of Object.keys(docs)) {
-      if (path.endsWith(".typ")) values.add(path);
+      if (pattern.test(path)) values.add(path);
     }
     for (const node of nodes) {
-      if (node.kind === "file" && node.path.endsWith(".typ")) values.add(node.path);
+      if (node.kind === "file" && pattern.test(node.path)) values.add(node.path);
     }
-    if (entryFilePath.endsWith(".typ")) values.add(entryFilePath);
-    if (values.size === 0) values.add("main.typ");
+    if (pattern.test(entryFilePath)) values.add(entryFilePath);
+    if (values.size === 0) values.add(defaultEntryForProjectType(projectType));
     return Array.from(values).sort((a, b) => a.localeCompare(b));
-  }, [docs, entryFilePath, nodes]);
+  }, [docs, entryFilePath, nodes, projectType]);
   const activePathExistsInTree = currentNodes.some((node) => node.kind === "file" && node.path === activePath);
   const activePathIsTextFile = isTextFile(activePath);
   const isActiveTextDoc = isRevisionMode
@@ -648,9 +680,12 @@ export function WorkspacePage({
   }, [hasActiveLiveDoc]);
 
   useEffect(() => {
-    const unsub = subscribeTypstRuntimeStatus((status) => setTypstRuntimeStatus(status));
+    const unsub =
+      projectType === "latex"
+        ? subscribeLatexRuntimeStatus((status) => setCompileRuntimeStatus(status))
+        : subscribeTypstRuntimeStatus((status) => setCompileRuntimeStatus(status));
     return () => unsub();
-  }, []);
+  }, [projectType]);
 
   const persistPreviewSettings = (targetProjectId: string, fitMode: PreviewFitMode, zoom: number) => {
     const key = `workspace.preview.settings.${targetProjectId}`;
@@ -960,7 +995,7 @@ export function WorkspacePage({
       setCompileActive(false);
       return;
     }
-    const applyCompileOutput = (output: CompileOutput) => {
+    const applyCompileOutput = (output: CompileOutput | LatexCompileOutput) => {
       setVectorData(output.vectorData);
       setPdfData(output.pdfData);
       setCompileErrors(output.errors);
@@ -999,14 +1034,25 @@ export function WorkspacePage({
     compileInFlightKeyRef.current = compileInputKey;
     setCompileActive(true);
     startTransition(() => {
-      compileTypstClientSide({
-        entryFilePath: sourceEntryFilePath,
-        documents: compileDocuments,
-        assets: compileAssets,
-        coreApiUrl: "",
-        fontData,
-        appOrigin: window.location.origin
-      })
+      const compileTask =
+        projectType === "latex"
+          ? compileLatexClientSide({
+              entryFilePath: sourceEntryFilePath,
+              documents: compileDocuments,
+              assets: compileAssets,
+              coreApiUrl: "",
+              engine: latexEngine,
+              appOrigin: window.location.origin
+            })
+          : compileTypstClientSide({
+              entryFilePath: sourceEntryFilePath,
+              documents: compileDocuments,
+              assets: compileAssets,
+              coreApiUrl: "",
+              fontData,
+              appOrigin: window.location.origin
+            });
+      compileTask
         .then((output) => {
           if (compileRequestSeqRef.current !== requestSeq) return;
           lastCompileInputKeyRef.current = compileInputKey;
@@ -1035,7 +1081,9 @@ export function WorkspacePage({
     effectiveShowPreviewPanel,
     fontData,
     isRevisionMode,
+    latexEngine,
     projectId,
+    projectType,
     realtimeDocReady,
     requiredAssetPaths,
     hasActiveLiveDoc,
@@ -1112,6 +1160,8 @@ export function WorkspacePage({
 
   const refreshProjectData = async () => {
     if (!projectId) return;
+    const projectTypeHint = normalizeProjectType(project?.project_type);
+    const defaultEntryHint = defaultEntryForProjectType(projectTypeHint);
     if (project?.is_template && !project.can_read) {
       setWorkspaceLoaded(true);
       setWorkspaceSyncPending(false);
@@ -1127,11 +1177,11 @@ export function WorkspacePage({
     const freshCached = loadProjectSnapshotFromCache(projectId, { minCachedAtMs: minFreshCacheMs });
     if (freshCached) {
       setNodes(freshCached.nodes);
-      setEntryFilePath(freshCached.entryFilePath || "main.typ");
+      setEntryFilePath(freshCached.entryFilePath || defaultEntryHint);
       setDocs(freshCached.docs || {});
       const fallbackPath = pickWorkspaceOpenPath(
         freshCached.nodes,
-        freshCached.entryFilePath || "main.typ",
+        freshCached.entryFilePath || defaultEntryHint,
         activePath
       );
       setActivePath(fallbackPath);
@@ -1145,7 +1195,11 @@ export function WorkspacePage({
       : Promise.resolve([]);
     const responseTuple = await Promise.all([
       getProjectTree(projectId),
-      getProjectSettings(projectId).catch(() => ({ entry_file_path: "main.typ" })),
+      getProjectSettings(projectId).catch(() => ({
+        project_type: projectTypeHint,
+        latex_engine: null,
+        entry_file_path: defaultEntryHint
+      })),
       getGitRepoLink(projectId).catch(() => ({ repo_url: "" })),
       listDocuments(projectId),
       listRevisions(projectId, { limit: REVISION_PAGE_SIZE }).catch(() => ({ revisions: [] })),
@@ -1157,11 +1211,11 @@ export function WorkspacePage({
       if (anyCached) {
         if (!freshCached) {
           setNodes(anyCached.nodes);
-          setEntryFilePath(anyCached.entryFilePath || "main.typ");
+          setEntryFilePath(anyCached.entryFilePath || defaultEntryHint);
           setDocs(anyCached.docs || {});
           const fallbackPath = pickWorkspaceOpenPath(
             anyCached.nodes,
-            anyCached.entryFilePath || "main.typ",
+            anyCached.entryFilePath || defaultEntryHint,
             activePath
           );
           setActivePath(fallbackPath);
@@ -1188,8 +1242,10 @@ export function WorkspacePage({
       accessUsersRes
     ] = responseTuple;
     if (!treeRes.nodes.some((node) => node.kind === "file")) {
+      const initialProjectType = normalizeProjectType(settings.project_type ?? projectTypeHint);
+      const initialEntry = defaultEntryForProjectType(initialProjectType);
       await createProjectFile(projectId, {
-        path: "main.typ",
+        path: initialEntry,
         kind: "file",
         content: ""
       }).catch(() => undefined);
@@ -1197,8 +1253,13 @@ export function WorkspacePage({
       treeRes = nextTree;
       docsRes = nextDocs;
     }
+    const nextProjectType = normalizeProjectType(settings.project_type);
+    const defaultEntry = defaultEntryForProjectType(nextProjectType);
+    const nextEntry = settings.entry_file_path || treeRes.entry_file_path || defaultEntry;
+    setProjectType(nextProjectType);
+    setLatexEngine(normalizeLatexEngine(settings.latex_engine));
     setNodes(treeRes.nodes);
-    setEntryFilePath(settings.entry_file_path || treeRes.entry_file_path || "main.typ");
+    setEntryFilePath(nextEntry);
     setGitRepoUrl(git.repo_url || "");
     const initialRevisions = revisionsRes.revisions || [];
     setRevisions(initialRevisions);
@@ -1213,7 +1274,7 @@ export function WorkspacePage({
     setDocs(nextDocs);
     saveProjectSnapshotToCache({
       projectId,
-      entryFilePath: settings.entry_file_path || treeRes.entry_file_path || "main.typ",
+      entryFilePath: nextEntry,
       nodes: treeRes.nodes,
       docs: nextDocs
     });
@@ -1234,7 +1295,7 @@ export function WorkspacePage({
     if (!activePath || !treeRes.nodes.some((node) => node.path === activePath)) {
       const target = pickWorkspaceOpenPath(
         treeRes.nodes,
-        settings.entry_file_path || treeRes.entry_file_path || "main.typ",
+        nextEntry,
         activePath
       );
       setActivePath(target);
@@ -1254,15 +1315,24 @@ export function WorkspacePage({
       const [treeRes, settings, docsRes, assetsRes] = await Promise.all([
         getProjectTree(projectId),
         getProjectSettings(projectId).catch(() => ({
-          entry_file_path: entryFilePathRef.current || "main.typ"
+          project_type: projectType,
+          latex_engine: latexEngine,
+          entry_file_path: entryFilePathRef.current || defaultEntryForProjectType(projectType)
         })),
         listDocuments(projectId, { sinceUpdatedAt: lastDocsSyncAtRef.current }),
         listProjectAssets(projectId)
       ]);
       setApiReachable(true);
 
+      const nextProjectType = normalizeProjectType(settings.project_type);
+      const nextLatexEngine = normalizeLatexEngine(settings.latex_engine);
+      setProjectType(nextProjectType);
+      setLatexEngine(nextLatexEngine);
       const nextEntry =
-        settings.entry_file_path || treeRes.entry_file_path || entryFilePathRef.current || "main.typ";
+        settings.entry_file_path ||
+        treeRes.entry_file_path ||
+        entryFilePathRef.current ||
+        defaultEntryForProjectType(nextProjectType);
       const nextNodes = treeRes.nodes;
       setNodes((previous) => (sameProjectNodeList(previous, nextNodes) ? previous : nextNodes));
       setEntryFilePath(nextEntry);
@@ -1828,7 +1898,7 @@ export function WorkspacePage({
     setRevisionNodes([]);
     setRevisionAssetBase64({});
     setRevisionAssetMeta({});
-    setRevisionEntryFilePath("main.typ");
+    setRevisionEntryFilePath(defaultEntryForProjectType(projectType));
     setRevisionLoading(createRevisionLoadingState());
   }
 
@@ -2135,7 +2205,8 @@ export function WorkspacePage({
               previewPageCurrent={previewPageCurrent}
               previewPageTotal={previewPageTotal}
               pdfData={pdfData}
-              typstRuntimeStatus={typstRuntimeStatus}
+              compileRuntimeStatus={compileRuntimeStatus}
+              compileKind={projectType}
               workspaceSyncPending={workspaceSyncPending}
               compileActive={compileActive}
               previewRendering={previewRendering}
@@ -2195,6 +2266,8 @@ export function WorkspacePage({
               <SettingsPanel
                 width={settingsPanelWidth}
                 projectId={projectId}
+                projectType={projectType}
+                latexEngine={latexEngine}
                 entryFilePath={entryFilePath}
                 typEntryOptions={typEntryOptions}
                 canManageProject={!!canManageProject}
@@ -2206,7 +2279,21 @@ export function WorkspacePage({
                 projectOrgAccess={projectOrgAccess}
                 projectAccessUsers={projectAccessUsers}
                 onEntryFileChange={async (path) => {
-                  const updated = await upsertProjectSettings(projectId, path);
+                  const updated = await upsertProjectSettings(projectId, {
+                    entry_file_path: path,
+                    latex_engine: projectType === "latex" ? latexEngine : null
+                  });
+                  setProjectType(normalizeProjectType(updated.project_type));
+                  setLatexEngine(normalizeLatexEngine(updated.latex_engine));
+                  setEntryFilePath(updated.entry_file_path);
+                }}
+                onLatexEngineChange={async (engine) => {
+                  const updated = await upsertProjectSettings(projectId, {
+                    entry_file_path: entryFilePath,
+                    latex_engine: engine
+                  });
+                  setProjectType(normalizeProjectType(updated.project_type));
+                  setLatexEngine(normalizeLatexEngine(updated.latex_engine));
                   setEntryFilePath(updated.entry_file_path);
                 }}
                 onCopyToClipboard={copyToClipboard}

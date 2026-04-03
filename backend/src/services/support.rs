@@ -399,11 +399,35 @@ pub(crate) fn sanitize_project_path(raw: &str) -> Result<String, StatusCode> {
 pub(crate) fn is_document_text_path(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     [
-        ".typ", ".bib", ".txt", ".md", ".json", ".toml", ".yaml", ".yml", ".csv", ".xml", ".html",
-        ".css", ".js", ".ts", ".tsx", ".jsx",
+        ".typ", ".tex", ".ltx", ".sty", ".cls", ".bst", ".bib", ".txt", ".md", ".json", ".toml",
+        ".yaml", ".yml", ".csv", ".xml", ".html", ".css", ".js", ".ts", ".tsx", ".jsx",
     ]
     .iter()
     .any(|ext| lower.ends_with(ext))
+}
+
+pub(crate) fn normalize_project_type(raw: &str) -> Option<&'static str> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "typst" => Some("typst"),
+        "latex" => Some("latex"),
+        _ => None,
+    }
+}
+
+pub(crate) fn normalize_latex_engine(raw: &str) -> Option<&'static str> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "pdftex" => Some("pdftex"),
+        "xetex" => Some("xetex"),
+        _ => None,
+    }
+}
+
+pub(crate) fn default_entry_file_path_for_project_type(project_type: &str) -> &'static str {
+    if project_type.eq_ignore_ascii_case("latex") {
+        "main.tex"
+    } else {
+        "main.typ"
+    }
 }
 
 pub(crate) fn guess_content_type(path: &str) -> String {
@@ -934,6 +958,7 @@ pub(crate) async fn load_project_state(
 }
 
 pub(crate) async fn lookup_project_entry_file_path(db: &PgPool, project_id: Uuid) -> String {
+    let project_type = lookup_project_type(db, project_id).await;
     sqlx::query("select entry_file_path from project_settings where project_id = $1")
         .bind(project_id)
         .fetch_optional(db)
@@ -941,7 +966,30 @@ pub(crate) async fn lookup_project_entry_file_path(db: &PgPool, project_id: Uuid
         .ok()
         .flatten()
         .map(|row| row.get::<String, _>("entry_file_path"))
-        .unwrap_or_else(|| "main.typ".to_string())
+        .unwrap_or_else(|| default_entry_file_path_for_project_type(&project_type).to_string())
+}
+
+pub(crate) async fn lookup_project_type(db: &PgPool, project_id: Uuid) -> String {
+    sqlx::query("select project_type from projects where id = $1")
+        .bind(project_id)
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten()
+        .map(|row| row.get::<String, _>("project_type"))
+        .and_then(|raw| normalize_project_type(&raw).map(str::to_string))
+        .unwrap_or_else(|| "typst".to_string())
+}
+
+pub(crate) async fn lookup_project_latex_engine(db: &PgPool, project_id: Uuid) -> Option<String> {
+    sqlx::query("select latex_engine from project_settings where project_id = $1")
+        .bind(project_id)
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|row| row.get::<Option<String>, _>("latex_engine"))
+        .and_then(|raw| normalize_latex_engine(&raw).map(str::to_string))
 }
 
 pub(crate) async fn mark_project_dirty(db: &PgPool, project_id: Uuid, actor_user_id: Option<Uuid>) {

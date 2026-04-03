@@ -1,0 +1,413 @@
+import type { CompileDiagnostic } from "./typst";
+
+type CompileRequest = {
+  id: number;
+  entryFilePath: string;
+  documents: Array<{ path: string; content: string }>;
+  assets: Array<{ path: string; content_base64: string }>;
+  coreApiUrl: string;
+  appOrigin?: string;
+  engine: "pdftex" | "xetex";
+};
+
+type CompileResponse = {
+  id: number;
+  ok: boolean;
+  pdfBytes?: Uint8Array;
+  errors?: string[];
+  diagnostics?: CompileDiagnostic[];
+};
+
+type RuntimeStatusMessage = {
+  kind: "runtime.status";
+  stage: "downloading-compiler" | "compiling" | "ready" | "idle";
+  loaded_bytes?: number;
+  total_bytes?: number;
+};
+
+type SwiftCommandResponse = {
+  cmd?: string;
+  result?: string;
+  status?: number;
+  log?: string;
+  pdf?: ArrayBuffer;
+};
+
+type PendingCommand = {
+  match: (data: SwiftCommandResponse) => boolean;
+  resolve: (data: SwiftCommandResponse) => void;
+  reject: (error: Error) => void;
+  timeout: number;
+};
+
+class SwiftLatexSession {
+  private worker: Worker;
+  private ready = false;
+  private pending: PendingCommand[] = [];
+
+  constructor(workerUrl: string) {
+    this.worker = new Worker(workerUrl);
+    this.worker.onmessage = (event: MessageEvent<SwiftCommandResponse>) => {
+      const data = event.data || {};
+      const index = this.pending.findIndex((pending) => pending.match(data));
+      if (index >= 0) {
+        const item = this.pending[index];
+        this.pending.splice(index, 1);
+        clearTimeout(item.timeout);
+        item.resolve(data);
+      }
+      if (data.result === "ok" && !data.cmd) {
+        this.ready = true;
+      }
+    };
+    this.worker.onerror = (event) => {
+      const message =
+        event && "message" in event && typeof event.message === "string"
+          ? event.message
+          : "SwiftLaTeX worker crashed";
+      const error = new Error(message);
+      const items = this.pending.splice(0, this.pending.length);
+      for (const item of items) {
+        clearTimeout(item.timeout);
+        item.reject(error);
+      }
+      this.ready = false;
+    };
+  }
+
+  async waitReady() {
+    if (this.ready) return;
+    await this.waitFor((data) => data.result === "ok" && !data.cmd, 120000);
+    this.ready = true;
+  }
+
+  postMessage(message: Record<string, unknown>) {
+    this.worker.postMessage(message);
+  }
+
+  async waitFor(
+    match: (data: SwiftCommandResponse) => boolean,
+    timeoutMs: number
+  ): Promise<SwiftCommandResponse> {
+    return new Promise<SwiftCommandResponse>((resolve, reject) => {
+      const timeout = self.setTimeout(() => {
+        this.pending = this.pending.filter((item) => item !== entry);
+        reject(new Error("SwiftLaTeX command timeout"));
+      }, timeoutMs);
+      const entry: PendingCommand = {
+        match,
+        resolve,
+        reject,
+        timeout
+      };
+      this.pending.push(entry);
+    });
+  }
+
+  close() {
+    this.worker.terminate();
+    this.pending = [];
+    this.ready = false;
+  }
+}
+
+const sessions = new Map<string, SwiftLatexSession>();
+let compileQueue: Promise<void> = Promise.resolve();
+
+function normalizeWorkspacePath(path: string, fallback: string) {
+  const clean = path.trim().replace(/^\/+/, "");
+  if (!clean) return fallback;
+  return clean;
+}
+
+function ensureParentDirectories(path: string, allDirs: Set<string>) {
+  const parts = normalizeWorkspacePath(path, "").split("/").filter(Boolean);
+  if (parts.length <= 1) return;
+  let current = "";
+  for (let i = 0; i < parts.length - 1; i += 1) {
+    current = current ? `${current}/${parts[i]}` : parts[i];
+    allDirs.add(current);
+  }
+}
+
+function base64ToUint8(value: string): Uint8Array {
+  const binary = atob(value);
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) out[i] = binary.charCodeAt(i);
+  return out;
+}
+
+function texliveEndpoint(coreApiUrl: string, appOrigin: string) {
+  const base = coreApiUrl.replace(/\/$/, "") || appOrigin;
+  return `${base.replace(/\/$/, "")}/v1/latex/texlive/`;
+}
+
+function swiftWorkerUrl(engine: "pdftex" | "xetex", appOrigin: string) {
+  if (engine === "pdftex") {
+    return new URL("/swiftlatex/texlyrepdftex.js", appOrigin).toString();
+  }
+  return new URL("/swiftlatex/texlyrexetex.js", appOrigin).toString();
+}
+
+function dvipdfmxWorkerUrl(appOrigin: string) {
+  return new URL("/swiftlatex/texlyredvipdfm.js", appOrigin).toString();
+}
+
+function parseCompileDiagnostics(log: string): CompileDiagnostic[] {
+  const lines = log.split(/\r?\n/);
+  const diagnostics: CompileDiagnostic[] = [];
+  const pattern =
+    /^(?<path>[^:\r\n]+?\.(?:tex|ltx|sty|cls|bib)):(?<line>\d+):\s*(?<message>.+)$/i;
+  for (const line of lines) {
+    const raw = line.trim();
+    if (!raw) continue;
+    const match = raw.match(pattern);
+    if (match?.groups) {
+      diagnostics.push({
+        severity: "error",
+        path: match.groups.path.replace(/^\.\/+/, ""),
+        line: Number.parseInt(match.groups.line, 10),
+        column: 1,
+        message: match.groups.message.trim(),
+        raw
+      });
+      continue;
+    }
+    if (/^!/.test(raw) || /error/i.test(raw)) {
+      diagnostics.push({
+        severity: "error",
+        message: raw.replace(/^!\s*/, ""),
+        raw
+      });
+    }
+  }
+  return diagnostics;
+}
+
+function summarizeCompileErrors(log: string) {
+  const lines = log
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => !!line);
+  if (lines.length === 0) return ["LaTeX compile failed"];
+  return lines.slice(-8);
+}
+
+async function ensureSession(engine: "pdftex" | "xetex", appOrigin: string) {
+  const key = `${engine}:${appOrigin}`;
+  let session = sessions.get(key);
+  if (!session) {
+    session = new SwiftLatexSession(swiftWorkerUrl(engine, appOrigin));
+    sessions.set(key, session);
+  }
+  await session.waitReady();
+  return session;
+}
+
+async function ensureDvipdfmxSession(appOrigin: string) {
+  const key = `dvipdfmx:${appOrigin}`;
+  let session = sessions.get(key);
+  if (!session) {
+    session = new SwiftLatexSession(dvipdfmxWorkerUrl(appOrigin));
+    sessions.set(key, session);
+  }
+  await session.waitReady();
+  return session;
+}
+
+async function sendAndWait(
+  session: SwiftLatexSession,
+  message: Record<string, unknown>,
+  match: (data: SwiftCommandResponse) => boolean,
+  timeoutMs = 20000
+) {
+  const pending = session.waitFor(match, timeoutMs);
+  session.postMessage(message);
+  return pending;
+}
+
+async function convertXdvToPdf(
+  xdvBytes: ArrayBuffer,
+  entryFilePath: string,
+  coreApiUrl: string,
+  appOrigin: string
+): Promise<SwiftCommandResponse> {
+  const session = await ensureDvipdfmxSession(appOrigin);
+  session.postMessage({
+    cmd: "settexliveurl",
+    url: texliveEndpoint(coreApiUrl, appOrigin)
+  });
+  session.postMessage({ cmd: "flushcache" });
+  const xdvPath = normalizeWorkspacePath(entryFilePath, "main.tex").replace(/\.(tex|ltx)$/i, ".xdv");
+  const allDirs = new Set<string>();
+  ensureParentDirectories(xdvPath, allDirs);
+  const sortedDirs = Array.from(allDirs).sort((a, b) => a.localeCompare(b));
+  for (const dir of sortedDirs) {
+    await sendAndWait(
+      session,
+      { cmd: "mkdir", url: dir },
+      (data) => data.cmd === "mkdir",
+      10000
+    ).catch(() => null);
+  }
+  await sendAndWait(
+    session,
+    { cmd: "writefile", url: xdvPath, src: new Uint8Array(xdvBytes) },
+    (data) => data.cmd === "writefile",
+    20000
+  );
+  session.postMessage({ cmd: "setmainfile", url: xdvPath });
+  return sendAndWait(
+    session,
+    { cmd: "compilepdf" },
+    (data) => data.cmd === "compile",
+    120000
+  );
+}
+
+async function compileWithSwiftLatex(request: CompileRequest): Promise<CompileResponse> {
+  const appOrigin = request.appOrigin ?? self.location.origin;
+  const entryFallback = request.engine === "pdftex" || request.engine === "xetex" ? "main.tex" : "main.typ";
+  const entryFilePath = normalizeWorkspacePath(request.entryFilePath, entryFallback);
+  self.postMessage({
+    kind: "runtime.status",
+    stage: "downloading-compiler"
+  } satisfies RuntimeStatusMessage);
+  const session = await ensureSession(request.engine, appOrigin);
+  session.postMessage({
+    cmd: "settexliveurl",
+    url: texliveEndpoint(request.coreApiUrl, appOrigin)
+  });
+  session.postMessage({ cmd: "flushcache" });
+  self.postMessage({
+    kind: "runtime.status",
+    stage: "compiling"
+  } satisfies RuntimeStatusMessage);
+
+  const allDirs = new Set<string>();
+  ensureParentDirectories(entryFilePath, allDirs);
+  for (const doc of request.documents) {
+    ensureParentDirectories(doc.path, allDirs);
+  }
+  for (const asset of request.assets) {
+    ensureParentDirectories(asset.path, allDirs);
+  }
+  const sortedDirs = Array.from(allDirs).sort((a, b) => a.localeCompare(b));
+  for (const dir of sortedDirs) {
+    const response = await sendAndWait(
+      session,
+      { cmd: "mkdir", url: dir },
+      (data) => data.cmd === "mkdir",
+      10000
+    ).catch(() => null);
+    const failed = response?.result === "failed";
+    if (failed) {
+      // Existing directories are expected to return "failed" from this worker.
+      continue;
+    }
+  }
+  for (const doc of request.documents) {
+    const path = normalizeWorkspacePath(doc.path, "");
+    await sendAndWait(
+      session,
+      { cmd: "writefile", url: path, src: doc.content },
+      (data) => data.cmd === "writefile",
+      20000
+    );
+  }
+  for (const asset of request.assets) {
+    const path = normalizeWorkspacePath(asset.path, "");
+    await sendAndWait(
+      session,
+      { cmd: "writefile", url: path, src: base64ToUint8(asset.content_base64) },
+      (data) => data.cmd === "writefile",
+      20000
+    );
+  }
+  session.postMessage({ cmd: "setmainfile", url: entryFilePath });
+
+  let compileResult: SwiftCommandResponse | null = null;
+  for (let pass = 0; pass < 3; pass += 1) {
+    compileResult = await sendAndWait(
+      session,
+      { cmd: "compilelatex" },
+      (data) => data.cmd === "compile",
+      120000
+    );
+    if (compileResult.status !== 0) break;
+  }
+  const status = compileResult?.status ?? -1;
+  const log = compileResult?.log || "";
+  if (status === 0 && compileResult?.result === "ok" && compileResult.pdf) {
+    let pdfBytes: Uint8Array;
+    if (request.engine === "xetex") {
+      const dvipdfResult = await convertXdvToPdf(
+        compileResult.pdf,
+        entryFilePath,
+        request.coreApiUrl,
+        appOrigin
+      );
+      if (!(dvipdfResult.status === 0 && dvipdfResult.result === "ok" && dvipdfResult.pdf)) {
+        const log = dvipdfResult.log?.trim() || "DVI to PDF conversion failed";
+        return {
+          id: request.id,
+          ok: false,
+          errors: summarizeCompileErrors(log),
+          diagnostics: parseCompileDiagnostics(log)
+        };
+      }
+      pdfBytes = new Uint8Array(dvipdfResult.pdf);
+    } else {
+      pdfBytes = new Uint8Array(compileResult.pdf);
+    }
+    return {
+      id: request.id,
+      ok: true,
+      pdfBytes,
+      errors: [],
+      diagnostics: []
+    };
+  }
+  const diagnostics = parseCompileDiagnostics(log);
+  return {
+    id: request.id,
+    ok: false,
+    errors: diagnostics.length > 0 ? diagnostics.map((item) => item.raw) : summarizeCompileErrors(log),
+    diagnostics
+  };
+}
+
+self.onmessage = async (event: MessageEvent<CompileRequest>) => {
+  const request = event.data;
+  compileQueue = compileQueue
+    .then(() => handleCompile(request))
+    .catch(() => handleCompile(request));
+};
+
+async function handleCompile(request: CompileRequest) {
+  try {
+    const response = await compileWithSwiftLatex(request);
+    self.postMessage(response);
+    self.postMessage({
+      kind: "runtime.status",
+      stage: "ready"
+    } satisfies RuntimeStatusMessage);
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : typeof error === "string"
+          ? error
+          : "LaTeX compile failed";
+    self.postMessage({
+      id: request.id,
+      ok: false,
+      errors: [message],
+      diagnostics: []
+    } satisfies CompileResponse);
+    self.postMessage({
+      kind: "runtime.status",
+      stage: "idle"
+    } satisfies RuntimeStatusMessage);
+  }
+}

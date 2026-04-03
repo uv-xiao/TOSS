@@ -113,6 +113,8 @@ export function ShareWorkspacePage({
             {
               id: resolved.projectId,
               name: resolved.projectName,
+              project_type: "typst",
+              latex_engine: null,
               owner_user_id: null,
               owner_display_name: "",
               my_role: resolved.permission === "write" ? "ReadWrite" : "ReadOnly",

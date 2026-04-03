@@ -6,6 +6,7 @@ import {
   Transaction
 } from "@codemirror/state";
 import { markdown } from "@codemirror/lang-markdown";
+import { latex } from "codemirror-lang-latex";
 import {
   HighlightStyle,
   Language,
@@ -189,7 +190,7 @@ type Props = {
   onCursorChange?: (cursor: { line: number; column: number }) => void;
   readOnly?: boolean;
   lineWrap?: boolean;
-  language?: "typst" | "markdown" | "plain";
+  language?: "typst" | "latex" | "markdown" | "plain";
   remoteCursors?: RemoteCursor[];
   jumpTo?: { line: number; column: number; token: number } | null;
   onJumpHandled?: () => void;
@@ -277,6 +278,8 @@ export function EditorPane({
     const languageExtensions =
       language === "typst"
         ? [typstLanguage.support]
+        : language === "latex"
+          ? [latex()]
         : language === "markdown"
           ? [markdown()]
           : [];

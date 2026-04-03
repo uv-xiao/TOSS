@@ -55,7 +55,7 @@ export function EditorPanel({
   onEditorDelta: (changes: Array<{ from: number; to: number; insert: string }>) => boolean;
   onCursorChange: (cursor: { line: number; column: number }) => void;
   readOnly: boolean;
-  currentEditorLanguage: "typst" | "markdown" | "plain";
+  currentEditorLanguage: "typst" | "latex" | "markdown" | "plain";
   jumpTarget: { line: number; column: number; token: number } | null;
   onJumpHandled: () => void;
   isRevisionMode: boolean;

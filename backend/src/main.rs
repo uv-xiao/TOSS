@@ -1,4 +1,5 @@
 mod git_utils;
+mod latex_cache;
 mod object_storage;
 mod realtime;
 mod server;

@@ -138,6 +138,7 @@ pub(super) fn build_router() -> Router<AppState> {
             get(download_latest_project_pdf_artifact),
         )
         .route("/v1/typst/packages/{*path}", get(typst_package_proxy))
+        .route("/v1/latex/texlive/{*path}", get(latex_texlive_proxy))
         .route("/v1/git/status/{project_id}", get(git_status))
         .route("/v1/git/repo-link/{project_id}", get(git_repo_link))
         .route("/v1/git/repo/{project_id}/{*rest}", any(git_http_backend))

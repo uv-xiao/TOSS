@@ -61,6 +61,8 @@ function ShareLinkCard({
 export function SettingsPanel({
   width,
   projectId,
+  projectType,
+  latexEngine,
   entryFilePath,
   typEntryOptions,
   canManageProject,
@@ -72,6 +74,7 @@ export function SettingsPanel({
   projectOrgAccess,
   projectAccessUsers,
   onEntryFileChange,
+  onLatexEngineChange,
   onCopyToClipboard,
   onToggleTemplate,
   activeReadShare,
@@ -87,6 +90,8 @@ export function SettingsPanel({
 }: {
   width: number;
   projectId: string;
+  projectType: "typst" | "latex";
+  latexEngine: "pdftex" | "xetex";
   entryFilePath: string;
   typEntryOptions: string[];
   canManageProject: boolean;
@@ -98,6 +103,7 @@ export function SettingsPanel({
   projectOrgAccess: ProjectOrganizationAccess[];
   projectAccessUsers: ProjectAccessUser[];
   onEntryFileChange: (path: string) => Promise<void>;
+  onLatexEngineChange: (engine: "pdftex" | "xetex") => Promise<void>;
   onCopyToClipboard: (controlKey: string, value: string) => Promise<void>;
   onToggleTemplate: () => Promise<void>;
   activeReadShare: ProjectShareLink | null;
@@ -120,6 +126,29 @@ export function SettingsPanel({
       <div className="panel-content">
         <div className="settings-section">
           <strong>{t("settings.compilation")}</strong>
+          <label>
+            {t("settings.projectType")}
+            <UiSelect value={projectType} disabled>
+              <option value="typst">{t("settings.projectTypeTypst")}</option>
+              <option value="latex">{t("settings.projectTypeLatex")}</option>
+            </UiSelect>
+          </label>
+          {projectType === "latex" && (
+            <label>
+              {t("settings.latexEngine")}
+              <UiSelect
+                value={latexEngine}
+                onChange={async (e) => {
+                  const value = e.target.value === "pdftex" ? "pdftex" : "xetex";
+                  await onLatexEngineChange(value);
+                }}
+                disabled={!canManageProject}
+              >
+                <option value="xetex">XeTeX</option>
+                <option value="pdftex">pdfTeX</option>
+              </UiSelect>
+            </label>
+          )}
           <label>
             {t("settings.entryFile")}
             <UiSelect
