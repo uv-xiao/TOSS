@@ -1,5 +1,6 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Download } from "lucide-react";
+import { renderPdfBytesToCanvas } from "@/lib/pdf";
 
 export function UnsupportedFilePane({
   path,
@@ -17,20 +18,47 @@ export function UnsupportedFilePane({
   t: (key: string) => string;
 }) {
   const downloadName = path.split("/").filter(Boolean).pop() || path;
-  const pdfViewerEnabled = useMemo(() => {
-    if (typeof navigator === "undefined") return true;
-    const value = (navigator as Navigator & { pdfViewerEnabled?: boolean }).pdfViewerEnabled;
-    return value !== false;
-  }, []);
-  const showPdfFallback = isPdf && !pdfViewerEnabled;
+  const pdfCanvasRef = useRef<HTMLDivElement | null>(null);
+  const [pdfRenderError, setPdfRenderError] = useState<string | null>(null);
+  const [pdfRendering, setPdfRendering] = useState(false);
+  const pdfBase64 = useMemo(() => {
+    if (!isPdf || !dataUrl.startsWith("data:")) return "";
+    const comma = dataUrl.indexOf(",");
+    if (comma < 0) return "";
+    return dataUrl.slice(comma + 1);
+  }, [dataUrl, isPdf]);
+
+  useEffect(() => {
+    if (!isPdf || !hasData) return;
+    const container = pdfCanvasRef.current;
+    if (!container || !pdfBase64) return;
+    let cancelled = false;
+    setPdfRenderError(null);
+    setPdfRendering(true);
+    const binary = atob(pdfBase64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    renderPdfBytesToCanvas(container, bytes, { pixelPerPt: 2.5 })
+      .then(() => {
+        if (!cancelled) setPdfRendering(false);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setPdfRendering(false);
+        setPdfRenderError(err instanceof Error ? err.message : "PDF preview failed");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [hasData, isPdf, pdfBase64]);
+
   const media = isImage ? (
     <img src={dataUrl} alt={path} className="file-preview-image" />
-  ) : isPdf && !showPdfFallback ? (
-    <iframe title={path} src={dataUrl} className="file-preview-pdf" />
-  ) : showPdfFallback ? (
-    <div className="file-preview-pdf-fallback">
-      <div className="file-icon" aria-hidden />
-      <p>{t("workspace.pdfPreviewUnavailable")}</p>
+  ) : isPdf ? (
+    <div className="file-preview-pdf-canvas" aria-label={path}>
+      {pdfRendering && <div className="file-preview-pdf-overlay">{t("workspace.fileLoading")}</div>}
+      {pdfRenderError && <div className="file-preview-pdf-overlay error">{pdfRenderError}</div>}
+      <div ref={pdfCanvasRef} className="file-preview-pdf-surface" />
     </div>
   ) : (
     <div className="file-icon" aria-hidden />

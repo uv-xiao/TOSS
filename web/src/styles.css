@@ -1497,23 +1497,39 @@ a {
   height: 64px;
 }
 
-.file-preview-pdf {
+.file-preview-pdf-canvas {
   width: 100%;
   height: 100%;
-  border: 0;
+  min-height: 0;
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: auto;
+  background: #e8edf5;
 }
 
-.file-preview-pdf-fallback {
-  display: grid;
-  justify-items: center;
-  gap: 10px;
-  text-align: center;
-  color: var(--muted);
+.file-preview-pdf-surface {
+  min-height: 100%;
 }
 
-.file-preview-pdf-fallback p {
-  margin: 0;
-  max-width: 320px;
+.file-preview-pdf-canvas .pdf-pages {
+  width: max-content;
+  margin: 0 auto;
+  padding: 12px;
+}
+
+.file-preview-pdf-overlay {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  top: 10px;
+  z-index: 2;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid #c9dbef;
+  background: rgba(236, 244, 255, 0.96);
+  color: #274f74;
+  font-size: 12px;
 }
 
 .remote-cursor {
