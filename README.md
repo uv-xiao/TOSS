@@ -74,6 +74,13 @@ Environment variables:
 
 - `LATEX_TEXLIVE_BASE_URL`
   - If set: backend uses **prefer-local then upstream fallback** mode.
+  - Supports:
+    - SwiftLaTeX-style endpoints (direct `/xetex/...` and `/pdftex/...` file API)
+    - CTAN TeXLive mirrors ending with `/tlnet` (for example:
+      `https://mirrors.tuna.tsinghua.edu.cn/CTAN/systems/texlive/tlnet`,
+      `https://mirrors.pku.edu.cn/ctan/systems/texlive/tlnet`)
+    - In `/tlnet` mode, backend resolves requested files through `texlive.tlpdb` and
+      lazily downloads/extracts package archives into `DATA_DIR/texlive/ctan-files`.
   - If unset: backend runs in **local-only** mode.
 
 On first startup, backend auto-downloads bootstrap files into `DATA_DIR/texlive`:
@@ -100,6 +107,12 @@ DATA_DIR=/tmp/typst-data \
 WEB_STATIC_DIR=../web/dist \
 LATEX_TEXLIVE_BASE_URL=https://texlive2.swiftlatex.com \
 cargo run
+```
+
+CTAN mirror example:
+
+```bash
+LATEX_TEXLIVE_BASE_URL=https://mirrors.tuna.tsinghua.edu.cn/CTAN/systems/texlive/tlnet
 ```
 
 ## Initial Admin Account
