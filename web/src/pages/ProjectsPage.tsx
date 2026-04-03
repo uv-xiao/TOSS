@@ -90,7 +90,7 @@ function ProjectRow({
         <div className="project-main">
           <strong>{project.name}</strong>
           <div className="project-tags">
-            <UiBadge tone={project.project_type === "latex" ? "accent" : "neutral"}>
+            <UiBadge tone={project.project_type === "latex" ? "success" : "neutral"}>
               {project.project_type === "latex" ? t("settings.projectTypeLatex") : t("settings.projectTypeTypst")}
             </UiBadge>
             {project.is_template && <UiBadge tone="accent">{t("projects.templateBadge")}</UiBadge>}
@@ -98,10 +98,14 @@ function ProjectRow({
           </div>
         </div>
       </button>
-      <span>{project.owner_display_name}</span>
-      <span title={new Date(project.last_edited_at).toLocaleString()}>
-        {formatRelativeTime(project.last_edited_at)}
-      </span>
+      <div className="project-owner-cell">
+        <span className="project-meta-label">{t("projects.tableOwner")}</span>
+        <span className="project-meta-value">{project.owner_display_name}</span>
+      </div>
+      <div className="project-edited-cell" title={new Date(project.last_edited_at).toLocaleString()}>
+        <span className="project-meta-label">{t("projects.tableLastEdited")}</span>
+        <span className="project-meta-value">{formatRelativeTime(project.last_edited_at)}</span>
+      </div>
       <div className="projects-row-actions">
         <UiIconButton
           tooltip={t("projects.open")}
