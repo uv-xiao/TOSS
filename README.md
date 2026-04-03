@@ -67,20 +67,28 @@ curl http://127.0.0.1:18080/health
 
 ### Optional: Self-Hosted TeXLive On-Demand (SwiftLaTeX)
 
-The backend can serve SwiftLaTeX TeXLive assets directly from a local directory
-without running a separate Python/Flask service.
+The backend can serve SwiftLaTeX TeXLive assets directly (pure Rust, no separate
+Python/Flask service).
 
 Environment variables:
 
-- `LATEX_TEXLIVE_LOCAL_MODE`
-  - `off` (default): upstream HTTP mirror only
-  - `prefer`: try local on-demand first, then fallback to upstream
-  - `local_only`: local on-demand only (returns `301` when missing)
-- `LATEX_TEXLIVE_LOCAL_DIR`
-  - Path to your local TeXLive-OnDemand data root (e.g. clone containing
-    `swiftlatexxetex.fmt`, `swiftlatexpdftex.fmt`, `xetexfontlist.txt`, and TeX trees)
 - `LATEX_TEXLIVE_BASE_URL`
-  - Upstream fallback mirror when mode is `off` or `prefer`
+  - If set: backend uses **prefer-local then upstream fallback** mode.
+  - If unset: backend runs in **local-only** mode.
+
+On first startup, backend auto-downloads bootstrap files into `DATA_DIR/texlive`:
+
+- `swiftlatexxetex.fmt`
+- `swiftlatexpdftex.fmt`
+- `xetexfontlist.txt`
+
+Bootstrap source defaults to:
+
+- `https://github.com/SwiftLaTeX/Texlive-Ondemand/raw/refs/heads/master/...`
+
+Optional override:
+
+- `LATEX_TEXLIVE_BOOTSTRAP_BASE_URL`
 
 Example:
 
@@ -90,8 +98,6 @@ DATABASE_URL=postgres://typstapp:iv61v6mRPCGxvWjt@127.0.0.1:5432/typstappdb \
 CORE_API_PORT=18080 \
 DATA_DIR=/tmp/typst-data \
 WEB_STATIC_DIR=../web/dist \
-LATEX_TEXLIVE_LOCAL_MODE=prefer \
-LATEX_TEXLIVE_LOCAL_DIR=~/scratch/Texlive-Ondemand \
 LATEX_TEXLIVE_BASE_URL=https://texlive2.swiftlatex.com \
 cargo run
 ```
