@@ -337,17 +337,30 @@ export function ProjectsPage({
       <UiCard className="projects-create-bar">
         <strong>{t("projects.createTitle")}</strong>
         <div className="projects-create-controls">
-          <UiSelect value={newProjectType} onChange={(e) => setNewProjectType(e.target.value === "latex" ? "latex" : "typst")}>
+          <UiInput
+            className="project-name-input"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder={t("projects.namePlaceholder")}
+          />
+          <UiSelect
+            className="project-type-select"
+            value={newProjectType}
+            onChange={(e) => setNewProjectType(e.target.value === "latex" ? "latex" : "typst")}
+          >
             <option value="typst">{t("settings.projectTypeTypst")}</option>
             <option value="latex">{t("settings.projectTypeLatex")}</option>
           </UiSelect>
           {newProjectType === "latex" && (
-            <UiSelect value={newLatexEngine} onChange={(e) => setNewLatexEngine(e.target.value === "pdftex" ? "pdftex" : "xetex")}>
+            <UiSelect
+              className="project-engine-select"
+              value={newLatexEngine}
+              onChange={(e) => setNewLatexEngine(e.target.value === "pdftex" ? "pdftex" : "xetex")}
+            >
               <option value="xetex">XeTeX</option>
               <option value="pdftex">pdfTeX</option>
             </UiSelect>
           )}
-          <UiInput value={name} onChange={(e) => setName(e.target.value)} placeholder={t("projects.namePlaceholder")} />
           <UiButton
             variant="primary"
             onClick={createNamedProject}

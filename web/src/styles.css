@@ -241,9 +241,25 @@ a {
 }
 
 .projects-create-controls {
-  display: grid;
-  grid-template-columns: minmax(220px, 420px) max-content;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 10px;
+}
+
+.projects-create-controls .project-name-input {
+  flex: 1 1 320px;
+  min-width: 220px;
+}
+
+.projects-create-controls .project-type-select {
+  flex: 0 0 180px;
+  min-width: 160px;
+}
+
+.projects-create-controls .project-engine-select {
+  flex: 0 0 150px;
+  min-width: 130px;
 }
 
 .projects-create-controls .button {
@@ -1627,7 +1643,7 @@ label {
   }
 
   .projects-create-controls {
-    grid-template-columns: 1fr;
+    align-items: stretch;
   }
 
   .workspace-shell {

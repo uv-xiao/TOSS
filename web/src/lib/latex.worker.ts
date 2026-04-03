@@ -171,6 +171,80 @@ function compilerBootstrapUrls(engine: "pdftex" | "xetex", coreApiUrl: string, a
   ];
 }
 
+function emitBootstrapProgress(loadedBytes: number, totalBytes: number) {
+  self.postMessage({
+    kind: "runtime.status",
+    stage: "downloading-compiler",
+    loaded_bytes: Math.max(0, loadedBytes),
+    total_bytes: Math.max(1, totalBytes)
+  } satisfies RuntimeStatusMessage);
+}
+
+async function downloadBytesWithXhrProgress(
+  url: string,
+  onProgress: (loadedBytes: number, totalBytes: number | null) => void
+): Promise<Uint8Array> {
+  return new Promise<Uint8Array>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("GET", url, true);
+    xhr.responseType = "arraybuffer";
+    xhr.withCredentials = true;
+    xhr.onprogress = (event) => {
+      const nextLoaded = Math.max(0, event.loaded || 0);
+      const nextTotal = event.lengthComputable && event.total > 0 ? event.total : null;
+      onProgress(nextLoaded, nextTotal);
+    };
+    xhr.onerror = () => reject(new Error(`Failed to download compiler asset: ${url}`));
+    xhr.onload = () => {
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new Error(`Compiler asset download failed (${xhr.status}): ${url}`));
+        return;
+      }
+      const response = xhr.response as ArrayBuffer | null;
+      if (!response) {
+        reject(new Error(`Empty compiler asset response: ${url}`));
+        return;
+      }
+      const bytes = new Uint8Array(response);
+      const totalHeader = Number.parseInt(xhr.getResponseHeader("content-length") || "0", 10);
+      const totalBytes = Number.isFinite(totalHeader) && totalHeader > 0 ? totalHeader : bytes.byteLength;
+      onProgress(bytes.byteLength, totalBytes);
+      resolve(bytes);
+    };
+    xhr.send();
+  });
+}
+
+async function readResponseBytesWithProgress(
+  response: Response,
+  onChunk: (chunkBytes: number) => void
+): Promise<Uint8Array> {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    onChunk(bytes.byteLength);
+    return bytes;
+  }
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    if (!value || value.byteLength === 0) continue;
+    chunks.push(value);
+    total += value.byteLength;
+    onChunk(value.byteLength);
+  }
+  if (chunks.length === 1) return chunks[0];
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return merged;
+}
+
 async function ensureCompilerBootstrapCached(
   engine: "pdftex" | "xetex",
   coreApiUrl: string,
@@ -180,39 +254,53 @@ async function ensureCompilerBootstrapCached(
   if (bootstrapPrepared.has(cacheKey)) return;
   const urls = compilerBootstrapUrls(engine, coreApiUrl, appOrigin);
   const cacheStorage = typeof caches !== "undefined" ? await caches.open(BOOTSTRAP_CACHE_NAME) : null;
-  for (let i = 0; i < urls.length; i += 1) {
-    self.postMessage({
-      kind: "runtime.status",
-      stage: "downloading-compiler",
-      loaded_bytes: i,
-      total_bytes: urls.length
-    } satisfies RuntimeStatusMessage);
-    try {
-      let response = cacheStorage ? await cacheStorage.match(urls[i].url) : undefined;
-      if (!response) {
-        response = await fetch(urls[i].url, {
-          method: "GET",
-          cache: "force-cache",
-          credentials: "include"
-        });
-        if (response.ok && cacheStorage) {
-          await cacheStorage.put(urls[i].url, response.clone());
-        }
+  let loadedBytes = 0;
+  let totalBytes = 0;
+  emitBootstrapProgress(0, 1);
+  for (const asset of urls) {
+    let assetLoadedBytes = 0;
+    let assetTotalBytes = 0;
+    const reportAssetProgress = (nextLoaded: number, nextTotal: number | null) => {
+      const safeLoaded = Number.isFinite(nextLoaded) ? Math.max(0, nextLoaded) : 0;
+      if (safeLoaded > assetLoadedBytes) {
+        loadedBytes += safeLoaded - assetLoadedBytes;
+        assetLoadedBytes = safeLoaded;
       }
-      if (response.ok) {
-        const bytes = new Uint8Array(await response.arrayBuffer());
-        bootstrapAssetBytes.set(urls[i].url, bytes);
+      if (nextTotal && Number.isFinite(nextTotal) && nextTotal > 0) {
+        const safeTotal = Math.max(1, nextTotal);
+        if (assetTotalBytes === 0) {
+          totalBytes += safeTotal;
+        } else if (assetTotalBytes !== safeTotal) {
+          totalBytes += safeTotal - assetTotalBytes;
+        }
+        assetTotalBytes = safeTotal;
+      }
+      emitBootstrapProgress(loadedBytes, totalBytes > 0 ? totalBytes : loadedBytes || 1);
+    };
+    try {
+      let response = cacheStorage ? await cacheStorage.match(asset.url) : undefined;
+      if (response?.ok) {
+        const headerTotal = Number.parseInt(response.headers.get("content-length") || "0", 10);
+        reportAssetProgress(0, Number.isFinite(headerTotal) && headerTotal > 0 ? headerTotal : null);
+        const bytes = await readResponseBytesWithProgress(response, (chunkBytes) => {
+          reportAssetProgress(assetLoadedBytes + chunkBytes, assetTotalBytes || null);
+        });
+        reportAssetProgress(bytes.byteLength, assetTotalBytes > 0 ? assetTotalBytes : bytes.byteLength);
+        bootstrapAssetBytes.set(asset.url, bytes);
+      } else {
+        const bytes = await downloadBytesWithXhrProgress(asset.url, reportAssetProgress);
+        bootstrapAssetBytes.set(asset.url, bytes);
+        if (cacheStorage) {
+          const body = new Uint8Array(bytes.byteLength);
+          body.set(bytes);
+          await cacheStorage.put(asset.url, new Response(body.buffer, { status: 200 }));
+        }
       }
     } catch {
       // Best effort warmup. SwiftLaTeX runtime will retry as needed.
     }
   }
-  self.postMessage({
-    kind: "runtime.status",
-    stage: "downloading-compiler",
-    loaded_bytes: urls.length,
-    total_bytes: urls.length
-  } satisfies RuntimeStatusMessage);
+  emitBootstrapProgress(totalBytes > 0 ? totalBytes : loadedBytes, totalBytes > 0 ? totalBytes : loadedBytes || 1);
   bootstrapPrepared.add(cacheKey);
 }
 

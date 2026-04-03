@@ -322,6 +322,14 @@ export function applyPreviewZoom(frame: HTMLElement, zoom: number) {
         }
         transformWrapper.style.transformOrigin = "0 0";
         transformWrapper.style.transform = `scale(${nextWidth / canvasBaseWidth}, ${nextHeight / canvasBaseHeight})`;
+      } else {
+        // PDF renderer uses a plain `div.typst-page > canvas` structure.
+        // Keep child canvas in sync with wrapper dimensions to avoid clip-only "zoom".
+        const pageCanvas = surface.querySelector(":scope > canvas") as HTMLCanvasElement | null;
+        if (pageCanvas) {
+          pageCanvas.style.width = `${nextWidth}px`;
+          pageCanvas.style.height = `${nextHeight}px`;
+        }
       }
     }
     surface.style.width = `${nextWidth}px`;
