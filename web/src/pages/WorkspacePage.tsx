@@ -1096,7 +1096,7 @@ export function WorkspacePage({
   useEffect(() => {
     if (!projectId || !workspaceLoaded || isRevisionMode || !effectiveShowPreviewPanel) return;
     if (!authUser) return;
-    if (!vectorData || compileDiagnostics.length > 0 || compileErrors.length > 0) return;
+    if ((!vectorData && !pdfData) || compileDiagnostics.length > 0 || compileErrors.length > 0) return;
     const frame = canvasPreviewRef.current;
     if (!frame) return;
     const firstCanvas = frame.querySelector(".pdf-pages canvas") as HTMLCanvasElement | null;
@@ -1136,6 +1136,7 @@ export function WorkspacePage({
     previewRenderTick,
     projectId,
     effectiveShowPreviewPanel,
+    pdfData,
     vectorData,
     workspaceLoaded,
     authUser
