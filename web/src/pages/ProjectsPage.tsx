@@ -90,6 +90,9 @@ function ProjectRow({
         <div className="project-main">
           <strong>{project.name}</strong>
           <div className="project-tags">
+            <UiBadge tone={project.project_type === "latex" ? "accent" : "neutral"}>
+              {project.project_type === "latex" ? t("settings.projectTypeLatex") : t("settings.projectTypeTypst")}
+            </UiBadge>
             {project.is_template && <UiBadge tone="accent">{t("projects.templateBadge")}</UiBadge>}
             {!project.can_read && <UiBadge tone="warning">{t("projects.templateUseOnly")}</UiBadge>}
           </div>

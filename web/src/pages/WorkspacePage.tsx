@@ -1442,7 +1442,8 @@ export function WorkspacePage({
 
   function addPath(kind: "file" | "directory", parentPath = "") {
     if (!projectId || !canWrite || isRevisionMode) return;
-    const placeholder = kind === "file" ? "untitled.typ" : "folder";
+    const filePlaceholder = projectType === "latex" ? "untitled.tex" : "untitled.typ";
+    const placeholder = kind === "file" ? filePlaceholder : "folder";
     setPathDialog({
       mode: "create",
       kind,

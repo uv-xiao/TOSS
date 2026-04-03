@@ -51,13 +51,17 @@ export function applyRevisionTransfer(input: RevisionTransferInput): RevisionTra
       assets = {};
       assetMeta = {};
     } else {
+      const fallbackEntryFromNodes =
+        (input.response.nodes || []).find((node) => node.kind === "file" && /\.(tex|ltx)$/i.test(node.path))?.path ||
+        (input.response.nodes || []).find((node) => node.kind === "file" && /\.typ$/i.test(node.path))?.path ||
+        "main.typ";
       return {
         applied: false,
         docs: {},
         nodes: [],
         assets: {},
         assetMeta: {},
-        entryFilePath: "main.typ"
+        entryFilePath: fallbackEntryFromNodes
       };
     }
   }
@@ -80,12 +84,16 @@ export function applyRevisionTransfer(input: RevisionTransferInput): RevisionTra
     };
   }
 
+  const fallbackEntryFromNodes =
+    (input.response.nodes || []).find((node) => node.kind === "file" && /\.(tex|ltx)$/i.test(node.path))?.path ||
+    (input.response.nodes || []).find((node) => node.kind === "file" && /\.typ$/i.test(node.path))?.path ||
+    "main.typ";
   return {
     applied: true,
     docs,
     nodes: (input.response.nodes || []) as ProjectNode[],
     assets,
     assetMeta,
-    entryFilePath: input.response.entry_file_path || "main.typ"
+    entryFilePath: input.response.entry_file_path || fallbackEntryFromNodes
   };
 }
