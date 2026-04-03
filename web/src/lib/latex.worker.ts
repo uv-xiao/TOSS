@@ -40,6 +40,12 @@ type PendingCommand = {
   timeout: number;
 };
 
+type CompilerBootstrapAsset = {
+  url: string;
+  format: number;
+  filename: string;
+};
+
 class SwiftLatexSession {
   private worker: Worker;
   private ready = false;
@@ -113,11 +119,19 @@ class SwiftLatexSession {
 
 const sessions = new Map<string, SwiftLatexSession>();
 let compileQueue: Promise<void> = Promise.resolve();
+const bootstrapPrepared = new Set<string>();
+const bootstrapAssetBytes = new Map<string, Uint8Array>();
+const BOOTSTRAP_CACHE_NAME = "swiftlatex-bootstrap-v1";
 
 function normalizeWorkspacePath(path: string, fallback: string) {
   const clean = path.trim().replace(/^\/+/, "");
   if (!clean) return fallback;
   return clean;
+}
+
+function memfsWorkPath(path: string) {
+  const clean = path.trim().replace(/^\/+/, "");
+  return `/work/${clean}`;
 }
 
 function ensureParentDirectories(path: string, allDirs: Set<string>) {
@@ -140,6 +154,91 @@ function base64ToUint8(value: string): Uint8Array {
 function texliveEndpoint(coreApiUrl: string, appOrigin: string) {
   const base = coreApiUrl.replace(/\/$/, "") || appOrigin;
   return `${base.replace(/\/$/, "")}/v1/latex/texlive/`;
+}
+
+function compilerBootstrapUrls(engine: "pdftex" | "xetex", coreApiUrl: string, appOrigin: string) {
+  const base = texliveEndpoint(coreApiUrl, appOrigin);
+  if (engine === "pdftex") {
+    return [
+      { url: `${base}pdftex/10/swiftlatexpdftex.fmt`, format: 10, filename: "swiftlatexpdftex.fmt" },
+      { url: `${base}pdftex/26/l3backend-pdfmode.def`, format: 26, filename: "l3backend-pdfmode.def" }
+    ];
+  }
+  return [
+    { url: `${base}xetex/10/swiftlatexxetex.fmt`, format: 10, filename: "swiftlatexxetex.fmt" },
+    { url: `${base}xetex/10/xetexfontlist.txt`, format: 10, filename: "xetexfontlist.txt" },
+    { url: `${base}xetex/26/l3backend-xdvipdfmx.def`, format: 26, filename: "l3backend-xdvipdfmx.def" }
+  ];
+}
+
+async function ensureCompilerBootstrapCached(
+  engine: "pdftex" | "xetex",
+  coreApiUrl: string,
+  appOrigin: string
+) {
+  const cacheKey = `${engine}:${texliveEndpoint(coreApiUrl, appOrigin)}`;
+  if (bootstrapPrepared.has(cacheKey)) return;
+  const urls = compilerBootstrapUrls(engine, coreApiUrl, appOrigin);
+  const cacheStorage = typeof caches !== "undefined" ? await caches.open(BOOTSTRAP_CACHE_NAME) : null;
+  for (let i = 0; i < urls.length; i += 1) {
+    self.postMessage({
+      kind: "runtime.status",
+      stage: "downloading-compiler",
+      loaded_bytes: i,
+      total_bytes: urls.length
+    } satisfies RuntimeStatusMessage);
+    try {
+      let response = cacheStorage ? await cacheStorage.match(urls[i].url) : undefined;
+      if (!response) {
+        response = await fetch(urls[i].url, {
+          method: "GET",
+          cache: "force-cache",
+          credentials: "include"
+        });
+        if (response.ok && cacheStorage) {
+          await cacheStorage.put(urls[i].url, response.clone());
+        }
+      }
+      if (response.ok) {
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        bootstrapAssetBytes.set(urls[i].url, bytes);
+      }
+    } catch {
+      // Best effort warmup. SwiftLaTeX runtime will retry as needed.
+    }
+  }
+  self.postMessage({
+    kind: "runtime.status",
+    stage: "downloading-compiler",
+    loaded_bytes: urls.length,
+    total_bytes: urls.length
+  } satisfies RuntimeStatusMessage);
+  bootstrapPrepared.add(cacheKey);
+}
+
+async function primeSessionBootstrapCache(
+  session: SwiftLatexSession,
+  engine: "pdftex" | "xetex",
+  coreApiUrl: string,
+  appOrigin: string
+) {
+  const assets = compilerBootstrapUrls(engine, coreApiUrl, appOrigin);
+  for (const asset of assets) {
+    const bytes = bootstrapAssetBytes.get(asset.url);
+    if (!bytes || bytes.length === 0) continue;
+    await sendAndWait(
+      session,
+      {
+        cmd: "primecache",
+        format: asset.format,
+        filename: asset.filename,
+        fileid: asset.filename,
+        src: bytes
+      },
+      (data) => data.cmd === "primecache",
+      30000
+    ).catch(() => null);
+  }
 }
 
 function swiftWorkerUrl(engine: "pdftex" | "xetex", appOrigin: string) {
@@ -237,7 +336,6 @@ async function convertXdvToPdf(
     cmd: "settexliveurl",
     url: texliveEndpoint(coreApiUrl, appOrigin)
   });
-  session.postMessage({ cmd: "flushcache" });
   const xdvPath = normalizeWorkspacePath(entryFilePath, "main.tex").replace(/\.(tex|ltx)$/i, ".xdv");
   const allDirs = new Set<string>();
   ensureParentDirectories(xdvPath, allDirs);
@@ -252,7 +350,7 @@ async function convertXdvToPdf(
   }
   await sendAndWait(
     session,
-    { cmd: "writefile", url: xdvPath, src: new Uint8Array(xdvBytes) },
+    { cmd: "writefile", url: memfsWorkPath(xdvPath), src: new Uint8Array(xdvBytes) },
     (data) => data.cmd === "writefile",
     20000
   );
@@ -273,12 +371,13 @@ async function compileWithSwiftLatex(request: CompileRequest): Promise<CompileRe
     kind: "runtime.status",
     stage: "downloading-compiler"
   } satisfies RuntimeStatusMessage);
+  await ensureCompilerBootstrapCached(request.engine, request.coreApiUrl, appOrigin);
   const session = await ensureSession(request.engine, appOrigin);
   session.postMessage({
     cmd: "settexliveurl",
     url: texliveEndpoint(request.coreApiUrl, appOrigin)
   });
-  session.postMessage({ cmd: "flushcache" });
+  await primeSessionBootstrapCache(session, request.engine, request.coreApiUrl, appOrigin);
   self.postMessage({
     kind: "runtime.status",
     stage: "compiling"
@@ -310,7 +409,7 @@ async function compileWithSwiftLatex(request: CompileRequest): Promise<CompileRe
     const path = normalizeWorkspacePath(doc.path, "");
     await sendAndWait(
       session,
-      { cmd: "writefile", url: path, src: doc.content },
+      { cmd: "writefile", url: memfsWorkPath(path), src: doc.content },
       (data) => data.cmd === "writefile",
       20000
     );
@@ -319,7 +418,7 @@ async function compileWithSwiftLatex(request: CompileRequest): Promise<CompileRe
     const path = normalizeWorkspacePath(asset.path, "");
     await sendAndWait(
       session,
-      { cmd: "writefile", url: path, src: base64ToUint8(asset.content_base64) },
+      { cmd: "writefile", url: memfsWorkPath(path), src: base64ToUint8(asset.content_base64) },
       (data) => data.cmd === "writefile",
       20000
     );

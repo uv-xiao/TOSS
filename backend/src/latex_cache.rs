@@ -17,6 +17,11 @@ const BOOTSTRAP_FILES: [&str; 3] = [
     "xetexfontlist.txt",
 ];
 
+const COMPAT_L3BACKEND_PDFMODE: &[u8] =
+    include_bytes!("../resources/latex_compat/l3backend-pdfmode.def");
+const COMPAT_L3BACKEND_XDVIPDFMX: &[u8] =
+    include_bytes!("../resources/latex_compat/l3backend-xdvipdfmx.def");
+
 fn texlive_base_url() -> Option<String> {
     env::var("LATEX_TEXLIVE_BASE_URL")
         .ok()
@@ -103,7 +108,20 @@ fn ok_bytes_response(path: &str, bytes: Vec<u8>) -> impl IntoResponse {
         HeaderName::from_static("access-control-expose-headers"),
         HeaderValue::from_static("fileid, pkid"),
     );
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=31536000, immutable"),
+    );
     (StatusCode::OK, headers, bytes)
+}
+
+fn compat_texlive_file(path: &str) -> Option<&'static [u8]> {
+    let filename = FsPath::new(path).file_name().and_then(|v| v.to_str())?;
+    match filename {
+        "l3backend-pdfmode.def" => Some(COMPAT_L3BACKEND_PDFMODE),
+        "l3backend-xdvipdfmx.def" => Some(COMPAT_L3BACKEND_XDVIPDFMX),
+        _ => None,
+    }
 }
 
 fn bootstrap_target_file(path: &str) -> Option<&'static str> {
@@ -125,6 +143,7 @@ struct TlpdbFileCandidate {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct TlpdbIndex {
     by_basename: HashMap<String, Vec<TlpdbFileCandidate>>,
+    by_stem: HashMap<String, Vec<TlpdbFileCandidate>>,
 }
 
 static TLPDB_CACHE: OnceLock<Mutex<HashMap<String, Arc<TlpdbIndex>>>> = OnceLock::new();
@@ -194,11 +213,40 @@ async fn ensure_bootstrap_files(state: &AppState) {
     let _ = ONCE.set(());
 }
 
-fn request_key_for_tlpdb(safe_path: &str) -> Option<(String, bool)> {
+#[derive(Clone, Debug)]
+struct TlpdbRequestKey {
+    engine: String,
+    format: i32,
+    filename: String,
+    is_pk: bool,
+}
+
+fn request_key_for_tlpdb(safe_path: &str) -> Option<TlpdbRequestKey> {
+    fn normalize_name(raw: &str) -> String {
+        raw.trim()
+            .trim_matches('[')
+            .trim_matches(']')
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_string()
+    }
     let parts: Vec<&str> = safe_path.split('/').filter(|part| !part.is_empty()).collect();
     match parts.as_slice() {
-        ["pdftex", "pk", _, filename] => Some(((*filename).to_string(), true)),
-        ["xetex", _, filename] | ["pdftex", _, filename] => Some(((*filename).to_string(), false)),
+        [engine @ ("xetex" | "pdftex"), "pk", _, filename] => Some(TlpdbRequestKey {
+            engine: (*engine).to_string(),
+            format: 0,
+            filename: normalize_name(filename),
+            is_pk: true,
+        }),
+        [engine @ ("xetex" | "pdftex"), format, filename] => {
+            let parsed_format = format.parse::<i32>().ok()?;
+            Some(TlpdbRequestKey {
+                engine: (*engine).to_string(),
+                format: parsed_format,
+                filename: normalize_name(filename),
+                is_pk: false,
+            })
+        }
         _ => None,
     }
 }
@@ -206,30 +254,31 @@ fn request_key_for_tlpdb(safe_path: &str) -> Option<(String, bool)> {
 fn parse_tlpdb_index(text: &str) -> TlpdbIndex {
     let mut index = TlpdbIndex::default();
     let mut current_package: Option<String> = None;
-    let mut in_runfiles = false;
+    let mut in_file_list = false;
 
     for line in text.lines() {
         if let Some(rest) = line.strip_prefix("name ") {
             current_package = Some(rest.trim().to_string());
-            in_runfiles = false;
+            in_file_list = false;
             continue;
         }
-        if line.starts_with("runfiles ") {
-            in_runfiles = true;
-            continue;
-        }
-        if line.starts_with("docfiles ")
+        if line.starts_with("runfiles ")
+            || line.starts_with("docfiles ")
             || line.starts_with("srcfiles ")
             || line.starts_with("binfiles ")
-            || line.starts_with("execute ")
+        {
+            in_file_list = true;
+            continue;
+        }
+        if line.starts_with("execute ")
             || line.starts_with("depend ")
             || line.starts_with("postaction ")
             || line.starts_with("tlpsetvar ")
         {
-            in_runfiles = false;
+            in_file_list = false;
             continue;
         }
-        if !line.starts_with(' ') || !in_runfiles {
+        if !line.starts_with(' ') || !in_file_list {
             continue;
         }
         let rel = line.trim();
@@ -250,6 +299,16 @@ fn parse_tlpdb_index(text: &str) -> TlpdbIndex {
                 package: package.clone(),
                 rel_path: rel.to_string(),
             });
+        if let Some(stem) = FsPath::new(base).file_stem().and_then(|value| value.to_str()) {
+            index
+                .by_stem
+                .entry(stem.to_string())
+                .or_default()
+                .push(TlpdbFileCandidate {
+                    package: package.clone(),
+                    rel_path: rel.to_string(),
+                });
+        }
     }
 
     index
@@ -303,6 +362,8 @@ async fn load_tlpdb_index(base: &str) -> Result<Arc<TlpdbIndex>, StatusCode> {
 fn choose_candidate_for_request(
     candidates: &[TlpdbFileCandidate],
     is_pk: bool,
+    engine: &str,
+    format: i32,
     filename: &str,
 ) -> Option<TlpdbFileCandidate> {
     let mut filtered: Vec<&TlpdbFileCandidate> = if is_pk {
@@ -335,6 +396,53 @@ fn choose_candidate_for_request(
         if !ext_filtered.is_empty() {
             filtered = ext_filtered;
         }
+    } else {
+        let preferred_exts: &[&str] = match (engine, format) {
+            ("pdftex", 10) | ("xetex", 10) => &["fmt"],
+            ("xetex", 41) => &["tec"],
+            ("xetex", 47) => &["otf", "ttf"],
+            _ => &[],
+        };
+        if !preferred_exts.is_empty() {
+            let ext_filtered: Vec<&TlpdbFileCandidate> = filtered
+                .iter()
+                .copied()
+                .filter(|value| {
+                    FsPath::new(&value.rel_path)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(|e| preferred_exts.iter().any(|expected| e.eq_ignore_ascii_case(expected)))
+                        .unwrap_or(false)
+                })
+                .collect();
+            if !ext_filtered.is_empty() {
+                filtered = ext_filtered;
+            }
+        }
+    }
+
+    if engine == "xetex" && format == 47 {
+        let path_filtered: Vec<&TlpdbFileCandidate> = filtered
+            .iter()
+            .copied()
+            .filter(|value| {
+                let lower = value.rel_path.to_ascii_lowercase();
+                lower.contains("/fonts/opentype/") || lower.contains("/fonts/truetype/")
+            })
+            .collect();
+        if !path_filtered.is_empty() {
+            filtered = path_filtered;
+        }
+    }
+    if engine == "pdftex" && format == 33 {
+        let path_filtered: Vec<&TlpdbFileCandidate> = filtered
+            .iter()
+            .copied()
+            .filter(|value| value.rel_path.to_ascii_lowercase().contains("/fonts/vf/"))
+            .collect();
+        if !path_filtered.is_empty() {
+            filtered = path_filtered;
+        }
     }
 
     filtered
@@ -349,6 +457,19 @@ fn normalize_tlpdb_rel_path(rel_path: &str) -> String {
     } else {
         rel_path.to_string()
     }
+}
+
+fn rewrite_alias_backend_bytes(requested_filename: &str, bytes: Vec<u8>) -> Vec<u8> {
+    let (from_name, to_name) = match requested_filename {
+        "l3backend-pdfmode.def" => ("l3backend-pdftex.def", "l3backend-pdfmode.def"),
+        "l3backend-xdvipdfmx.def" => ("l3backend-dvipdfmx.def", "l3backend-xdvipdfmx.def"),
+        _ => return bytes,
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    if !text.contains(from_name) {
+        return bytes;
+    }
+    text.replace(from_name, to_name).into_bytes()
 }
 
 async fn extract_from_archive(
@@ -381,14 +502,49 @@ async fn fetch_ctan_tlnet_bytes(
     base: &str,
     safe_path: &str,
 ) -> Result<Option<Vec<u8>>, StatusCode> {
-    let Some((filename, is_pk)) = request_key_for_tlpdb(safe_path) else {
+    let Some(req) = request_key_for_tlpdb(safe_path) else {
         return Ok(None);
     };
+    let filename = req.filename.as_str();
     let index = load_tlpdb_index(base).await?;
-    let Some(candidates) = index.by_basename.get(&filename) else {
-        return Ok(None);
+    let alias = match filename {
+        "l3backend-pdfmode.def" => Some("l3backend-pdftex.def"),
+        "l3backend-xdvipdfmx.def" => Some("l3backend-dvipdfmx.def"),
+        _ => None,
     };
-    let Some(candidate) = choose_candidate_for_request(candidates, is_pk, &filename) else {
+    let requested_has_extension = FsPath::new(filename).extension().is_some();
+    let candidates = if let Some(value) = index.by_basename.get(filename) {
+        value
+    } else if let Some(alias_name) = alias {
+        if let Some(value) = index.by_basename.get(alias_name) {
+            value
+        } else if requested_has_extension {
+            return Ok(None);
+        } else {
+            let alias_stem = FsPath::new(alias_name)
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or(alias_name);
+            let Some(value) = index.by_stem.get(alias_stem) else {
+                return Ok(None);
+            };
+            value
+        }
+    } else if requested_has_extension {
+        return Ok(None);
+    } else {
+        let stem = FsPath::new(&filename)
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or(&filename);
+        let Some(value) = index.by_stem.get(stem) else {
+            return Ok(None);
+        };
+        value
+    };
+    let Some(candidate) =
+        choose_candidate_for_request(candidates, req.is_pk, &req.engine, req.format, filename)
+    else {
         return Ok(None);
     };
 
@@ -399,7 +555,7 @@ async fn fetch_ctan_tlnet_bytes(
     if local_extracted.exists() {
         return tokio::fs::read(local_extracted)
             .await
-            .map(Some)
+            .map(|bytes| Some(rewrite_alias_backend_bytes(filename, bytes)))
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
     }
 
@@ -417,7 +573,7 @@ async fn fetch_ctan_tlnet_bytes(
         let _ = tokio::fs::create_dir_all(parent).await;
     }
     let _ = tokio::fs::write(&local_extracted, &file_bytes).await;
-    Ok(Some(file_bytes))
+    Ok(Some(rewrite_alias_backend_bytes(filename, file_bytes)))
 }
 
 pub async fn latex_texlive_proxy(
@@ -427,6 +583,7 @@ pub async fn latex_texlive_proxy(
     let Some(safe_path) = sanitize_texlive_path(&path) else {
         return (StatusCode::BAD_REQUEST, "invalid texlive path").into_response();
     };
+    let request_key = request_key_for_tlpdb(&safe_path);
 
     ensure_bootstrap_files(&state).await;
     let root = local_root(&state);
@@ -438,6 +595,9 @@ pub async fn latex_texlive_proxy(
             return ok_bytes_response(&safe_path, bytes).into_response();
         }
     }
+    if let Some(bytes) = compat_texlive_file(&safe_path) {
+        return ok_bytes_response(&safe_path, bytes.to_vec()).into_response();
+    }
 
     let cache_path = cache_file_path(&state, &safe_path);
     let marker_path = missing_marker_path(&cache_path);
@@ -447,7 +607,27 @@ pub async fn latex_texlive_proxy(
     }
     if cache_path.exists() {
         match tokio::fs::read(&cache_path).await {
-            Ok(bytes) => return ok_bytes_response(&safe_path, bytes).into_response(),
+            Ok(bytes) => {
+                let invalid_cached_vf = request_key
+                    .as_ref()
+                    .map(|key| {
+                        key.engine == "pdftex"
+                            && key.format == 33
+                            && key.filename.eq_ignore_ascii_case("cmr10.vf")
+                            && bytes.first().copied() != Some(247)
+                    })
+                    .unwrap_or(false);
+                if invalid_cached_vf {
+                    warn!("ignoring incompatible cached vf for {}", safe_path);
+                } else {
+                let requested_name = FsPath::new(&safe_path)
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or_default();
+                let rewritten = rewrite_alias_backend_bytes(requested_name, bytes);
+                return ok_bytes_response(&safe_path, rewritten).into_response();
+                }
+            }
             Err(_) => {
                 return (StatusCode::INTERNAL_SERVER_ERROR, "cache read failed").into_response();
             }

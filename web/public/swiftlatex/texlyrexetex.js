@@ -226,6 +226,29 @@ function setTexliveEndpoint(url) {
     }
 }
 
+function primeCacheRoutine(format, filename, fileid, content) {
+    try {
+        if (format === undefined || format === null || !filename || !content) {
+            throw new Error("invalid primecache payload");
+        }
+        const normalizedFileId = fileid || filename;
+        const savepath = TEXCACHEROOT + "/" + normalizedFileId;
+        FS.writeFile(savepath, content);
+        const cacheKey = format + "/" + filename;
+        self.texlive200_cache[cacheKey] = savepath;
+        self.postMessage({
+            "result": "ok",
+            "cmd": "primecache"
+        });
+    } catch (err) {
+        self.postMessage({
+            "result": "failed",
+            "cmd": "primecache",
+            "log": String(err)
+        });
+    }
+}
+
 
 function dumpDirContent(dir) {
   const files = {};
@@ -266,6 +289,8 @@ self["onmessage"] = function (ev) {
         writeFileRoutine(data["url"], data["src"])
     } else if (cmd === "setmainfile") {
         self.mainfile = data["url"]
+    } else if (cmd === "primecache") {
+        primeCacheRoutine(data["format"], data["filename"], data["fileid"], data["src"])
     } else if (cmd === "grace") {
         console.error("Gracefully Close");
         self.close()
