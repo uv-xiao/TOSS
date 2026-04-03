@@ -29,11 +29,23 @@ function summarizeContentForHash(content: string) {
   return `${content.slice(0, 48)}::${content.slice(-48)}`;
 }
 
+export function fastStringHash(content: string) {
+  // FNV-1a 32-bit hash over full content. Cheap enough for active editor text and
+  // avoids missing equal-length middle replacements.
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < content.length; i += 1) {
+    hash ^= content.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
 export function buildCompileInputKey(params: {
   entryFilePath: string;
   documents: Array<{ path: string; content: string }>;
   assets: Array<{ path: string; contentBase64: string }>;
   fontData: Uint8Array[];
+  activeDocFingerprint?: string | null;
 }) {
   const docsPart = params.documents
     .map((doc) => `${doc.path}:${doc.content.length}:${summarizeContentForHash(doc.content)}`)
@@ -44,7 +56,8 @@ export function buildCompileInputKey(params: {
   const fontsPart = params.fontData
     .map((font) => `${font.byteLength}:${font[0] ?? 0}:${font[Math.floor(font.byteLength / 2)] ?? 0}:${font[font.byteLength - 1] ?? 0}`)
     .join("|");
-  return `${params.entryFilePath}::${docsPart}::${assetsPart}::${fontsPart}`;
+  const activeFingerprint = params.activeDocFingerprint?.trim() || "";
+  return `${params.entryFilePath}::${docsPart}::${assetsPart}::${fontsPart}::${activeFingerprint}`;
 }
 
 export function buildTopPreviewThumbnail(canvas: HTMLCanvasElement) {

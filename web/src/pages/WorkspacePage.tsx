@@ -99,6 +99,7 @@ import {
   collectReferencedAssetPaths,
   editorLanguageForPath,
   expandAncestors,
+  fastStringHash,
   inferContentType,
   isFontFile,
   isImageAsset,
@@ -504,15 +505,22 @@ export function WorkspacePage({
         }),
     [sourceAssetBase64]
   );
+  const activeDocFingerprint = useMemo(() => {
+    if (isRevisionMode) return null;
+    if (!hasActiveLiveDoc) return null;
+    if (!realtimeDocReady || realtimeBoundPath !== activePath) return null;
+    return `${activePath}:${docText.length}:${fastStringHash(docText)}`;
+  }, [activePath, docText, hasActiveLiveDoc, isRevisionMode, realtimeBoundPath, realtimeDocReady]);
   const compileInputKey = useMemo(
     () =>
       buildCompileInputKey({
         entryFilePath: sourceEntryFilePath,
         documents: compileDocuments,
         assets: compileAssets,
-        fontData
+        fontData,
+        activeDocFingerprint
       }),
-    [compileAssets, compileDocuments, fontData, sourceEntryFilePath]
+    [activeDocFingerprint, compileAssets, compileDocuments, fontData, sourceEntryFilePath]
   );
 
   const previewPixelPerPt = pixelPerPtForZoom(previewFitMode, previewZoom);
