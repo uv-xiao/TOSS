@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 
 import { renderTypstVectorToCanvas } from "@/lib/typst";
 import { renderPdfBytesToCanvas } from "@/lib/pdf";
 import type { PreviewFitMode } from "@/pages/workspace/types";
-import { applyPreviewZoom, deriveFitZoom } from "@/pages/workspace/utils";
+import { applyPreviewZoom, deriveFitZoom, PREVIEW_MAX_ZOOM, PREVIEW_MIN_ZOOM } from "@/pages/workspace/utils";
 
 type UsePreviewCanvasParams = {
   showPreviewPanel: boolean;
@@ -13,6 +13,7 @@ type UsePreviewCanvasParams = {
   previewFitMode: PreviewFitMode;
   previewZoom: number;
   setPreviewZoom: (updater: number | ((current: number) => number)) => void;
+  onRequestManualZoom?: (updater: (current: number) => number) => void;
   reflowDeps: ReadonlyArray<unknown>;
   onRenderError: (message: string) => void;
   initialViewportAnchor?: PreviewViewportAnchor | null;
@@ -92,6 +93,7 @@ export function usePreviewCanvas({
   previewFitMode,
   previewZoom,
   setPreviewZoom,
+  onRequestManualZoom,
   reflowDeps,
   onRenderError,
   initialViewportAnchor,
@@ -102,8 +104,10 @@ export function usePreviewCanvas({
   const onRenderErrorRef = useRef(onRenderError);
   const previewFitModeRef = useRef(previewFitMode);
   const previewZoomRef = useRef(previewZoom);
+  const onRequestManualZoomRef = useRef(onRequestManualZoom);
   const lastRenderSignatureRef = useRef<string>("");
   const manualViewportRef = useRef<ManualViewportAnchor>({ xCenterRatio: 0.5, yCenterRatio: 0.5 });
+  const gestureLastScaleRef = useRef(1);
   const viewportAnchorRef = useRef<PreviewViewportAnchor>(initialViewportAnchor ?? { xRatio: 0, yRatio: 0 });
   const viewportAnchorHydratedRef = useRef(false);
   const onViewportAnchorChangeRef = useRef(onViewportAnchorChange);
@@ -172,6 +176,10 @@ export function usePreviewCanvas({
   useEffect(() => {
     previewZoomRef.current = previewZoom;
   }, [previewZoom]);
+
+  useEffect(() => {
+    onRequestManualZoomRef.current = onRequestManualZoom;
+  }, [onRequestManualZoom]);
 
   useEffect(() => {
     return () => {
@@ -327,6 +335,74 @@ export function usePreviewCanvas({
     observer.observe(frame);
     return () => observer.disconnect();
   }, [previewFitMode, setPreviewZoom, showPreviewPanel]);
+
+  useEffect(() => {
+    if (!showPreviewPanel) return;
+    const frame = canvasPreviewRef.current;
+    if (!frame) return;
+    const requestZoom = (nextZoom: number) => {
+      const callback = onRequestManualZoomRef.current;
+      if (callback) {
+        callback(() => nextZoom);
+        return;
+      }
+      setPreviewZoom(nextZoom);
+    };
+    const setGestureAnchor = (clientX: number, clientY: number) => {
+      const rect = frame.getBoundingClientRect();
+      const localX = Math.max(0, Math.min(frame.clientWidth, clientX - rect.left));
+      const localY = Math.max(0, Math.min(frame.clientHeight, clientY - rect.top));
+      manualViewportRef.current = {
+        xCenterRatio:
+          frame.scrollWidth > 0
+            ? Math.min(1, Math.max(0, (frame.scrollLeft + localX) / frame.scrollWidth))
+            : 0.5,
+        yCenterRatio:
+          frame.scrollHeight > 0
+            ? Math.min(1, Math.max(0, (frame.scrollTop + localY) / frame.scrollHeight))
+            : 0.5
+      };
+    };
+    const onWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey) return;
+      event.preventDefault();
+      setGestureAnchor(event.clientX, event.clientY);
+      const factor = Math.exp(-event.deltaY * 0.0025);
+      const next = Math.min(PREVIEW_MAX_ZOOM, Math.max(PREVIEW_MIN_ZOOM, previewZoomRef.current * factor));
+      requestZoom(next);
+    };
+    const onGestureStart = (event: Event) => {
+      const gestureEvent = event as Event & { scale?: number; clientX?: number; clientY?: number };
+      gestureLastScaleRef.current = gestureEvent.scale && Number.isFinite(gestureEvent.scale) ? gestureEvent.scale : 1;
+      if (typeof gestureEvent.clientX === "number" && typeof gestureEvent.clientY === "number") {
+        setGestureAnchor(gestureEvent.clientX, gestureEvent.clientY);
+      }
+      event.preventDefault();
+    };
+    const onGestureChange = (event: Event) => {
+      const gestureEvent = event as Event & { scale?: number; clientX?: number; clientY?: number };
+      const currentScale =
+        gestureEvent.scale && Number.isFinite(gestureEvent.scale) ? gestureEvent.scale : gestureLastScaleRef.current;
+      const prevScale = gestureLastScaleRef.current || 1;
+      const factor = prevScale > 0 ? currentScale / prevScale : 1;
+      gestureLastScaleRef.current = currentScale;
+      if (typeof gestureEvent.clientX === "number" && typeof gestureEvent.clientY === "number") {
+        setGestureAnchor(gestureEvent.clientX, gestureEvent.clientY);
+      }
+      const next = Math.min(PREVIEW_MAX_ZOOM, Math.max(PREVIEW_MIN_ZOOM, previewZoomRef.current * factor));
+      requestZoom(next);
+      event.preventDefault();
+    };
+
+    frame.addEventListener("wheel", onWheel, { passive: false });
+    frame.addEventListener("gesturestart", onGestureStart as EventListener, { passive: false });
+    frame.addEventListener("gesturechange", onGestureChange as EventListener, { passive: false });
+    return () => {
+      frame.removeEventListener("wheel", onWheel);
+      frame.removeEventListener("gesturestart", onGestureStart as EventListener);
+      frame.removeEventListener("gesturechange", onGestureChange as EventListener);
+    };
+  }, [setPreviewZoom, showPreviewPanel]);
 
   useEffect(() => {
     const frame = canvasPreviewRef.current;

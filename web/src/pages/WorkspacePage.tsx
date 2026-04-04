@@ -592,6 +592,10 @@ export function WorkspacePage({
     previewFitMode,
     previewZoom,
     setPreviewZoom,
+    onRequestManualZoom: (updater) => {
+      setPreviewFitMode("manual");
+      setPreviewZoom((value) => clampNumber(updater(value), PREVIEW_MIN_ZOOM, PREVIEW_MAX_ZOOM));
+    },
     reflowDeps: [editorRatio, effectiveShowFilesPanel, effectiveShowPreviewPanel, effectiveShowSettingsPanel, effectiveShowRevisionPanel],
     onRenderError: (message) => {
       setCompileErrors([message]);
