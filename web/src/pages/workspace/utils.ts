@@ -340,15 +340,12 @@ export function applyPreviewZoom(frame: HTMLElement, zoom: number) {
 }
 
 export function pixelPerPtForZoom(mode: PreviewFitMode, zoom: number) {
+  void mode;
+  void zoom;
   const dpr = typeof window === "undefined" ? 1 : Math.max(1, window.devicePixelRatio || 1);
-  // Fit modes can have tiny zoom jitter when panel geometry/scrollbars settle.
-  // Keep their render density stable to avoid repeated full canvas rerenders.
-  if (mode !== "manual") {
-    return clampNumber(Math.ceil(dpr * 2.5), 3, 12);
-  }
-  const safeZoom = clampNumber(Number.isFinite(zoom) ? zoom : 1, PREVIEW_MIN_ZOOM, PREVIEW_MAX_ZOOM);
-  const desiredDensity = Math.max(safeZoom * dpr, dpr * 1.5);
-  return clampNumber(Math.ceil(desiredDensity), 3, 12);
+  // Keep render density stable across zoom changes and use CSS scaling for interaction-time zoom.
+  // This avoids full redraw bursts that can cause visible flicker or viewport drift under rapid clicks.
+  return clampNumber(Math.ceil(dpr * 2.5), 3, 12);
 }
 
 export function isImageAsset(path: string, contentType?: string) {
