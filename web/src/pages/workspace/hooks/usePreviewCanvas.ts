@@ -36,6 +36,10 @@ type PreviewViewportAnchor = {
   xRatio: number;
   yRatio: number;
 };
+type ManualViewportAnchor = {
+  xCenterRatio: number;
+  yCenterRatio: number;
+};
 
 const FIT_ZOOM_SYNC_EPSILON = 0.03;
 
@@ -55,6 +59,28 @@ function restoreViewportAnchor(frame: HTMLElement, anchor: PreviewViewportAnchor
   const nextTop = Math.min(maxTop, Math.max(0, anchor.yRatio * maxTop));
   frame.scrollLeft = nextLeft;
   frame.scrollTop = nextTop;
+}
+
+function captureManualViewportAnchor(frame: HTMLElement): ManualViewportAnchor {
+  return {
+    xCenterRatio:
+      frame.scrollWidth > 0
+        ? Math.min(1, Math.max(0, (frame.scrollLeft + frame.clientWidth / 2) / frame.scrollWidth))
+        : 0.5,
+    yCenterRatio:
+      frame.scrollHeight > 0
+        ? Math.min(1, Math.max(0, (frame.scrollTop + frame.clientHeight / 2) / frame.scrollHeight))
+        : 0.5
+  };
+}
+
+function restoreManualViewportAnchor(frame: HTMLElement, anchor: ManualViewportAnchor) {
+  const targetCenterX = anchor.xCenterRatio * frame.scrollWidth;
+  const targetCenterY = anchor.yCenterRatio * frame.scrollHeight;
+  const maxLeft = Math.max(0, frame.scrollWidth - frame.clientWidth);
+  const maxTop = Math.max(0, frame.scrollHeight - frame.clientHeight);
+  frame.scrollLeft = Math.min(maxLeft, Math.max(0, targetCenterX - frame.clientWidth / 2));
+  frame.scrollTop = Math.min(maxTop, Math.max(0, targetCenterY - frame.clientHeight / 2));
 }
 
 export function usePreviewCanvas({
@@ -77,7 +103,7 @@ export function usePreviewCanvas({
   const previewFitModeRef = useRef(previewFitMode);
   const previewZoomRef = useRef(previewZoom);
   const lastRenderSignatureRef = useRef<string>("");
-  const manualViewportRef = useRef<{ left: number; top: number }>({ left: 0, top: 0 });
+  const manualViewportRef = useRef<ManualViewportAnchor>({ xCenterRatio: 0.5, yCenterRatio: 0.5 });
   const viewportAnchorRef = useRef<PreviewViewportAnchor>(initialViewportAnchor ?? { xRatio: 0, yRatio: 0 });
   const viewportAnchorHydratedRef = useRef(false);
   const onViewportAnchorChangeRef = useRef(onViewportAnchorChange);
@@ -190,10 +216,7 @@ export function usePreviewCanvas({
     }
     let cancelled = false;
     if (previewFitModeRef.current === "manual") {
-      manualViewportRef.current = {
-        left: frame.scrollLeft,
-        top: frame.scrollTop
-      };
+      manualViewportRef.current = captureManualViewportAnchor(frame);
     }
     setPreviewRendering(true);
     const renderPromise =
@@ -212,10 +235,7 @@ export function usePreviewCanvas({
           applyPreviewZoom(frame, zoom);
           syncPreviewScrollbarWidth(frame);
           if (fitMode === "manual") {
-            const maxLeft = Math.max(0, frame.scrollWidth - frame.clientWidth);
-            const maxTop = Math.max(0, frame.scrollHeight - frame.clientHeight);
-            frame.scrollLeft = Math.min(maxLeft, Math.max(0, manualViewportRef.current.left));
-            frame.scrollTop = Math.min(maxTop, Math.max(0, manualViewportRef.current.top));
+            restoreManualViewportAnchor(frame, manualViewportRef.current);
             if (!viewportAnchorHydratedRef.current) {
               viewportAnchorHydratedRef.current = true;
             }
@@ -263,10 +283,7 @@ export function usePreviewCanvas({
     if (!pages) return;
     const manualMode = previewFitMode === "manual";
     if (manualMode) {
-      manualViewportRef.current = {
-        left: frame.scrollLeft,
-        top: frame.scrollTop
-      };
+      manualViewportRef.current = captureManualViewportAnchor(frame);
     } else if (viewportAnchorHydratedRef.current) {
       viewportAnchorRef.current = captureViewportAnchor(frame);
     }
@@ -274,10 +291,7 @@ export function usePreviewCanvas({
     applyPreviewZoom(frame, zoom);
     syncPreviewScrollbarWidth(frame);
     if (manualMode) {
-      const maxLeft = Math.max(0, frame.scrollWidth - frame.clientWidth);
-      const maxTop = Math.max(0, frame.scrollHeight - frame.clientHeight);
-      frame.scrollLeft = Math.min(maxLeft, Math.max(0, manualViewportRef.current.left));
-      frame.scrollTop = Math.min(maxTop, Math.max(0, manualViewportRef.current.top));
+      restoreManualViewportAnchor(frame, manualViewportRef.current);
     } else {
       restoreViewportAnchor(frame, viewportAnchorRef.current);
     }
