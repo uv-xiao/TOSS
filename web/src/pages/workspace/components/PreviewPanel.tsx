@@ -14,7 +14,6 @@ export function PreviewPanel({
   compileKind,
   workspaceSyncPending,
   compileActive,
-  previewRendering,
   assetHydrationProgress,
   vectorData,
   previewIsPanning,
@@ -46,7 +45,6 @@ export function PreviewPanel({
   compileKind: "typst" | "latex";
   workspaceSyncPending: boolean;
   compileActive: boolean;
-  previewRendering: boolean;
   assetHydrationProgress: {
     active: boolean;
     loaded: number;
@@ -200,7 +198,7 @@ export function PreviewPanel({
                 </span>
               </div>
             )}
-            {(compileActive || previewRendering) && (
+            {compileActive && (
               <div className="preview-runtime-status">
                 <strong>
                   {compileRuntimeStatus.stage === "downloading-compiler"

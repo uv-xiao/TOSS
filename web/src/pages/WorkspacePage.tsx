@@ -578,7 +578,6 @@ export function WorkspacePage({
     canvasPreviewRef,
     previewRenderTick,
     previewIsPanning,
-    previewRendering,
     hasPreviewPage,
     previewPageCurrent,
     previewPageTotal,
@@ -2232,7 +2231,6 @@ export function WorkspacePage({
               compileKind={projectType}
               workspaceSyncPending={workspaceSyncPending}
               compileActive={compileActive}
-              previewRendering={previewRendering}
               assetHydrationProgress={assetHydrationProgress}
               vectorData={vectorData}
               previewIsPanning={previewIsPanning}
