@@ -77,6 +77,7 @@ export function usePreviewCanvas({
   const previewFitModeRef = useRef(previewFitMode);
   const previewZoomRef = useRef(previewZoom);
   const lastRenderSignatureRef = useRef<string>("");
+  const manualViewportRef = useRef<{ left: number; top: number }>({ left: 0, top: 0 });
   const viewportAnchorRef = useRef<PreviewViewportAnchor>(initialViewportAnchor ?? { xRatio: 0, yRatio: 0 });
   const viewportAnchorHydratedRef = useRef(false);
   const onViewportAnchorChangeRef = useRef(onViewportAnchorChange);
@@ -188,6 +189,12 @@ export function usePreviewCanvas({
       return;
     }
     let cancelled = false;
+    if (previewFitModeRef.current === "manual") {
+      manualViewportRef.current = {
+        left: frame.scrollLeft,
+        top: frame.scrollTop
+      };
+    }
     setPreviewRendering(true);
     const renderPromise =
       previewArtifactKind === "typst-vector"
@@ -204,11 +211,19 @@ export function usePreviewCanvas({
           const zoom = fitMode === "manual" ? currentZoom : deriveFitZoom(frame, pages, fitMode);
           applyPreviewZoom(frame, zoom);
           syncPreviewScrollbarWidth(frame);
-          if (!viewportAnchorHydratedRef.current) {
-            restoreViewportAnchor(frame, viewportAnchorRef.current);
-            viewportAnchorHydratedRef.current = true;
+          if (fitMode === "manual") {
+            const maxLeft = Math.max(0, frame.scrollWidth - frame.clientWidth);
+            const maxTop = Math.max(0, frame.scrollHeight - frame.clientHeight);
+            frame.scrollLeft = Math.min(maxLeft, Math.max(0, manualViewportRef.current.left));
+            frame.scrollTop = Math.min(maxTop, Math.max(0, manualViewportRef.current.top));
+            if (!viewportAnchorHydratedRef.current) {
+              viewportAnchorHydratedRef.current = true;
+            }
           } else {
             restoreViewportAnchor(frame, viewportAnchorRef.current);
+            if (!viewportAnchorHydratedRef.current) {
+              viewportAnchorHydratedRef.current = true;
+            }
           }
           viewportAnchorRef.current = captureViewportAnchor(frame);
           emitViewportAnchor(frame);
@@ -246,17 +261,29 @@ export function usePreviewCanvas({
     if (!frame) return;
     const pages = frame.querySelector(".pdf-pages") as HTMLElement | null;
     if (!pages) return;
-    if (viewportAnchorHydratedRef.current) {
-      const anchor = captureViewportAnchor(frame);
-      viewportAnchorRef.current = anchor;
+    const manualMode = previewFitMode === "manual";
+    if (manualMode) {
+      manualViewportRef.current = {
+        left: frame.scrollLeft,
+        top: frame.scrollTop
+      };
+    } else if (viewportAnchorHydratedRef.current) {
+      viewportAnchorRef.current = captureViewportAnchor(frame);
     }
-    const zoom = previewFitMode === "manual" ? previewZoom : deriveFitZoom(frame, pages, previewFitMode);
+    const zoom = manualMode ? previewZoom : deriveFitZoom(frame, pages, previewFitMode);
     applyPreviewZoom(frame, zoom);
     syncPreviewScrollbarWidth(frame);
-    restoreViewportAnchor(frame, viewportAnchorRef.current);
+    if (manualMode) {
+      const maxLeft = Math.max(0, frame.scrollWidth - frame.clientWidth);
+      const maxTop = Math.max(0, frame.scrollHeight - frame.clientHeight);
+      frame.scrollLeft = Math.min(maxLeft, Math.max(0, manualViewportRef.current.left));
+      frame.scrollTop = Math.min(maxTop, Math.max(0, manualViewportRef.current.top));
+    } else {
+      restoreViewportAnchor(frame, viewportAnchorRef.current);
+    }
     viewportAnchorRef.current = captureViewportAnchor(frame);
     if (viewportAnchorHydratedRef.current) emitViewportAnchor(frame);
-    if (previewFitMode !== "manual" && Math.abs(zoom - previewZoom) > FIT_ZOOM_SYNC_EPSILON) {
+    if (!manualMode && Math.abs(zoom - previewZoom) > FIT_ZOOM_SYNC_EPSILON) {
       setPreviewZoom(zoom);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
