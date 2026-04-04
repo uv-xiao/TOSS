@@ -345,7 +345,8 @@ function parseCompileDiagnostics(log: string): CompileDiagnostic[] {
   const diagnostics: CompileDiagnostic[] = [];
   const pattern =
     /^(?<path>[^:\r\n]+?\.(?:tex|ltx|sty|cls|bib)):(?<line>\d+):\s*(?<message>.+)$/i;
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
     const raw = line.trim();
     if (!raw) continue;
     const match = raw.match(pattern);
@@ -361,17 +362,65 @@ function parseCompileDiagnostics(log: string): CompileDiagnostic[] {
       continue;
     }
     if (/^!/.test(raw) || /error/i.test(raw)) {
+      let contextualRaw = raw;
+      if (/^!/.test(raw)) {
+        const context: string[] = [];
+        for (let j = i - 1; j >= 0; j -= 1) {
+          const prev = lines[j]?.trim();
+          if (!prev) continue;
+          if (/^\(/.test(prev) || /^l\.\d+/.test(prev) || /\.\w+\)?$/.test(prev)) {
+            context.push(prev);
+          }
+          break;
+        }
+        for (let j = i + 1; j < lines.length; j += 1) {
+          const next = lines[j]?.trim();
+          if (!next) {
+            if (context.length > 0) break;
+            continue;
+          }
+          if (/^!/.test(next)) break;
+          context.push(next);
+          if (/^l\.\d+/.test(next) || context.length >= 3) break;
+        }
+        if (context.length > 0) contextualRaw = `${raw} ${context.join(" ")}`;
+      }
       diagnostics.push({
         severity: "error",
-        message: raw.replace(/^!\s*/, ""),
-        raw
+        message: contextualRaw.replace(/^!\s*/, ""),
+        raw: contextualRaw
       });
     }
   }
   return diagnostics;
 }
 
+function extractPrimaryLatexErrors(log: string): string[] {
+  const lines = log.split(/\r?\n/);
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const raw = lines[i].trim();
+    if (!raw.startsWith("!")) continue;
+    const block: string[] = [raw];
+    for (let j = i + 1; j < lines.length; j += 1) {
+      const next = lines[j].trim();
+      if (!next) {
+        if (block.length > 1) break;
+        continue;
+      }
+      if (next.startsWith("!")) break;
+      block.push(next);
+      if (/^l\.\d+/.test(next) || block.length >= 4) break;
+    }
+    out.push(block.join(" "));
+    if (out.length >= 6) break;
+  }
+  return out;
+}
+
 function summarizeCompileErrors(log: string) {
+  const primary = extractPrimaryLatexErrors(log);
+  if (primary.length > 0) return primary;
   const lines = log
     .split(/\r?\n/)
     .map((line) => line.trim())

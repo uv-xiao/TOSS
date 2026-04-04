@@ -463,21 +463,49 @@ fn rewrite_alias_backend_bytes(requested_filename: &str, bytes: Vec<u8>) -> Vec<
     let (from_name, to_name) = match requested_filename {
         "l3backend-pdfmode.def" => ("l3backend-pdftex.def", "l3backend-pdfmode.def"),
         "l3backend-xdvipdfmx.def" => ("l3backend-dvipdfmx.def", "l3backend-xdvipdfmx.def"),
-        _ => return bytes,
+        _ => ("", ""),
     };
-    let text = String::from_utf8_lossy(&bytes);
-    if !text.contains(from_name) {
-        return bytes;
+
+    let mut out = bytes;
+    if !from_name.is_empty() {
+        let text = String::from_utf8_lossy(&out);
+        if text.contains(from_name) {
+            out = text.replace(from_name, to_name).into_bytes();
+        }
     }
-    text.replace(from_name, to_name).into_bytes()
+
+    if requested_filename.eq_ignore_ascii_case("mathcolor.ltx") {
+        let text = String::from_utf8_lossy(&out);
+        if text.contains("\\DeclareDocumentCommand") {
+            return br#"% typst mathcolor compatibility shim
+\ProvidesFile{mathcolor.ltx}[2026/04/04 typst compatibility shim]
+\providecommand\mathcolor[3][]{\begingroup\color{#2}#3\endgroup}
+\endinput
+"#
+            .to_vec();
+        }
+    }
+
+    out
 }
 
-fn texlive_filename_alias(requested_filename: &str) -> Option<&'static str> {
+fn texlive_filename_alias(
+    requested_filename: &str,
+    engine: Option<&str>,
+) -> Option<&'static str> {
     match requested_filename {
+        "dviout.def" => match engine.map(|value| value.to_ascii_lowercase()) {
+            Some(value) if value == "xetex" => Some("xetex.def"),
+            Some(value) if value == "pdftex" => Some("pdftex.def"),
+            _ => None,
+        },
         "l3backend-pdfmode.def" => Some("l3backend-pdftex.def"),
         "l3backend-xdvipdfmx.def" => Some("l3backend-dvipdfmx.def"),
-        // Some legacy docs trigger dviout driver auto-detection. Fallback to pdftex driver.
-        "pgfsys-dviout.def" => Some("pgfsys-pdftex.def"),
+        "pgfsys-dviout.def" => match engine.map(|value| value.to_ascii_lowercase()) {
+            Some(value) if value == "xetex" => Some("pgfsys-xetex.def"),
+            Some(value) if value == "pdftex" => Some("pgfsys-pdftex.def"),
+            _ => Some("pgfsys-dvips.def"),
+        },
         _ => None,
     }
 }
@@ -527,9 +555,14 @@ async fn fetch_ctan_tlnet_bytes(
     };
     let filename = req.filename.as_str();
     let index = load_tlpdb_index(base).await?;
-    let alias = texlive_filename_alias(filename);
+    let alias = texlive_filename_alias(filename, Some(req.engine.as_str()));
+    let preferred_lookup_name = if filename.eq_ignore_ascii_case("dviout.def") {
+        alias.unwrap_or(filename)
+    } else {
+        filename
+    };
     let requested_has_extension = FsPath::new(filename).extension().is_some();
-    let candidates = if let Some(value) = index.by_basename.get(filename) {
+    let candidates = if let Some(value) = index.by_basename.get(preferred_lookup_name) {
         value
     } else if let Some(alias_name) = alias {
         if let Some(value) = index.by_basename.get(alias_name) {
@@ -633,8 +666,48 @@ pub async fn latex_texlive_proxy(
                             && bytes.first().copied() != Some(247)
                     })
                     .unwrap_or(false);
+                let invalid_cached_pgf_dviout = request_key
+                    .as_ref()
+                    .map(|key| {
+                        if key.format != 26 || !key.filename.eq_ignore_ascii_case("pgfsys-dviout.def") {
+                            return false;
+                        }
+                        let expected = texlive_filename_alias(
+                            "pgfsys-dviout.def",
+                            Some(key.engine.as_str()),
+                        );
+                        match expected {
+                            Some(name) => !String::from_utf8_lossy(&bytes).contains(name),
+                            None => false,
+                        }
+                    })
+                    .unwrap_or(false);
+                let invalid_cached_dviout = request_key
+                    .as_ref()
+                    .map(|key| {
+                        if !key.filename.eq_ignore_ascii_case("dviout.def") {
+                            return false;
+                        }
+                        let expected =
+                            texlive_filename_alias("dviout.def", Some(key.engine.as_str()));
+                        match expected {
+                            Some(name) => !String::from_utf8_lossy(&bytes).contains(name),
+                            None => false,
+                        }
+                    })
+                    .unwrap_or(false);
                 if invalid_cached_vf {
                     warn!("ignoring incompatible cached vf for {}", safe_path);
+                } else if invalid_cached_pgf_dviout {
+                    warn!(
+                        "ignoring stale cached pgfsys-dviout compatibility file for {}",
+                        safe_path
+                    );
+                } else if invalid_cached_dviout {
+                    warn!(
+                        "ignoring stale cached dviout graphics driver for {}",
+                        safe_path
+                    );
                 } else {
                 let requested_name = FsPath::new(&safe_path)
                     .file_name()
@@ -665,7 +738,12 @@ pub async fn latex_texlive_proxy(
                 if let Some(alias_name) = FsPath::new(&safe_path)
                     .file_name()
                     .and_then(|value| value.to_str())
-                    .and_then(texlive_filename_alias)
+                    .and_then(|name| {
+                        texlive_filename_alias(
+                            name,
+                            request_key.as_ref().map(|key| key.engine.as_str()),
+                        )
+                    })
                 {
                     if let Some(alias_safe_path) = swap_safe_path_filename(&safe_path, alias_name) {
                         match fetch_ctan_tlnet_bytes(&state, &base, &alias_safe_path).await {
@@ -702,7 +780,12 @@ pub async fn latex_texlive_proxy(
                 if let Some(alias_name) = FsPath::new(&safe_path)
                     .file_name()
                     .and_then(|value| value.to_str())
-                    .and_then(texlive_filename_alias)
+                    .and_then(|name| {
+                        texlive_filename_alias(
+                            name,
+                            request_key.as_ref().map(|key| key.engine.as_str()),
+                        )
+                    })
                 {
                     if let Some(alias_safe_path) = swap_safe_path_filename(&safe_path, alias_name) {
                         let alias_upstream = format!("{}/{}", base, alias_safe_path.trim_start_matches('/'));
