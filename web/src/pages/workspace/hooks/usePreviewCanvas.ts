@@ -43,8 +43,8 @@ function captureViewportAnchor(frame: HTMLElement): PreviewViewportAnchor {
   const maxLeft = Math.max(0, frame.scrollWidth - frame.clientWidth);
   const maxTop = Math.max(0, frame.scrollHeight - frame.clientHeight);
   return {
-    xRatio: maxLeft > 0 ? frame.scrollLeft / maxLeft : 0,
-    yRatio: maxTop > 0 ? frame.scrollTop / maxTop : 0
+    xRatio: maxLeft > 0 ? Math.min(1, Math.max(0, frame.scrollLeft / maxLeft)) : 0,
+    yRatio: maxTop > 0 ? Math.min(1, Math.max(0, frame.scrollTop / maxTop)) : 0
   };
 }
 
