@@ -240,18 +240,26 @@ export function PreviewPanel({
         {compileDiagnostics.length > 0 && (
           <div className="panel-inline-error diagnostics">
             {compileDiagnostics.map((diagnostic, index) => (
-              <button
+              <div
                 key={`${diagnostic.raw}-${index}`}
                 className="diagnostic-item"
-                onClick={() => onJumpToDiagnostic(diagnostic)}
               >
-                <span className={`diagnostic-level ${diagnostic.severity}`}>{diagnostic.severity}</span>
-                <span className="diagnostic-main">
+                <div className="diagnostic-head">
+                  <span className={`diagnostic-level ${diagnostic.severity}`}>{diagnostic.severity}</span>
+                  <button
+                    type="button"
+                    className="diagnostic-jump"
+                    onClick={() => onJumpToDiagnostic(diagnostic)}
+                  >
+                    {t("preview.goAction")}
+                  </button>
+                </div>
+                <div className="diagnostic-main selectable-text">
                   {diagnostic.path ? `${diagnostic.path}:${diagnostic.line ?? 1}:${diagnostic.column ?? 1}` : "workspace"}
                   {" — "}
                   {diagnostic.message}
-                </span>
-              </button>
+                </div>
+              </div>
             ))}
           </div>
         )}

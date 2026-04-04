@@ -472,6 +472,26 @@ fn rewrite_alias_backend_bytes(requested_filename: &str, bytes: Vec<u8>) -> Vec<
     text.replace(from_name, to_name).into_bytes()
 }
 
+fn texlive_filename_alias(requested_filename: &str) -> Option<&'static str> {
+    match requested_filename {
+        "l3backend-pdfmode.def" => Some("l3backend-pdftex.def"),
+        "l3backend-xdvipdfmx.def" => Some("l3backend-dvipdfmx.def"),
+        // Some legacy docs trigger dviout driver auto-detection. Fallback to pdftex driver.
+        "pgfsys-dviout.def" => Some("pgfsys-pdftex.def"),
+        _ => None,
+    }
+}
+
+fn swap_safe_path_filename(safe_path: &str, replacement_filename: &str) -> Option<String> {
+    let mut parts: Vec<&str> = safe_path.split('/').filter(|segment| !segment.is_empty()).collect();
+    if parts.len() < 3 {
+        return None;
+    }
+    parts.pop();
+    parts.push(replacement_filename);
+    Some(parts.join("/"))
+}
+
 async fn extract_from_archive(
     archive_bytes: Vec<u8>,
     rel_path: String,
@@ -507,11 +527,7 @@ async fn fetch_ctan_tlnet_bytes(
     };
     let filename = req.filename.as_str();
     let index = load_tlpdb_index(base).await?;
-    let alias = match filename {
-        "l3backend-pdfmode.def" => Some("l3backend-pdftex.def"),
-        "l3backend-xdvipdfmx.def" => Some("l3backend-dvipdfmx.def"),
-        _ => None,
-    };
+    let alias = texlive_filename_alias(filename);
     let requested_has_extension = FsPath::new(filename).extension().is_some();
     let candidates = if let Some(value) = index.by_basename.get(filename) {
         value
@@ -646,6 +662,28 @@ pub async fn latex_texlive_proxy(
         match fetch_ctan_tlnet_bytes(&state, &base, &safe_path).await {
             Ok(Some(value)) => value,
             Ok(None) => {
+                if let Some(alias_name) = FsPath::new(&safe_path)
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .and_then(texlive_filename_alias)
+                {
+                    if let Some(alias_safe_path) = swap_safe_path_filename(&safe_path, alias_name) {
+                        match fetch_ctan_tlnet_bytes(&state, &base, &alias_safe_path).await {
+                            Ok(Some(value)) => {
+                                if let Some(parent) = cache_path.parent() {
+                                    let _ = tokio::fs::create_dir_all(parent).await;
+                                }
+                                let _ = tokio::fs::write(&cache_path, &value).await;
+                                let _ = tokio::fs::remove_file(&marker_path).await;
+                                return ok_bytes_response(&safe_path, value).into_response();
+                            }
+                            Ok(None) => {}
+                            Err(_) => {
+                                return (StatusCode::BAD_GATEWAY, "texlive upstream unavailable").into_response();
+                            }
+                        }
+                    }
+                }
                 if let Some(parent) = marker_path.parent() {
                     let _ = tokio::fs::create_dir_all(parent).await;
                 }
@@ -661,6 +699,29 @@ pub async fn latex_texlive_proxy(
         match fetch_upstream_bytes(&upstream).await {
             Ok(Some(value)) => value,
             Ok(None) => {
+                if let Some(alias_name) = FsPath::new(&safe_path)
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .and_then(texlive_filename_alias)
+                {
+                    if let Some(alias_safe_path) = swap_safe_path_filename(&safe_path, alias_name) {
+                        let alias_upstream = format!("{}/{}", base, alias_safe_path.trim_start_matches('/'));
+                        match fetch_upstream_bytes(&alias_upstream).await {
+                            Ok(Some(value)) => {
+                                if let Some(parent) = cache_path.parent() {
+                                    let _ = tokio::fs::create_dir_all(parent).await;
+                                }
+                                let _ = tokio::fs::write(&cache_path, &value).await;
+                                let _ = tokio::fs::remove_file(&marker_path).await;
+                                return ok_bytes_response(&safe_path, value).into_response();
+                            }
+                            Ok(None) => {}
+                            Err(_) => {
+                                return (StatusCode::BAD_GATEWAY, "texlive upstream unavailable").into_response();
+                            }
+                        }
+                    }
+                }
                 if let Some(parent) = marker_path.parent() {
                     let _ = tokio::fs::create_dir_all(parent).await;
                 }

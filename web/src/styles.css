@@ -1646,7 +1646,29 @@ a {
   display: grid;
   gap: 3px;
   padding: 6px 8px;
+  user-select: text;
+}
+
+.diagnostic-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.diagnostic-jump {
+  border: 1px solid #efc4c6;
+  background: #fff;
+  color: var(--danger);
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 8px;
   cursor: pointer;
+}
+
+.diagnostic-jump:hover {
+  background: #fff5f6;
 }
 
 .diagnostic-level {
@@ -1678,6 +1700,7 @@ a {
 
 .diagnostic-main {
   overflow-wrap: anywhere;
+  user-select: text;
 }
 
 .inline-toggle {
