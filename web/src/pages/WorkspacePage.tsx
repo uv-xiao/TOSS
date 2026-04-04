@@ -269,6 +269,7 @@ export function WorkspacePage({
   );
   const [previewZoom, setPreviewZoom] = useState(1);
   const [previewFitMode, setPreviewFitMode] = useState<PreviewFitMode>("page");
+  const [typstPreviewRenderer, setTypstPreviewRenderer] = useState<"pdf" | "canvas">("pdf");
   const [previewSettingsHydratedProjectId, setPreviewSettingsHydratedProjectId] = useState<string | null>(null);
   const [previewInitialAnchor, setPreviewInitialAnchor] = useState<{ xRatio: number; yRatio: number }>({
     xRatio: 0,
@@ -559,11 +560,19 @@ export function WorkspacePage({
   );
 
   const previewPixelPerPt = pixelPerPtForZoom(previewFitMode, previewZoom);
+  const previewArtifactKind: "pdf" | "typst-vector" =
+    projectType === "latex"
+      ? "pdf"
+      : typstPreviewRenderer === "canvas"
+        ? "typst-vector"
+        : pdfData
+          ? "pdf"
+          : "typst-vector";
   const handleViewportAnchorChange = (anchor: { xRatio: number; yRatio: number }) => {
     previewAnchorRef.current = anchor;
     if (!projectId) return;
     if (previewSettingsHydratedProjectId !== projectId) return;
-    persistPreviewSettings(projectId, previewFitMode, previewZoom);
+    persistPreviewSettings(projectId, previewFitMode, previewZoom, typstPreviewRenderer);
   };
   const {
     canvasPreviewRef,
@@ -577,7 +586,7 @@ export function WorkspacePage({
     beginPreviewPan
   } = usePreviewCanvas({
     showPreviewPanel: effectiveShowPreviewPanel,
-    previewArtifactKind: projectType === "latex" ? "pdf" : "typst-vector",
+    previewArtifactKind,
     vectorData,
     pdfData,
     previewPixelPerPt,
@@ -687,11 +696,17 @@ export function WorkspacePage({
     return () => unsub();
   }, [projectType]);
 
-  const persistPreviewSettings = (targetProjectId: string, fitMode: PreviewFitMode, zoom: number) => {
+  const persistPreviewSettings = (
+    targetProjectId: string,
+    fitMode: PreviewFitMode,
+    zoom: number,
+    renderer: "pdf" | "canvas"
+  ) => {
     const key = `workspace.preview.settings.${targetProjectId}`;
     const payload = JSON.stringify({
       fitMode,
       zoom,
+      renderer,
       anchor: previewAnchorRef.current
     });
     window.localStorage.setItem(key, payload);
@@ -709,6 +724,7 @@ export function WorkspacePage({
         const parsed = JSON.parse(raw) as {
           fitMode?: PreviewFitMode;
           zoom?: number;
+          renderer?: "pdf" | "canvas";
           anchor?: { xRatio?: number; yRatio?: number };
         };
         if (parsed.fitMode === "manual" || parsed.fitMode === "page" || parsed.fitMode === "width") {
@@ -716,6 +732,11 @@ export function WorkspacePage({
         }
         if (typeof parsed.zoom === "number" && Number.isFinite(parsed.zoom)) {
           setPreviewZoom(clampNumber(parsed.zoom, PREVIEW_MIN_ZOOM, PREVIEW_MAX_ZOOM));
+        }
+        if (parsed.renderer === "canvas" || parsed.renderer === "pdf") {
+          setTypstPreviewRenderer(parsed.renderer);
+        } else {
+          setTypstPreviewRenderer("pdf");
         }
         const nextAnchor = {
           xRatio:
@@ -739,8 +760,8 @@ export function WorkspacePage({
   useEffect(() => {
     if (!projectId) return;
     if (previewSettingsHydratedProjectId !== projectId) return;
-    persistPreviewSettings(projectId, previewFitMode, previewZoom);
-  }, [previewFitMode, previewZoom, projectId, previewSettingsHydratedProjectId]);
+    persistPreviewSettings(projectId, previewFitMode, previewZoom, typstPreviewRenderer);
+  }, [previewFitMode, previewZoom, projectId, previewSettingsHydratedProjectId, typstPreviewRenderer]);
 
   useEffect(() => {
     const onResize = () => setViewportWidth(window.innerWidth);
@@ -2269,6 +2290,7 @@ export function WorkspacePage({
                 width={settingsPanelWidth}
                 projectId={projectId}
                 projectType={projectType}
+                typstPreviewRenderer={typstPreviewRenderer}
                 latexEngine={latexEngine}
                 entryFilePath={entryFilePath}
                 typEntryOptions={typEntryOptions}
@@ -2298,6 +2320,7 @@ export function WorkspacePage({
                   setLatexEngine(normalizeLatexEngine(updated.latex_engine));
                   setEntryFilePath(updated.entry_file_path);
                 }}
+                onTypstPreviewRendererChange={setTypstPreviewRenderer}
                 onCopyToClipboard={copyToClipboard}
                 onToggleTemplate={async () => setTemplateState(!templateEnabled)}
                 activeReadShare={activeReadShare}

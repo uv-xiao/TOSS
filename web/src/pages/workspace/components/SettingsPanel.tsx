@@ -62,6 +62,7 @@ export function SettingsPanel({
   width,
   projectId,
   projectType,
+  typstPreviewRenderer,
   latexEngine,
   entryFilePath,
   typEntryOptions,
@@ -75,6 +76,7 @@ export function SettingsPanel({
   projectAccessUsers,
   onEntryFileChange,
   onLatexEngineChange,
+  onTypstPreviewRendererChange,
   onCopyToClipboard,
   onToggleTemplate,
   activeReadShare,
@@ -91,6 +93,7 @@ export function SettingsPanel({
   width: number;
   projectId: string;
   projectType: "typst" | "latex";
+  typstPreviewRenderer: "pdf" | "canvas";
   latexEngine: "pdftex" | "xetex";
   entryFilePath: string;
   typEntryOptions: string[];
@@ -104,6 +107,7 @@ export function SettingsPanel({
   projectAccessUsers: ProjectAccessUser[];
   onEntryFileChange: (path: string) => Promise<void>;
   onLatexEngineChange: (engine: "pdftex" | "xetex") => Promise<void>;
+  onTypstPreviewRendererChange: (mode: "pdf" | "canvas") => void;
   onCopyToClipboard: (controlKey: string, value: string) => Promise<void>;
   onToggleTemplate: () => Promise<void>;
   activeReadShare: ProjectShareLink | null;
@@ -149,6 +153,20 @@ export function SettingsPanel({
               </UiSelect>
             </label>
           )}
+          {projectType === "typst" && (
+            <label>
+              {t("settings.typstPreviewRenderer")}
+              <UiSelect
+                value={typstPreviewRenderer}
+                onChange={(e) =>
+                  onTypstPreviewRendererChange(e.target.value === "canvas" ? "canvas" : "pdf")
+                }
+              >
+                <option value="pdf">{t("settings.typstPreviewRendererPdf")}</option>
+                <option value="canvas">{t("settings.typstPreviewRendererCanvas")}</option>
+              </UiSelect>
+            </label>
+          )}
           <label>
             {t("settings.entryFile")}
             <UiSelect
@@ -168,6 +186,7 @@ export function SettingsPanel({
             </UiSelect>
           </label>
           <small>{t("settings.entryFileHint")}</small>
+          {projectType === "typst" && <small>{t("settings.typstPreviewRendererHint")}</small>}
         </div>
         <div className="settings-section">
           <strong>{t("settings.gitAccess")}</strong>
