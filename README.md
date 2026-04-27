@@ -1,31 +1,42 @@
-# Typst Collaboration Platform
+# TOSS
 
-Self-hosted Typst collaboration platform with:
+**TOSS = Typst Open-Source Server**  
+An open-source, self-hosted collaborative writing platform for Typst (and LaTeX), with realtime editing, Git access, revision history, and browser-side compilation preview.
 
-- Static React SPA (`web/`, Vite build output)
-- Rust monolith (`backend/`) serving:
+中文文档: [README.zh-CN.md](./README.zh-CN.md)
+
+Demo: [https://typst-demo.cslabs.cn/](https://typst-demo.cslabs.cn/)
+
+> ⚠️ This project is 100% vibe coded; reading its code too carefully may cause emotional damage.  
+> ⚠️此项目100% vibe coded，阅读其代码可能对您造成精神伤害。
+
+## Features
+
+- Realtime collaborative editing with presence and cursor awareness
+- Multi-file project workspace with directory tree, file/folder CRUD, and uploads
+- Client-side Typst compilation and preview in browser (WASM)
+- Client-side LaTeX compilation/preview support (pdfTeX/XeTeX via SwiftLaTeX runtime)
+- Project-level Git HTTP access with Personal Access Token authentication
+- Revision history browsing with author attribution
+- Project sharing with read-only/read-write link modes
+- Project archive export and PDF download
+- Admin controls for authentication, OIDC, site branding, and announcements
+- User profile security management for personal access tokens
+
+## Architecture
+
+- `web/`: static React SPA (Vite build)
+- `backend/`: Rust monolith serving:
   - REST APIs
-  - Realtime WebSocket collaboration
-  - Smart HTTP Git endpoint
-  - Static SPA assets on the same origin
-- PostgreSQL metadata store
-- Optional S3-compatible storage for snapshots/assets/artifacts
+  - realtime WebSocket endpoints
+  - Git HTTP endpoints
+  - static frontend assets (same origin)
+- PostgreSQL for metadata/state
+- Runtime data under `DATA_DIR` (Git repos, thumbnails, TeXLive cache, etc.)
 
-## Current Product Surface (v1.1-dev)
+## Quick Start (Local Self-Deploy)
 
-- Multi-project workspace with project/file tree (directories + file CRUD + uploads)
-- Realtime per-file collaboration with Yjs + collaborator presence/cursor locations
-- Client-side Typst WASM compile/render (canvas preview + `Download PDF (Client)`)
-- Package proxy/cache for Typst Universe (`/v1/typst/packages/...`)
-- Git server access per project (PAT auth, no force push)
-- Project archive download
-- Automatic periodic revisions with author attribution + read-only revision browsing
-- Admin panel for auth/OIDC settings and OIDC group-role mappings
-- Profile security panel for personal access tokens
-
-## Local Development (No Docker)
-
-### 1. Build frontend static assets
+### 1) Build frontend
 
 ```bash
 cd web
@@ -33,27 +44,16 @@ npm install
 npm run build
 ```
 
-`npm run build` now runs `sync:typst-assets` first, which stages Typst default text
-font assets into `web/public/vendor/typst-assets/fonts` from a Typst-assets git tag
-resolved from the installed compiler version (with fallback). The script caches fonts
-under `web/.cache/typst-assets/<tag>/...` and writes a local manifest, so repeated
-builds do not re-download once synced.
-
-Optional override:
-
-```bash
-TYPST_ASSETS_TAG=v0.13.1 npm run build --prefix web
-```
-
-### 2. Start backend monolith
+### 2) Run backend
 
 ```bash
 cd backend
 DATABASE_URL=postgres://typstapp:iv61v6mRPCGxvWjt@127.0.0.1:5432/typstappdb \
 CORE_API_PORT=18080 \
-DATA_DIR=/tmp/typst-data \
+DATA_DIR=/tmp/toss-data \
 WEB_STATIC_DIR=../web/dist \
 MAX_REQUEST_BODY_BYTES=$((64 * 1024 * 1024)) \
+LATEX_TEXLIVE_BASE_URL=https://mirrors.tuna.tsinghua.edu.cn/CTAN/systems/texlive/tlnet \
 cargo run
 ```
 
@@ -65,139 +65,56 @@ Health check:
 curl http://127.0.0.1:18080/health
 ```
 
-### Optional: Self-Hosted TeXLive On-Demand (SwiftLaTeX)
+## First Login / Admin Bootstrap
 
-The backend can serve SwiftLaTeX TeXLive assets directly (pure Rust, no separate
-Python/Flask service).
-
-Environment variables:
-
-- `LATEX_TEXLIVE_BASE_URL`
-  - If set: backend uses **prefer-local then upstream fallback** mode.
-  - Supports:
-    - SwiftLaTeX-style endpoints (direct `/xetex/...` and `/pdftex/...` file API)
-    - CTAN TeXLive mirrors ending with `/tlnet` (for example:
-      `https://mirrors.tuna.tsinghua.edu.cn/CTAN/systems/texlive/tlnet`,
-      `https://mirrors.pku.edu.cn/ctan/systems/texlive/tlnet`)
-    - In `/tlnet` mode, backend resolves requested files through `texlive.tlpdb` and
-      lazily downloads/extracts package archives into `DATA_DIR/texlive/ctan-files`.
-  - If unset: backend runs in **local-only** mode.
-
-On first startup, backend auto-downloads bootstrap files into `DATA_DIR/texlive`:
-
-- `swiftlatexxetex.fmt`
-- `swiftlatexpdftex.fmt`
-- `xetexfontlist.txt`
-
-Bootstrap source defaults to:
-
-- `https://github.com/SwiftLaTeX/Texlive-Ondemand/raw/refs/heads/master/...`
-
-Optional override:
-
-- `LATEX_TEXLIVE_BOOTSTRAP_BASE_URL`
-
-Example:
-
-```bash
-cd backend
-DATABASE_URL=postgres://typstapp:iv61v6mRPCGxvWjt@127.0.0.1:5432/typstappdb \
-CORE_API_PORT=18080 \
-DATA_DIR=/tmp/typst-data \
-WEB_STATIC_DIR=../web/dist \
-LATEX_TEXLIVE_BASE_URL=https://texlive2.swiftlatex.com \
-cargo run
-```
-
-CTAN mirror example:
-
-```bash
-LATEX_TEXLIVE_BASE_URL=https://mirrors.tuna.tsinghua.edu.cn/CTAN/systems/texlive/tlnet
-```
-
-## Initial Admin Account
-
-On first startup, the backend seeds an initial admin user and generates a random local password once.
-
-Look for this log line in backend output:
+On first startup, TOSS creates an initial admin account and prints credentials once:
 
 ```text
 INITIAL ADMIN ACCOUNT: email=admin@example.com password=...
 ```
 
-Rotate this password immediately after first login.
-Additional users can self-register from the sign-in screen while `Allow self registration` is enabled in the Admin panel.
+Sign in, rotate the password immediately, then configure auth policy and OIDC from the Admin panel.
 
-## Auth Model
+## Testing Guide
 
-- Local account login and registration are supported.
-- OIDC is supported with discovery/issuer URL configuration from the Admin panel.
-- Admin can enable/disable:
-  - local login
-  - local self-registration
-  - OIDC login
-- If self-registration is disabled and OIDC is enabled, users can still be auto-provisioned on successful OIDC login.
-
-## Git Access Model
-
-- Each project exposes a Git clone URL (`GET /v1/git/repo-link/{project_id}`).
-- Git transport authenticates with Personal Access Token (HTTP Basic password).
-- Force push is rejected.
-- If collaborative server-side updates exist, pushes can be rejected until client pulls/rebases/merges and retries.
-
-## Useful Commands
+### Fast checks
 
 ```bash
-# Rust checks
 cd backend && cargo check
-
-# Web build
 cd web && npm run build
+```
 
-# Full local CI (checks + API tests + headless browser tests)
+### Full local CI checks
+
+```bash
 scripts/ci-checks.sh
 ```
 
-## Headless Test Scripts
+### Headless E2E scripts
 
-- `web/scripts/realtime-multiuser-test.mjs`
-- `web/scripts/git-multiuser-test.sh`
 - `web/scripts/headless-smoke.mjs`
 - `web/scripts/headless-collab-git.mjs`
+- `web/scripts/realtime-multiuser-test.mjs`
 - `web/scripts/headless-revision-collab-regression.mjs`
 
-Screenshots are written to:
+## Auth & Access Model
 
-- `/tmp/typst-headless`
-- `/tmp/typst-collab-git`
+- Local login/register
+- OIDC (discovery-based) configurable from Admin panel
+- Admin-configurable auth switches (local login, registration, OIDC, anonymous policy)
+- PAT-based Git authentication (PAT as HTTP password)
+- Force push protection on project Git endpoints
 
-## Admin Bootstrap Helper
+## Environment Notes
 
-`scripts/bootstrap-admin.sh` can ensure an email is an org admin:
+- `DATA_DIR` is the runtime root:
+  - `git/<project_id>` repositories
+  - `thumbnails/<project_id>.thumb` cached previews
+  - `texlive/...` local TeXLive cache/bootstrap files
+- `LATEX_TEXLIVE_BASE_URL` can point to SwiftLaTeX-compatible upstreams or CTAN `/tlnet` mirrors
+- `MAX_REQUEST_BODY_BYTES` defaults to 64 MiB; increase for large assets
 
-```bash
-DATABASE_URL=postgres://... scripts/bootstrap-admin.sh
-```
+## Project Scope
 
-Optional variables:
-
-- `ORG_ID`
-- `ADMIN_EMAIL`
-- `ADMIN_NAME`
-- `ADMIN_ID`
-
-## Notes
-
-- Non-WASM browsers can still edit source but do not get live Typst preview.
-- Upload/API payload size is controlled by `MAX_REQUEST_BODY_BYTES` (default 64 MiB).
-  Increase it if you upload large base64-encoded assets (fonts, figures, etc).
-- Runtime writable data is rooted at `DATA_DIR` (default `./tmp/data`):
-  - Git repositories: `$DATA_DIR/git/<project_id>`
-  - Project thumbnails: `$DATA_DIR/thumbnails/<project_id>.thumb`
-  - `GIT_STORAGE_PATH` still works and overrides `$DATA_DIR/git` if explicitly set.
-- Browser Typst preview uses Typst's default embedded text-font asset set
-  (`Libertinus Serif`, `New Computer Modern`, `DejaVu Sans Mono`) plus any
-  project-uploaded font files, to best match offline CLI output.
-- `AUTH_DEV_HEADER_ENABLED=1` is for automated/local API tests only.
-  Do not enable it for normal interactive login testing.
-- Production deployment hardening is intentionally deferred until feature-complete validation is finished.
+TOSS currently focuses on practical self-hosting and feature completeness for collaborative writing workflows.  
+Production hardening and scale-out deployment guidance can be layered on top as needed.
