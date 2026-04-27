@@ -118,3 +118,19 @@ scripts/ci-checks.sh
 
 TOSS 当前重点是协作写作场景下的可用性与功能完整性。  
 更大规模生产部署的硬化与扩展可在此基础上持续演进。
+
+## 许可证
+
+本项目以 **GNU AGPLv3** 发布。详见 [LICENSE](./LICENSE)。
+
+采用 AGPLv3 的原因是：当前集成依赖栈中存在 AGPLv3 约束。
+
+对于仓库中的新增原创贡献，贡献者可以额外声明其原创部分按 **WTFPL** 发布。  
+但这些代码一旦作为本项目整体的一部分进行分发，整体分发许可证仍然是 **AGPLv3**。
+
+## 重要依赖
+
+- [Typst](https://typst.app/)
+- [Yjs](https://yjs.dev/)
+- [typst.ts / typst.ts 生态](https://github.com/Myriad-Dreamin/typst.ts)
+- [SwiftLaTeX](https://github.com/SwiftLaTeX)

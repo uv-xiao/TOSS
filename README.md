@@ -118,3 +118,19 @@ scripts/ci-checks.sh
 
 TOSS currently focuses on practical self-hosting and feature completeness for collaborative writing workflows.  
 Production hardening and scale-out deployment guidance can be layered on top as needed.
+
+## License
+
+This project is distributed under **GNU AGPLv3**. See [LICENSE](./LICENSE).
+
+We adopt AGPLv3 because part of the integrated dependency stack carries AGPLv3 requirements.
+
+For newly authored contributions in this repository, contributors may additionally declare their original changes under **WTFPL**.  
+However, when distributed as part of this combined project, the effective distribution license remains **AGPLv3**.
+
+## Important Dependencies
+
+- [Typst](https://typst.app/)
+- [Yjs](https://yjs.dev/)
+- [typst.ts / typst.ts ecosystem](https://github.com/Myriad-Dreamin/typst.ts)
+- [SwiftLaTeX](https://github.com/SwiftLaTeX)
