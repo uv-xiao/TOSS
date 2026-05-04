@@ -6,18 +6,20 @@ RUN npm ci
 COPY web .
 RUN npm run build
 
-FROM rust:1.88 AS builder
+FROM rust:1.91 AS builder
 WORKDIR /app
 COPY backend/Cargo.toml ./Cargo.toml
 COPY backend/src ./src
 COPY backend/migrations ./migrations
+COPY backend/resources ./resources
 RUN cargo build --release
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 WORKDIR /app
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/core-api /usr/local/bin/core-api
 COPY --from=builder /app/migrations ./migrations
+COPY --from=builder /app/resources ./resources
 COPY --from=web-builder /app/dist ./web-dist
 ENV WEB_STATIC_DIR=/app/web-dist
 EXPOSE 8080
